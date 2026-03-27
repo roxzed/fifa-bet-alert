@@ -336,8 +336,26 @@ class Validator:
             "kelly_fraction": alert.kelly_fraction,
         }
 
+    def _already_in_csv(self, alert_id: int) -> bool:
+        """Check if alert_id already exists in CSV to prevent duplicates."""
+        if not self.CSV_PATH.exists():
+            return False
+        try:
+            with open(self.CSV_PATH, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                next(reader, None)  # skip header
+                for row in reader:
+                    if row and row[0] == str(alert_id):
+                        return True
+        except Exception:
+            pass
+        return False
+
     def _export_to_csv(self, alert, return_match, details, hit: bool, best_line: str, line_label: str, loser_goals: int) -> None:
-        """Append result row to CSV spreadsheet."""
+        """Append result row to CSV spreadsheet (deduplicado por alert_id)."""
+        if self._already_in_csv(alert.id):
+            return
+
         file_exists = self.CSV_PATH.exists()
         self.CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -345,8 +363,8 @@ class Validator:
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow([
-                    "data", "hora", "jogador_perdedor", "linha", "odds",
-                    "winrate", "resultado", "placar_g2", "gols_total",
+                    "alert_id", "data", "hora", "jogador_perdedor", "linha", "odds",
+                    "winrate", "resultado", "placar_g2", "gols_perdedor",
                     "green", "profit",
                     "player_home", "player_away", "team_home", "team_away",
                 ])
@@ -363,12 +381,21 @@ class Validator:
             else:
                 odds = alert.over25_odds
 
-            profit = (odds - 1.0) if hit and odds else (-1.0)
+            profit = (odds - 1.0) if hit and odds else -1.0
 
-            now = datetime.now(timezone.utc)
+            try:
+                from zoneinfo import ZoneInfo
+                from src.config import settings
+                tz_local = ZoneInfo(settings.timezone)
+            except Exception:
+                tz_local = timezone(timedelta(hours=-3))
+
+            sent_local = alert.sent_at.replace(tzinfo=timezone.utc).astimezone(tz_local) if alert.sent_at else datetime.now(tz_local)
+
             writer.writerow([
-                now.strftime("%Y-%m-%d"),
-                now.strftime("%H:%M"),
+                alert.id,
+                sent_local.strftime("%Y-%m-%d"),
+                sent_local.strftime("%H:%M"),
                 alert.losing_player,
                 line_label,
                 f"{odds:.2f}" if odds else "",
