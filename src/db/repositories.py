@@ -729,6 +729,183 @@ class AlertRepository(_BaseRepository):
                     "hit_rate": round(wins / total, 4) if total else 0.0,
                     "by_line": by_line, "by_player": by_player}
 
+    async def get_player_performance(self, days: int = 30, min_alerts: int = 2) -> List[Dict]:
+        """Return per-player performance stats sorted by profit."""
+        async with self._session() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            stmt = (
+                select(Alert)
+                .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
+                .order_by(Alert.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            alerts = result.scalars().all()
+
+            players: Dict[str, Dict] = {}
+            for a in alerts:
+                bl = a.best_line or "over25"
+                if bl == "over45":
+                    hit, odds = a.over45_hit, a.over45_odds
+                elif bl == "over35":
+                    hit, odds = a.over35_hit, a.over35_odds
+                elif bl == "over15":
+                    hit, odds = a.over15_hit, a.over15_odds
+                else:
+                    hit, odds = a.over25_hit, a.over25_odds
+                odds = odds or 1.0
+                p = (odds - 1.0) if hit else -1.0
+                name = a.losing_player or "?"
+                if name not in players:
+                    players[name] = {"total": 0, "wins": 0, "profit": 0.0,
+                                     "avg_odds": 0.0, "streak": 0, "max_dd": 0.0,
+                                     "odds_sum": 0.0}
+                d = players[name]
+                d["total"] += 1
+                d["odds_sum"] += odds
+                d["profit"] += p
+                if hit:
+                    d["wins"] += 1
+                    d["streak"] = max(0, d["streak"]) + 1
+                else:
+                    d["streak"] = min(0, d["streak"]) - 1
+                    d["max_dd"] = min(d["max_dd"], d["streak"])
+
+            result_list = []
+            for name, d in players.items():
+                if d["total"] < min_alerts:
+                    continue
+                result_list.append({
+                    "player": name,
+                    "total": d["total"],
+                    "wins": d["wins"],
+                    "losses": d["total"] - d["wins"],
+                    "profit": round(d["profit"], 2),
+                    "roi": round(d["profit"] / d["total"], 4) if d["total"] else 0.0,
+                    "hit_rate": round(d["wins"] / d["total"], 4) if d["total"] else 0.0,
+                    "avg_odds": round(d["odds_sum"] / d["total"], 2) if d["total"] else 0.0,
+                    "worst_streak": abs(int(d["max_dd"])),
+                })
+            result_list.sort(key=lambda x: x["profit"], reverse=True)
+            return result_list
+
+    async def get_recent_streak(self, n: int = 20) -> Dict:
+        """Return recent win/loss streak and drawdown info for last N validated alerts."""
+        async with self._session() as session:
+            stmt = (
+                select(Alert)
+                .where(Alert.validated_at.is_not(None))
+                .order_by(Alert.validated_at.desc())
+                .limit(n)
+            )
+            result = await session.execute(stmt)
+            alerts = list(result.scalars().all())
+            alerts.reverse()  # oldest first
+
+            if not alerts:
+                return {"streak": 0, "consecutive_losses": 0, "recent_profit": 0.0,
+                        "recent_hits": 0, "recent_total": 0}
+
+            streak = 0
+            consecutive_losses = 0
+            profit = 0.0
+            hits = 0
+            current_loss_run = 0
+
+            for a in alerts:
+                bl = a.best_line or "over25"
+                if bl == "over45":
+                    hit, odds = a.over45_hit, a.over45_odds
+                elif bl == "over35":
+                    hit, odds = a.over35_hit, a.over35_odds
+                elif bl == "over15":
+                    hit, odds = a.over15_hit, a.over15_odds
+                else:
+                    hit, odds = a.over25_hit, a.over25_odds
+                odds = odds or 1.0
+                p = (odds - 1.0) if hit else -1.0
+                profit += p
+                if hit:
+                    hits += 1
+                    current_loss_run = 0
+                else:
+                    current_loss_run += 1
+                    consecutive_losses = max(consecutive_losses, current_loss_run)
+
+            # Current streak (from most recent)
+            for a in reversed(alerts):
+                bl = a.best_line or "over25"
+                if bl == "over45":
+                    hit = a.over45_hit
+                elif bl == "over35":
+                    hit = a.over35_hit
+                elif bl == "over15":
+                    hit = a.over15_hit
+                else:
+                    hit = a.over25_hit
+                if hit:
+                    if streak >= 0:
+                        streak += 1
+                    else:
+                        break
+                else:
+                    if streak <= 0:
+                        streak -= 1
+                    else:
+                        break
+
+            return {
+                "streak": streak,
+                "consecutive_losses": consecutive_losses,
+                "recent_profit": round(profit, 2),
+                "recent_hits": hits,
+                "recent_total": len(alerts),
+            }
+
+    async def get_weekly_breakdown(self, weeks: int = 4) -> List[Dict]:
+        """Return P&L breakdown by week for the last N weeks."""
+        async with self._session() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(weeks=weeks)
+            stmt = (
+                select(Alert)
+                .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
+                .order_by(Alert.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            alerts = result.scalars().all()
+
+            weekly: Dict[str, Dict] = {}
+            for a in alerts:
+                # ISO week label
+                week_label = a.sent_at.strftime("%Y-W%W") if a.sent_at else "?"
+                bl = a.best_line or "over25"
+                if bl == "over45":
+                    hit, odds = a.over45_hit, a.over45_odds
+                elif bl == "over35":
+                    hit, odds = a.over35_hit, a.over35_odds
+                elif bl == "over15":
+                    hit, odds = a.over15_hit, a.over15_odds
+                else:
+                    hit, odds = a.over25_hit, a.over25_odds
+                odds = odds or 1.0
+                p = (odds - 1.0) if hit else -1.0
+
+                if week_label not in weekly:
+                    weekly[week_label] = {"week": week_label, "total": 0, "wins": 0,
+                                          "profit": 0.0}
+                d = weekly[week_label]
+                d["total"] += 1
+                d["profit"] += p
+                if hit:
+                    d["wins"] += 1
+
+            result_list = []
+            for d in weekly.values():
+                d["profit"] = round(d["profit"], 2)
+                d["roi"] = round(d["profit"] / d["total"], 4) if d["total"] else 0.0
+                d["hit_rate"] = round(d["wins"] / d["total"], 4) if d["total"] else 0.0
+                result_list.append(d)
+            return result_list
+
 
 # ---------------------------------------------------------------------------
 # MethodStatsRepository

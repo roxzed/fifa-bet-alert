@@ -209,21 +209,102 @@ class BotCommands:
                 for l, s in sorted(pnl["by_line"].items())
             )
 
+            # Breakdown semanal
+            weekly = await self.alerts.get_weekly_breakdown(weeks=4)
+            weekly_str = ""
+            if weekly:
+                weekly_str = "\n\n<b>Por semana:</b>\n"
+                cumulative = 0.0
+                for w in weekly:
+                    cumulative += w["profit"]
+                    emoji = "\u2705" if w["profit"] >= 0 else "\u274c"
+                    weekly_str += (
+                        f"  {emoji} {w['week']}: {w['wins']}/{w['total']} "
+                        f"({w['profit']:+.1f}u) acum: {cumulative:+.1f}u\n"
+                    )
+
+            # Streak atual
+            streak_data = await self.alerts.get_recent_streak(20)
+            streak = streak_data["streak"]
+            if streak > 0:
+                streak_str = f"\U0001f525 Streak: {streak}W seguidas"
+            elif streak < 0:
+                streak_str = f"\u26a0\ufe0f Streak: {abs(streak)}L seguidas"
+            else:
+                streak_str = ""
+
             roi_emoji = "\U0001f4c8" if pnl["roi"] > 0 else "\U0001f4c9"
             msg = (
                 f"{roi_emoji} <b>P&L - Ultimos {days} dias</b>\n\n"
                 f"Alertas: {pnl['total']} ({pnl['wins']}W / {pnl['losses']}L)\n"
                 f"Hit rate: {pnl['hit_rate']:.0%}\n"
                 f"Profit: <b>{pnl['profit']:+.1f} unidades</b>\n"
-                f"ROI: <b>{pnl['roi']:.1%}</b>\n\n"
-                f"<b>Por linha:</b>\n{line_str}\n\n"
+                f"ROI: <b>{pnl['roi']:.1%}</b>\n"
+            )
+            if streak_str:
+                msg += f"{streak_str}\n"
+            msg += (
+                f"\n<b>Por linha:</b>\n{line_str}\n\n"
                 f"<b>Top jogadores:</b>\n{top_str}\n\n"
                 f"<b>Piores:</b>\n{worst_str}"
+                f"{weekly_str}"
             )
             await update.message.reply_text(msg, parse_mode="HTML")
         except Exception as e:
             logger.error(f"cmd_pnl error: {e}")
             await update.message.reply_text("Erro ao calcular P&L.")
+
+    async def cmd_players(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/players - Dashboard de performance por jogador."""
+        try:
+            days = int(context.args[0]) if context.args else 30
+            players = await self.alerts.get_player_performance(days=days, min_alerts=2)
+
+            if not players:
+                await update.message.reply_text(f"Sem dados de jogadores nos ultimos {days} dias.")
+                return
+
+            # Separar lucrativos e deficitarios
+            profitable = [p for p in players if p["profit"] > 0]
+            losing = [p for p in players if p["profit"] <= 0]
+
+            lines = []
+            lines.append(f"\U0001f4ca <b>PERFORMANCE POR JOGADOR ({days}d)</b>\n")
+
+            if profitable:
+                lines.append("<b>\u2705 Lucrativos:</b>")
+                for p in profitable[:8]:
+                    bar = "\u2588" * min(int(p["profit"]), 10)
+                    lines.append(
+                        f"  <b>{p['player']}</b>: {p['wins']}/{p['total']} "
+                        f"({p['hit_rate']:.0%}) <b>{p['profit']:+.1f}u</b> "
+                        f"ROI {p['roi']:.0%} {bar}"
+                    )
+
+            if losing:
+                lines.append("\n<b>\u274c Deficitarios:</b>")
+                for p in losing[:5]:
+                    lines.append(
+                        f"  <b>{p['player']}</b>: {p['wins']}/{p['total']} "
+                        f"({p['hit_rate']:.0%}) <b>{p['profit']:+.1f}u</b> "
+                        f"ROI {p['roi']:.0%}"
+                    )
+                    if p["worst_streak"] >= 3:
+                        lines[-1] += f" (pior: {p['worst_streak']}L)"
+
+            # Summary
+            total_profit = sum(p["profit"] for p in players)
+            total_alerts = sum(p["total"] for p in players)
+            lines.append(
+                f"\n<b>Resumo:</b> {len(profitable)} lucrativos, "
+                f"{len(losing)} deficitarios\n"
+                f"Net: <b>{total_profit:+.1f}u</b> em {total_alerts} alertas"
+            )
+
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"cmd_players error: {e}")
+            await update.message.reply_text("Erro ao buscar performance.")
 
     async def cmd_results(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/results - Tabela de resultados do dia (GREEN/RED) com ROI."""
@@ -361,5 +442,6 @@ class BotCommands:
         application.add_handler(CommandHandler("resume", self.cmd_resume))
         application.add_handler(CommandHandler("progress", self.cmd_progress))
         application.add_handler(CommandHandler("pnl", self.cmd_pnl))
+        application.add_handler(CommandHandler("players", self.cmd_players))
         application.add_handler(CommandHandler("results", self.cmd_results))
         logger.info("Telegram command handlers registered")

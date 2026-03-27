@@ -239,6 +239,41 @@ class Validator:
             f"{'GREEN' if hit else 'RED'} ({score_line})"
         )
 
+        # Drawdown auto-pause: checar apos cada RED
+        if not hit:
+            try:
+                await self._check_drawdown()
+            except Exception as e:
+                logger.debug(f"Drawdown check failed: {e}")
+
+    async def _check_drawdown(self) -> None:
+        """Pausa alertas se houver drawdown severo (5+ losses seguidas ou -5u)."""
+        streak = await self.alerts.get_recent_streak(20)
+        consec = streak.get("consecutive_losses", 0)
+        recent_profit = streak.get("recent_profit", 0.0)
+        current_streak = streak.get("streak", 0)
+
+        # Trigger: 5+ losses seguidas OU -5u nos ultimos 20 alertas
+        if current_streak <= -5 or recent_profit <= -5.0:
+            if not self.notifier._paused:
+                self.notifier.pause()
+                msg = (
+                    "\u26a0\ufe0f <b>DRAWDOWN ALERT - Alertas PAUSADOS</b>\n\n"
+                    f"Streak atual: {abs(current_streak)}L seguidas\n"
+                    f"P&L ultimos 20: <b>{recent_profit:+.1f}u</b>\n"
+                    f"Pior sequencia: {consec}L\n\n"
+                    "Alertas pausados automaticamente.\n"
+                    "Use /resume quando quiser retomar."
+                )
+                try:
+                    await self.notifier.send_message(msg)
+                except Exception:
+                    pass
+                logger.warning(
+                    f"DRAWDOWN: alertas pausados ({abs(current_streak)}L, "
+                    f"{recent_profit:+.1f}u nos ultimos 20)"
+                )
+
     def _rebuild_alert_data(self, alert, return_match) -> dict:
         """Rebuild the alert_data dict from DB fields to re-render the message."""
         kickoff = return_match.started_at
