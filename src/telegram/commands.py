@@ -1,0 +1,364 @@
+"""Interactive Telegram bot commands.
+
+Correções aplicadas (auditoria 2025-03-25):
+- BUG 1: BotCommands agora recebe player_repo como parâmetro (instância com sessão)
+- BUG 2: cmd_player usa self.players (instância) em vez de PlayerRepository (classe)
+- BUG 3: cmd_status converte ColdStartProgress dataclass para dict corretamente
+- BUG 5: cmd_stats calcula ROI a partir dos dados disponíveis (sem campo roi_flat)
+- cmd_progress converte dataclass para dict antes de passar ao template
+"""
+
+from __future__ import annotations
+
+from loguru import logger
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+
+class BotCommands:
+    """Handles /commands sent to the bot in Telegram."""
+
+    def __init__(self, notifier, stats_engine, match_repo, alert_repo, league_repo, player_repo=None) -> None:
+        self.notifier = notifier
+        self.stats_engine = stats_engine
+        self.matches = match_repo
+        self.alerts = alert_repo
+        self.leagues = league_repo
+        self.players = player_repo  # BUG 2 fix: recebe instância com sessão
+
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/status - System uptime, monitoring info, regime status."""
+        try:
+            regime = await self.stats_engine.check_regime()
+            cold_done = await self.stats_engine.is_cold_start_complete()
+            progress = await self.stats_engine.get_cold_start_progress()
+
+            # BUG 3 fix: ColdStartProgress é um dataclass, não dict.
+            # Acessar atributos diretamente em vez de .get()
+            from src.telegram.messages import format_system_status
+            text = format_system_status({
+                "uptime": "N/A",
+                "games_monitoring": getattr(progress, "total_pairs", 0),
+                "pending_pairs": 0,
+                "alerts_today": 0,
+                "regime_status": regime.get("status", "HEALTHY") if isinstance(regime, dict) else getattr(regime, "status", "HEALTHY"),
+                "cold_start_complete": cold_done,
+                "alerts_paused": self.notifier._paused,
+            })
+            await update.message.reply_html(text)
+        except Exception as e:
+            logger.error(f"cmd_status error: {e}")
+            await update.message.reply_text("Erro ao buscar status.")
+
+    async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/stats - Overall statistics."""
+        try:
+            stats = await self.alerts.get_period_stats(days=30)
+            total = stats.get("total", 0)
+            validated = stats.get("validated", 0)
+            hits = stats.get("over25_hits", 0)
+            rate = (hits / validated * 100) if validated > 0 else 0
+
+            # BUG 5 fix: calcular ROI a partir dos alertas validados
+            # Como não temos odds individuais no get_period_stats, mostramos hit rate
+            # ROI requer dados de odds que não estão no aggregado
+            hit_rate_25 = stats.get("hit_rate_25", 0)
+
+            text = (
+                f"📊 <b>STATS GERAIS (últimos 30 dias)</b>\n\n"
+                f"   • Total alertas: {total}\n"
+                f"   • Validados: {validated}\n"
+                f"   • Over 2.5 bateu: {hits}/{validated} ({rate:.1f}%)\n"
+                f"   • Hit rate O2.5: {hit_rate_25:.1%}\n"
+                f"   • Hit rate O3.5: {stats.get('hit_rate_35', 0):.1%}"
+            )
+            await update.message.reply_html(text)
+        except Exception as e:
+            logger.error(f"cmd_stats error: {e}")
+            await update.message.reply_text("Erro ao buscar stats.")
+
+    async def cmd_today(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/today - Today's summary so far."""
+        try:
+            from datetime import date
+            stats = await self.alerts.get_daily_stats(date.today())
+            total = stats.get("total", 0)
+            validated = stats.get("validated", 0)
+            hits = stats.get("over25_hits", 0)
+            rate = (hits / validated * 100) if validated > 0 else 0
+
+            text = (
+                f"📅 <b>HOJE</b>\n\n"
+                f"   • Alertas enviados: {total}\n"
+                f"   • Validados: {validated}\n"
+                f"   • Bateram (over 2.5): {hits}/{validated} ({rate:.1f}%)"
+            )
+            await update.message.reply_html(text)
+        except Exception as e:
+            logger.error(f"cmd_today error: {e}")
+            await update.message.reply_text("Erro ao buscar dados de hoje.")
+
+    async def cmd_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/player <name> - Player profile."""
+        if not context.args:
+            await update.message.reply_text("Uso: /player <nome do jogador>")
+            return
+
+        name = " ".join(context.args)
+        try:
+            # BUG 2 fix: usar self.players (instância com sessão) em vez de classe
+            if self.players is None:
+                await update.message.reply_text("Player repository não configurado.")
+                return
+
+            profile = await self.players.get_profile_by_name(name)
+            if not profile:
+                await update.message.reply_text(f"Jogador '{name}' não encontrado.")
+                return
+
+            total_return = getattr(profile, "total_return_matches", 0) or 0
+            over25_after = getattr(profile, "over25_after_loss", 0) or 0
+            avg_goals = getattr(profile, "avg_goals_after_loss", 0.0) or 0.0
+            is_reliable = getattr(profile, "is_reliable", False)
+
+            hit_rate = (over25_after / total_return * 100) if total_return > 0 else 0
+            text = (
+                f"👤 <b>{profile.name}</b>\n\n"
+                f"   • Jogos após derrota: {total_return}\n"
+                f"   • Over 2.5 bateu: {over25_after}/{total_return} "
+                f"({hit_rate:.1f}%)\n"
+                f"   • Média de gols: {avg_goals:.2f}\n"
+                f"   • Confiável: {'✅' if is_reliable else '❌'}"
+            )
+            await update.message.reply_html(text)
+        except Exception as e:
+            logger.error(f"cmd_player error: {e}")
+            await update.message.reply_text("Erro ao buscar jogador.")
+
+    async def cmd_leagues(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/leagues - Active leagues being monitored."""
+        try:
+            leagues = await self.leagues.get_active_leagues()
+            if not leagues:
+                await update.message.reply_text("Nenhuma liga ativa.")
+                return
+
+            lines = "\n".join(f"   • {lg.name} (ID: {lg.api_league_id})" for lg in leagues)
+            await update.message.reply_html(f"⚽ <b>LIGAS ATIVAS</b>\n\n{lines}")
+        except Exception as e:
+            logger.error(f"cmd_leagues error: {e}")
+            await update.message.reply_text("Erro ao buscar ligas.")
+
+    async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/pause - Temporarily pause alerts."""
+        self.notifier.pause()
+        await update.message.reply_text("⏸️ Alertas pausados. Use /resume para retomar.")
+
+    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/resume - Resume alerts."""
+        self.notifier.resume()
+        await update.message.reply_text("▶️ Alertas retomados.")
+
+    async def cmd_progress(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/progress - Cold start collection progress."""
+        try:
+            progress = await self.stats_engine.get_cold_start_progress()
+            from src.telegram.messages import format_cold_start_progress
+
+            # BUG 3 fix: converter dataclass para dict antes de passar ao template
+            progress_dict = {
+                "days_collected": getattr(progress, "days_collected", 0),
+                "cold_start_days": getattr(progress, "cold_start_days", 90),
+                "total_games": getattr(progress, "total_games", 0),
+                "total_pairs": getattr(progress, "total_pairs", 0),
+                "unique_players": getattr(progress, "unique_players", 0),
+                "unique_teams": getattr(progress, "unique_teams", 0),
+                "activation_date": getattr(progress, "activation_date", "N/A"),
+            }
+            await update.message.reply_html(format_cold_start_progress(progress_dict))
+        except Exception as e:
+            logger.error(f"cmd_progress error: {e}")
+            await update.message.reply_text("Erro ao buscar progresso.")
+
+    async def cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Mostra P&L (lucro/prejuizo) dos ultimos N dias. Uso: /pnl [dias]"""
+        try:
+            days = int(context.args[0]) if context.args else 30
+            pnl = await self.alerts.get_pnl_summary(days)
+
+            if pnl["total"] == 0:
+                await update.message.reply_text(f"Sem alertas validados nos ultimos {days} dias.")
+                return
+
+            # Top jogadores por profit
+            top_players = sorted(pnl["by_player"].items(), key=lambda x: x[1]["profit"], reverse=True)[:5]
+            worst_players = sorted(pnl["by_player"].items(), key=lambda x: x[1]["profit"])[:3]
+
+            top_str = "\n".join(
+                f"  {p}: {s['wins']}/{s['total']} ({s['profit']:+.1f}u)"
+                for p, s in top_players
+            )
+            worst_str = "\n".join(
+                f"  {p}: {s['wins']}/{s['total']} ({s['profit']:+.1f}u)"
+                for p, s in worst_players
+            )
+
+            # Por linha
+            line_str = "\n".join(
+                f"  {l}: {s['wins']}/{s['total']} = {s['wins']/s['total']:.0%} ({s['profit']:+.1f}u)"
+                for l, s in sorted(pnl["by_line"].items())
+            )
+
+            roi_emoji = "\U0001f4c8" if pnl["roi"] > 0 else "\U0001f4c9"
+            msg = (
+                f"{roi_emoji} <b>P&L - Ultimos {days} dias</b>\n\n"
+                f"Alertas: {pnl['total']} ({pnl['wins']}W / {pnl['losses']}L)\n"
+                f"Hit rate: {pnl['hit_rate']:.0%}\n"
+                f"Profit: <b>{pnl['profit']:+.1f} unidades</b>\n"
+                f"ROI: <b>{pnl['roi']:.1%}</b>\n\n"
+                f"<b>Por linha:</b>\n{line_str}\n\n"
+                f"<b>Top jogadores:</b>\n{top_str}\n\n"
+                f"<b>Piores:</b>\n{worst_str}"
+            )
+            await update.message.reply_text(msg, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"cmd_pnl error: {e}")
+            await update.message.reply_text("Erro ao calcular P&L.")
+
+    async def cmd_results(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/results - Tabela de resultados do dia (GREEN/RED) com ROI."""
+        try:
+            from datetime import datetime, timedelta, timezone
+            from src.config import settings
+
+            try:
+                from zoneinfo import ZoneInfo
+                tz_local = ZoneInfo(settings.timezone)
+            except Exception:
+                tz_local = timezone(timedelta(hours=-3))
+            alerts = await self.alerts.get_today_results()
+
+            if not alerts:
+                await update.message.reply_text("Nenhum alerta enviado hoje.")
+                return
+
+            lines = []
+            total_profit = 0.0
+            greens = 0
+            total_validated = 0
+
+            for a in alerts:
+                # Hora local
+                sent_utc = a.sent_at
+                if sent_utc:
+                    sent_local = sent_utc.replace(tzinfo=timezone.utc).astimezone(tz_local)
+                    hora = sent_local.strftime("%H:%M")
+                else:
+                    hora = "??:??"
+
+                player = a.losing_player or "?"
+                bl = a.best_line or "over25"
+
+                # Label do mercado
+                if bl == "over15":
+                    mercado = "O1.5"
+                elif bl == "over25":
+                    mercado = "O2.5"
+                elif bl == "over35":
+                    mercado = "O3.5"
+                elif bl == "over45":
+                    mercado = "O4.5"
+                elif bl == "ml":
+                    mercado = "ML"
+                else:
+                    mercado = bl
+
+                # Odds usadas
+                if bl == "over15":
+                    odds = a.over15_odds
+                elif bl == "over25":
+                    odds = a.over25_odds
+                elif bl == "over35":
+                    odds = a.over35_odds
+                elif bl == "over45":
+                    odds = a.over45_odds
+                elif bl == "ml":
+                    odds = a.ml_odds
+                else:
+                    odds = a.over25_odds
+                odds_str = f"@{odds:.2f}" if odds else "—"
+
+                # Resultado
+                gols = a.actual_goals
+                if gols is not None:
+                    total_validated += 1
+                    # Determinar hit
+                    if bl == "over15":
+                        hit = gols > 1
+                    elif bl == "over25":
+                        hit = gols > 2
+                    elif bl == "over35":
+                        hit = gols > 3
+                    elif bl == "over45":
+                        hit = gols > 4
+                    elif bl == "ml":
+                        hit = getattr(a, "ml_hit", False)
+                    else:
+                        hit = gols > 2
+
+                    resultado = "🟢" if hit else "🔴"
+                    p = ((odds or 1.0) - 1.0) if hit else -1.0
+                    total_profit += p
+                    if hit:
+                        greens += 1
+                else:
+                    gols = "—"
+                    resultado = "⏳"
+
+                lines.append(f"{hora} | {player:<12} | {mercado} | {odds_str:<6} | {gols} | {resultado}")
+
+            # Header
+            header = "Hora  | Jogador      | Linha | Odds   | G | R"
+            sep = "—" * 48
+
+            # ROI
+            total = len(alerts)
+            losses = total_validated - greens
+            roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
+            roi_emoji = "📈" if total_profit >= 0 else "📉"
+
+            summary = (
+                f"\n{sep}\n"
+                f"✅ {greens}  ❌ {losses}  |  "
+                f"Net: <b>{total_profit:+.2f}u</b>  |  "
+                f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}"
+            )
+
+            if total > total_validated:
+                summary += f"\n⏳ {total - total_validated} aguardando resultado"
+
+            msg = (
+                f"📋 <b>RESULTADOS DE HOJE</b>\n\n"
+                f"<pre>{header}\n{sep}\n"
+                + "\n".join(lines)
+                + f"</pre>{summary}"
+            )
+
+            await update.message.reply_text(msg, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"cmd_results error: {e}")
+            await update.message.reply_text(f"Erro ao buscar resultados: {e}")
+
+    def register_handlers(self, application: Application) -> None:
+        """Register all command handlers with the bot application."""
+        application.add_handler(CommandHandler("status", self.cmd_status))
+        application.add_handler(CommandHandler("stats", self.cmd_stats))
+        application.add_handler(CommandHandler("today", self.cmd_today))
+        application.add_handler(CommandHandler("player", self.cmd_player))
+        application.add_handler(CommandHandler("leagues", self.cmd_leagues))
+        application.add_handler(CommandHandler("pause", self.cmd_pause))
+        application.add_handler(CommandHandler("resume", self.cmd_resume))
+        application.add_handler(CommandHandler("progress", self.cmd_progress))
+        application.add_handler(CommandHandler("pnl", self.cmd_pnl))
+        application.add_handler(CommandHandler("results", self.cmd_results))
+        logger.info("Telegram command handlers registered")

@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.mypy_cache
+.pytest_cache
+*.egg-info
+.venv
+venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Data & Logs (mounted as volumes)
+data/
+logs/
+
+# Docs
+*.md
+LICENSE
+
+# Tests (not needed in production)
+tests/
+
+# Environment (injected at runtime)
+.env
+.env.*

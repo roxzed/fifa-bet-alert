@@ -1,0 +1,552 @@
+"""Monitors odds for return matches via bet365 API — player-specific goals markets.
+
+Correções aplicadas (auditoria 2025-03-25):
+- _fetch_loser_odds agora usa fuzzy matching para encontrar o evento na Bet365
+- Tolera diferenças de nomenclatura entre BetsAPI e Bet365 (sufixos, espaços, capitalização)
+- Fuzzy matching também aplicado ao filtrar odds do perdedor
+
+Melhorias v2 (2026-03-25):
+- MELHORIA 4: Polling adaptativo no _monitor_loop:
+  * Longe do kickoff (>10 min) → poll a cada 60s
+  * Perto do kickoff (3-10 min) → poll a cada 15s
+  * Após kickoff (0 a -3 min) → poll a cada 10s (máxima urgência)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
+
+from loguru import logger
+
+
+def _normalize_player(name: str) -> str:
+    """Normalize a player name for fuzzy comparison."""
+    n = name.lower().strip()
+    for suffix in (" (esports)", " (esoccer)", " esports", " esoccer"):
+        n = n.replace(suffix, "")
+    return n.strip()
+
+
+def _fuzzy_match_players(
+    target_players: set[str], candidate_players: set[str], threshold: float = 0.80
+) -> bool:
+    """Check if two sets of player names match using fuzzy comparison."""
+    if target_players == candidate_players:
+        return True
+    if len(target_players) != len(candidate_players):
+        return False
+
+    target_list = sorted(target_players)
+    candidate_list = sorted(candidate_players)
+
+    if len(target_list) == 2 and len(candidate_list) == 2:
+        s1 = _name_similarity(target_list[0], candidate_list[0]) + _name_similarity(target_list[1], candidate_list[1])
+        s2 = _name_similarity(target_list[0], candidate_list[1]) + _name_similarity(target_list[1], candidate_list[0])
+        best = max(s1, s2) / 2
+        return best >= threshold
+
+    used = set()
+    total_sim = 0.0
+    for t in target_list:
+        best_sim = 0.0
+        best_idx = -1
+        for i, c in enumerate(candidate_list):
+            if i in used:
+                continue
+            sim = _name_similarity(t, c)
+            if sim > best_sim:
+                best_sim = sim
+                best_idx = i
+        if best_idx >= 0:
+            used.add(best_idx)
+            total_sim += best_sim
+
+    avg = total_sim / len(target_list) if target_list else 0
+    return avg >= threshold
+
+
+def _name_similarity(a: str, b: str) -> float:
+    """Compute similarity between two normalized names."""
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return 0.95
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _adaptive_poll_interval(minutes_to_kickoff: float | None) -> int:
+    """Compute adaptive poll interval based on proximity to kickoff.
+
+    Returns interval in seconds.
+    """
+    if minutes_to_kickoff is None:
+        return 15  # unknown → be aggressive
+
+    if minutes_to_kickoff > 10:
+        return 60   # longe → economizar API
+    elif minutes_to_kickoff > 3:
+        return 15   # perto → ficar atento
+    else:
+        return 10   # urgente → máxima frequência
+
+
+class OddsMonitor:
+    """
+    For each identified return match, polls bet365 for player goals odds.
+    When a line (1.5/2.5/3.5/4.5) has edge, triggers the Alert Engine.
+
+    AUDITORIA 2026-03-26: Max 30 tasks simultâneas + cleanup automático de zombies.
+    """
+
+    _MAX_MONITOR_SECONDS: int = 45 * 60  # 45 min máximo por partida
+    _MAX_CONCURRENT_TASKS: int = 30      # máximo de tasks simultâneas
+
+    def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15) -> None:
+        self.api = api_client
+        self.odds_repo = odds_repo
+        self.alert_engine = alert_engine
+        self.match_repo = match_repo  # PROBLEMA 9 fix: acesso direto ao repo
+        self.poll_interval = poll_interval  # default, overridden by adaptive logic
+        self._tasks: dict[int, asyncio.Task] = {}
+        self._task_started: dict[int, float] = {}  # match_id → monotonic start time
+
+    async def start_monitoring(
+        self,
+        return_match,
+        game1_match,
+        loser: str,
+        winner: str,
+        loser_goals_g1: int = 0,
+    ) -> None:
+        """Begin monitoring odds for a return match."""
+        match_id = return_match.id
+        if match_id in self._tasks:
+            logger.debug(f"Already monitoring return match {match_id}")
+            return
+
+        # Cleanup zombie tasks (done/cancelled mas ainda no dict)
+        self._cleanup_dead_tasks()
+
+        # Cap de tasks simultâneas
+        if len(self._tasks) >= self._MAX_CONCURRENT_TASKS:
+            logger.warning(
+                f"OddsMonitor at capacity ({len(self._tasks)} tasks), "
+                f"skipping match {match_id}"
+            )
+            return
+
+        # Pre-filtro: consultar historico REAL de todas as linhas do jogador
+        o15_rate = 0.76
+        o25_rate = 0.52
+        o35_rate = 0.28
+        o45_rate = 0.13
+        try:
+            # PROBLEMA 9 fix: usar match_repo diretamente em vez de cadeia de objetos
+            repo = self.match_repo or self.alert_engine.stats.matches
+            matches = await repo.get_return_matches_by_player(loser)
+
+            if len(matches) >= 10:
+                o15_c = o25_c = o35_c = o45_c = 0
+                for m in matches:
+                    goals = m.score_home if m.player_home == loser else m.score_away
+                    if goals is None:
+                        continue
+                    if goals > 1: o15_c += 1
+                    if goals > 2: o25_c += 1
+                    if goals > 3: o35_c += 1
+                    if goals > 4: o45_c += 1
+                n = len(matches)
+                o15_rate = o15_c / n
+                o25_rate = o25_c / n
+                o35_rate = o35_c / n
+                o45_rate = o45_c / n
+
+                best_rate = max(o15_rate, o25_rate, o35_rate, o45_rate)
+                realistic_max = best_rate * 1.15
+                if realistic_max < 0.68:
+                    logger.info(
+                        f"Skip monitoring {loser} (match {match_id}): "
+                        f"O1.5={o15_rate:.0%} O2.5={o25_rate:.0%} O3.5={o35_rate:.0%} "
+                        f"max={realistic_max:.0%} < 68%"
+                    )
+                    return
+        except Exception as e:
+            logger.debug(f"Pre-filter check failed for {loser}: {e}")
+
+        task = asyncio.create_task(
+            self._monitor_loop(return_match, game1_match, loser, winner, loser_goals_g1),
+            name=f"odds_monitor_{match_id}",
+        )
+        self._tasks[match_id] = task
+        self._task_started[match_id] = time.monotonic()
+        logger.info(f"Started odds monitoring for return match {match_id} ({loser} as loser, g1_goals={loser_goals_g1})")
+
+        # Enviar aviso de "possível sinal" com probabilidades do motor completo
+        try:
+            kickoff = return_match.started_at
+            if kickoff:
+                from zoneinfo import ZoneInfo
+                if kickoff.tzinfo is None:
+                    kickoff = kickoff.replace(tzinfo=timezone.utc)
+                kickoff_brt = kickoff.astimezone(ZoneInfo("America/Sao_Paulo"))
+                kickoff_str = kickoff_brt.strftime("%H:%M")
+            else:
+                kickoff_str = "?"
+                kickoff_brt = None
+            score_g1 = f"{game1_match.score_home}-{game1_match.score_away}"
+
+            stats = self.alert_engine.stats
+            winner_score = max(game1_match.score_home or 0, game1_match.score_away or 0)
+            loser_score = min(game1_match.score_home or 0, game1_match.score_away or 0)
+
+            # Identificar times do perdedor e oponente em G1
+            loser_team = game1_match.team_home if game1_match.player_home == loser else game1_match.team_away
+            opp_team = game1_match.team_home if game1_match.player_home == winner else game1_match.team_away
+
+            match_time_utc = kickoff or datetime.now(timezone.utc)
+
+            # Usar motor completo (13 layers) — odds placeholder 2.0 pois só usamos true_prob
+            eval_result = await stats.evaluate_opportunity(
+                losing_player=loser,
+                opponent_player=winner,
+                game1_score_winner=winner_score,
+                game1_score_loser=loser_score,
+                over25_odds=2.0,
+                over35_odds=2.0,
+                over45_odds=2.0,
+                over15_odds=2.0,
+                ml_odds=2.60,
+                match_time=match_time_utc,
+                loser_team=loser_team,
+                opponent_team=opp_team,
+                loser_goals_g1=loser_goals_g1,
+            )
+            tp15 = eval_result.line_over15.true_prob if eval_result.line_over15 else 0.0
+            tp25 = eval_result.line_over25.true_prob if eval_result.line_over25 else 0.0
+            tp35 = eval_result.line_over35.true_prob if eval_result.line_over35 else 0.0
+            tp45 = eval_result.line_over45.true_prob if eval_result.line_over45 else 0.0
+            tp_ml = eval_result.line_ml.true_prob if eval_result.line_ml else 0.0
+
+            lines = []
+            if tp_ml >= 0.45:
+                lines.append(f"ML ({tp_ml:.0%})")
+            if tp15 >= 0.68:
+                lines.append(f"O1.5 ({tp15:.0%})")
+            if tp25 >= 0.68:
+                lines.append(f"O2.5 ({tp25:.0%})")
+            if tp35 >= 0.68:
+                lines.append(f"O3.5 ({tp35:.0%})")
+            if tp45 >= 0.68:
+                lines.append(f"O4.5 ({tp45:.0%})")
+
+            if lines:
+                lines_str = " | ".join(lines)
+                msg = (
+                    f"👀 <b>Possível sinal</b>\n"
+                    f"\n"
+                    f"{game1_match.player_home} ({game1_match.team_home}) "
+                    f"{score_g1} "
+                    f"{game1_match.player_away} ({game1_match.team_away})\n"
+                    f"\n"
+                    f"Perdedor: <b>{loser}</b> ({loser_goals_g1}g em G1)\n"
+                    f"Linhas: {lines_str}\n"
+                    f"Kickoff G2: {kickoff_str}\n"
+                    f"Aguardando odds..."
+                )
+                await self.alert_engine.notifier.send_message(msg)
+        except Exception as e:
+            logger.error(f"Could not send monitoring alert: {e}")
+
+    async def _monitor_loop(
+        self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
+    ) -> None:
+        """Poll bet365 for player goals odds until game ends or alert sent.
+
+        MELHORIA 4: Usa _adaptive_poll_interval() para variar a frequência
+        de polling baseado na proximidade ao kickoff.
+        """
+        match_id = return_match.id
+        alert_sent = False
+        _monitor_started = time.monotonic()
+
+        _consecutive_errors = 0
+        try:
+            while True:
+                # Timeout de segurança: máximo 45 min de monitoramento
+                if time.monotonic() - _monitor_started > self._MAX_MONITOR_SECONDS:
+                    logger.info(f"Match {match_id}: timeout de 45min atingido, encerrando monitor")
+                    break
+
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                kickoff = return_match.started_at
+
+                # Stop 4 min after kickoff
+                if kickoff and (now - kickoff).total_seconds() > 240:
+                    logger.info(f"Match {match_id}: 4min past kickoff, stopping monitor")
+                    break
+
+                # Calculate minutes to/from kickoff
+                minutes_left = None
+                if kickoff:
+                    minutes_left = (kickoff - now).total_seconds() / 60
+
+                # MELHORIA 4: Intervalo adaptativo
+                interval = _adaptive_poll_interval(minutes_left)
+
+                # Esperar até 3 min antes do kickoff sem fazer requests
+                if minutes_left is not None and minutes_left > 3:
+                    wait = max(10, (minutes_left - 3) * 60)
+                    logger.debug(f"Match {match_id}: {minutes_left:.0f}min pro kickoff, dormindo {wait:.0f}s")
+                    await asyncio.sleep(wait)
+                    continue
+
+                try:
+                    # Buscar odds bet365 do jogador (com fuzzy matching)
+                    loser_odds, bet365_url, matched_ev = await self._fetch_loser_odds(return_match, loser)
+
+                    if loser_odds is None and matched_ev is None:
+                        await asyncio.sleep(interval)
+                        continue
+                    if loser_odds is None:
+                        loser_odds = []
+
+                    # Extract lines: 1.5, 2.5, 3.5, 4.5
+                    over15_odds = None
+                    over25_odds = None
+                    over35_odds = None
+                    over45_odds = None
+
+                    for po in loser_odds:
+                        if po.line == 1.5:
+                            over15_odds = po.over_odds
+                        elif po.line == 2.5:
+                            over25_odds = po.over_odds
+                        elif po.line == 3.5:
+                            over35_odds = po.over_odds
+                        elif po.line == 4.5:
+                            over45_odds = po.over_odds
+
+                    # ML odds: buscar 1X2 (match result) da mesma partida
+                    ml_odds = None
+                    try:
+                        mr = await self.api.bet365_get_match_result_odds(matched_ev.fi)
+                        if mr:
+                            loser_norm = _normalize_player(loser)
+                            if _name_similarity(loser_norm, _normalize_player(matched_ev.home_player)) >= 0.80:
+                                ml_odds = mr.home_odds
+                            elif _name_similarity(loser_norm, _normalize_player(matched_ev.away_player)) >= 0.80:
+                                ml_odds = mr.away_odds
+                    except Exception as e:
+                        logger.debug(f"Could not fetch ML odds for {loser}: {e}")
+
+                    best_odds = over25_odds or over35_odds or over15_odds or over45_odds or ml_odds
+                    if not best_odds:
+                        await asyncio.sleep(interval)
+                        continue
+
+                    # Save snapshots (rollback on failure to prevent session corruption)
+                    for label, odds_val in [("over_1.5", over15_odds), ("over_2.5", over25_odds),
+                                             ("over_3.5", over35_odds), ("over_4.5", over45_odds),
+                                             ("ml", ml_odds)]:
+                        if odds_val:
+                            try:
+                                await self.odds_repo.save_snapshot(
+                                    match_id=match_id, player=loser,
+                                    market=label, odds_value=odds_val,
+                                )
+                            except Exception:
+                                try:
+                                    await self.odds_repo.session.rollback()
+                                except Exception:
+                                    pass
+
+                    # Log what we found
+                    lines_str = " | ".join(
+                        f"O{l}@{o:.2f}" for l, o in
+                        [(1.5, over15_odds), (2.5, over25_odds), (3.5, over35_odds), (4.5, over45_odds)]
+                        if o
+                    )
+                    if ml_odds:
+                        lines_str += f" | ML@{ml_odds:.2f}"
+                    logger.info(f"Bet365 odds for {loser} (match {match_id}): {lines_str}")
+
+                    # Get opening odds
+                    over25_opening = None
+                    try:
+                        history = await self.odds_repo.get_history(match_id, loser, "over_2.5")
+                        if history:
+                            over25_opening = history[0].odds_value
+                    except Exception:
+                        history = []
+
+                    # Garantir sessão limpa antes de avaliar
+                    try:
+                        await self.odds_repo.session.commit()
+                    except Exception:
+                        try:
+                            await self.odds_repo.session.rollback()
+                        except Exception:
+                            pass
+
+                    # Evaluate and alert (only once, permite ate 3 min apos kickoff)
+                    if not alert_sent and (minutes_left is None or minutes_left >= -3):
+                        sent = await self.alert_engine.evaluate_and_alert(
+                            return_match=return_match,
+                            game1_match=game1_match,
+                            loser=loser,
+                            winner=winner,
+                            over25_odds=over25_odds or 0.0,
+                            over35_odds=over35_odds,
+                            over45_odds=over45_odds,
+                            over15_odds=over15_odds,
+                            ml_odds=ml_odds,
+                            over25_opening=over25_opening,
+                            minutes_to_kickoff=int(minutes_left) if minutes_left is not None else 0,
+                            odds_history=history,
+                            loser_goals_g1=loser_goals_g1,
+                            bet365_url=bet365_url or "",
+                        )
+                        if sent:
+                            alert_sent = True
+                            logger.info(f"Alert sent for return match {match_id}")
+
+                    _consecutive_errors = 0
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    _consecutive_errors += 1
+                    logger.warning(
+                        f"Odds monitor cycle error for {match_id} ({_consecutive_errors}/5): {e}"
+                    )
+                    if _consecutive_errors >= 5:
+                        logger.error(f"Match {match_id}: 5 consecutive errors, stopping monitor")
+                        break
+                    try:
+                        await self.odds_repo.session.rollback()
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(interval)
+
+        except asyncio.CancelledError:
+            logger.debug(f"Odds monitor for {match_id} cancelled")
+        finally:
+            self._tasks.pop(match_id, None)
+            self._task_started.pop(match_id, None)
+
+    async def _fetch_loser_odds(self, return_match, loser: str):
+        """Find bet365 FI for the match and return player goals odds for the loser.
+
+        Uses fuzzy matching to tolerate name differences between BetsAPI and Bet365.
+        Returns (loser_odds, bet365_url, matched_event) or (None, None, None).
+        """
+        try:
+            inplay = await self.api.bet365_get_inplay_esoccer()
+
+            target_players = {
+                _normalize_player(return_match.player_home),
+                _normalize_player(return_match.player_away),
+            }
+
+            matched_ev = None
+            best_similarity = 0.0
+
+            for ev in inplay:
+                ev_players = {
+                    _normalize_player(ev.home_player),
+                    _normalize_player(ev.away_player),
+                }
+
+                if ev_players == target_players:
+                    matched_ev = ev
+                    break
+
+                if _fuzzy_match_players(target_players, ev_players, threshold=0.80):
+                    t_list = sorted(target_players)
+                    e_list = sorted(ev_players)
+                    sim = (_name_similarity(t_list[0], e_list[0]) + _name_similarity(t_list[1], e_list[1])) / 2
+                    sim2 = (_name_similarity(t_list[0], e_list[1]) + _name_similarity(t_list[1], e_list[0])) / 2
+                    score = max(sim, sim2)
+
+                    if score > best_similarity:
+                        best_similarity = score
+                        matched_ev = ev
+
+            if matched_ev is None:
+                logger.debug(f"Match {return_match.id} not found in bet365 inplay yet")
+                return None, None, None
+
+            if best_similarity > 0 and best_similarity < 1.0:
+                logger.info(
+                    f"Fuzzy matched bet365 event for match {return_match.id}: "
+                    f"{matched_ev.home_player} vs {matched_ev.away_player} "
+                    f"(similarity={best_similarity:.2f})"
+                )
+
+            all_odds = await self.api.bet365_get_player_goals_odds(matched_ev.fi)
+
+            loser_norm = _normalize_player(loser)
+            loser_odds = []
+            for o in all_odds:
+                o_norm = _normalize_player(o.player_name)
+                if o_norm == loser_norm:
+                    loser_odds.append(o)
+                elif _name_similarity(o_norm, loser_norm) >= 0.85:
+                    logger.debug(
+                        f"Fuzzy matched loser odds: '{o.player_name}' ≈ '{loser}' "
+                        f"(sim={_name_similarity(o_norm, loser_norm):.2f})"
+                    )
+                    loser_odds.append(o)
+
+            if not loser_odds:
+                logger.debug(f"No goals market for {loser} in bet365 event {matched_ev.fi}")
+                # Mesmo sem goals market, retornar matched_ev para ML odds
+                safe_url = getattr(matched_ev, 'bet365_url', None) or ""
+                return None, safe_url, matched_ev
+
+            # PROBLEMA 10 fix: tratamento defensivo de bet365_url
+            safe_url = getattr(matched_ev, 'bet365_url', None) or ""
+            return loser_odds, safe_url, matched_ev
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch bet365 odds for {loser}: {e}")
+            return None, None, None
+
+    def _cleanup_dead_tasks(self) -> None:
+        """Remove tasks that are done, cancelled, or timed out."""
+        now = time.monotonic()
+        dead = []
+        for mid, task in self._tasks.items():
+            if task.done() or task.cancelled():
+                dead.append(mid)
+            elif mid in self._task_started and now - self._task_started[mid] > self._MAX_MONITOR_SECONDS + 60:
+                # Zombie: exceeded max time + 1 min grace
+                task.cancel()
+                dead.append(mid)
+                logger.warning(f"Killed zombie odds monitor for match {mid}")
+        for mid in dead:
+            self._tasks.pop(mid, None)
+            self._task_started.pop(mid, None)
+
+    def stop_monitoring(self, match_id: int) -> None:
+        """Cancel monitoring for a specific match."""
+        task = self._tasks.pop(match_id, None)
+        if task:
+            task.cancel()
+            logger.debug(f"Stopped monitoring return match {match_id}")
+
+    def stop_all(self) -> None:
+        """Cancel all monitoring tasks."""
+        for task in self._tasks.values():
+            task.cancel()
+        self._tasks.clear()
+        self._task_started.clear()
+        logger.info("All odds monitors stopped")
+
+    @property
+    def active_count(self) -> int:
+        return len(self._tasks)
