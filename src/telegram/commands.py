@@ -307,8 +307,9 @@ class BotCommands:
                         hit = gols > 2
 
                     resultado = "🟢" if hit else "🔴"
-                    p = ((odds or 1.0) - 1.0) if hit else -1.0
-                    total_profit += p
+                    if odds:
+                        p = (odds - 1.0) if hit else -1.0
+                        total_profit += p
                     if hit:
                         greens += 1
                 else:
