@@ -264,7 +264,7 @@ class MatchRepository(_BaseRepository):
     async def get_unlinked_matches(self, days_back: int = 90) -> Sequence[Match]:
         """Return unlinked (no pair) non-return matches within the last days_back days."""
         async with self._session() as session:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).replace(tzinfo=None)
             stmt = (
                 select(Match)
                 .where(
@@ -522,7 +522,7 @@ class AlertRepository(_BaseRepository):
     async def get_period_stats(self, days: int = 50) -> Dict:
         """Return aggregated alert stats for the last N days."""
         async with self._session() as session:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
             base_filter = Alert.sent_at >= cutoff
 
             total = (
@@ -681,7 +681,7 @@ class AlertRepository(_BaseRepository):
     async def get_pnl_summary(self, days: int = 30) -> Dict:
         """Resumo de P&L dos ultimos N dias."""
         async with self._session() as session:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
             stmt = (
                 select(Alert)
                 .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
