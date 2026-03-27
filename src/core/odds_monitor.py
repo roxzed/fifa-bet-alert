@@ -111,6 +111,7 @@ class OddsMonitor:
         self.match_repo = match_repo  # PROBLEMA 9 fix: acesso direto ao repo
         self.poll_interval = poll_interval  # default, overridden by adaptive logic
         self._tasks: dict[int, asyncio.Task] = {}
+        self._task_meta: dict[int, dict] = {}  # match_id → {game1_match, loser, ...}
         self._task_started: dict[int, float] = {}  # match_id → monotonic start time
 
     async def start_monitoring(
@@ -124,8 +125,31 @@ class OddsMonitor:
         """Begin monitoring odds for a return match."""
         match_id = return_match.id
         if match_id in self._tasks:
-            logger.debug(f"Already monitoring return match {match_id}")
-            return
+            # Verificar se o novo G1 tem mesmos times que o return match (melhor par)
+            existing = self._task_meta.get(match_id, {})
+            old_g1 = existing.get("game1_match")
+            if old_g1 and return_match.team_home and game1_match.team_home:
+                ret_teams = {(return_match.team_home or "").lower(), (return_match.team_away or "").lower()}
+                new_teams = {(game1_match.team_home or "").lower(), (game1_match.team_away or "").lower()}
+                old_teams = {(getattr(old_g1, "team_home", "") or "").lower(), (getattr(old_g1, "team_away", "") or "").lower()}
+                new_match = ret_teams == new_teams
+                old_match = ret_teams == old_teams
+                if new_match and not old_match:
+                    logger.info(
+                        f"Replacing G1 for return match {match_id}: "
+                        f"old g1={old_g1.id} (wrong teams) -> new g1={game1_match.id} (correct teams)"
+                    )
+                    # Cancelar task antiga e reiniciar com G1 correto
+                    task = self._tasks.pop(match_id, None)
+                    self._task_meta.pop(match_id, None)
+                    if task and not task.done():
+                        task.cancel()
+                else:
+                    logger.debug(f"Already monitoring return match {match_id}")
+                    return
+            else:
+                logger.debug(f"Already monitoring return match {match_id}")
+                return
 
         # Cleanup zombie tasks (done/cancelled mas ainda no dict)
         self._cleanup_dead_tasks()
@@ -181,6 +205,7 @@ class OddsMonitor:
             name=f"odds_monitor_{match_id}",
         )
         self._tasks[match_id] = task
+        self._task_meta[match_id] = {"game1_match": game1_match, "loser": loser}
         self._task_started[match_id] = time.monotonic()
         logger.info(f"Started odds monitoring for return match {match_id} ({loser} as loser, g1_goals={loser_goals_g1})")
 
@@ -530,6 +555,7 @@ class OddsMonitor:
                 logger.warning(f"Killed zombie odds monitor for match {mid}")
         for mid in dead:
             self._tasks.pop(mid, None)
+            self._task_meta.pop(mid, None)
             self._task_started.pop(mid, None)
 
     def stop_monitoring(self, match_id: int) -> None:

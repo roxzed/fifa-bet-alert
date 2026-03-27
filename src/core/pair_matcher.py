@@ -190,12 +190,16 @@ class PairMatcher:
             if event_time is None or not (min_time <= event_time <= max_time):
                 continue
 
-            # Score de confiança: mesmos times = maior prioridade
-            score = 1
+            # OBRIGATORIO: times devem ser os mesmos do G1 (ida e volta = mesmos times)
+            # Sem match de times = par errado (outro confronto dos mesmos jogadores)
             if g1_teams and event.home_team and event.away_team:
                 event_teams = {event.home_team.lower().strip(), event.away_team.lower().strip()}
-                if _teams_match_fuzzy(g1_teams, event_teams):
-                    score = 10  # mesmos jogadores E mesmos times → match perfeito
+                if not _teams_match_fuzzy(g1_teams, event_teams):
+                    continue  # times diferentes = NAO eh a volta deste G1
+                score = 10
+            else:
+                # Sem dados de time: aceitar com score baixo (fallback)
+                score = 1
 
             # Bonus: mais perto do tempo esperado (~60 min) = melhor
             if event_time and g1_started:
@@ -467,11 +471,14 @@ class PairMatcher:
             if event_time is None or not (min_time <= event_time <= max_time):
                 continue
 
-            score = 1
+            # OBRIGATORIO: times devem ser os mesmos do G1
             if g1_teams and event.home_team and event.away_team:
                 event_teams = {event.home_team.lower().strip(), event.away_team.lower().strip()}
-                if _teams_match_fuzzy(g1_teams, event_teams):
-                    score = 10
+                if not _teams_match_fuzzy(g1_teams, event_teams):
+                    continue  # times diferentes = NAO eh a volta deste G1
+                score = 10
+            else:
+                score = 1
 
             if event_time and g1_started:
                 delta_min = (event_time - g1_started).total_seconds() / 60
