@@ -438,8 +438,8 @@ class StatsEngine:
         if not loss_stat or loss_stat.total_samples < 10:
             p_loss_25, p_loss_35, p_loss_45 = p_base_25, p_base_35, p_base_45
 
-        # Team probability (still needs its own query — different table)
-        p_team_25, n_team = await self.get_team_probability(loser_team, opponent_team)
+        # Team probability (inclui correlação jogador+time)
+        p_team_25, n_team = await self.get_team_probability(loser_team, opponent_team, losing_player)
         # Scale team rate proportionally for other lines using global base ratios
         if p_base_25 > 0:
             p_team_35 = p_team_25 * (p_base_35 / p_base_25)
@@ -1002,11 +1002,41 @@ class StatsEngine:
     async def get_player_team_factor(
         self, player_name: str, team_name: str | None
     ) -> tuple[float, int]:
-        """Fator baseado no combo JOGADOR + TIME especifico em G2."""
+        """Fator baseado no combo JOGADOR + TIME especifico em G2.
+
+        Usa PlayerTeamPreference (pré-computada) quando disponível,
+        com fallback para query direta na Match.
+        """
         if not team_name:
             return (1.0, 0)
         try:
-            from sqlalchemy import select, and_
+            # Tentar tabela pré-computada primeiro (rápido)
+            pref = await self.team_stats.get_player_team_preference(player_name, team_name)
+            if pref and pref.times_used >= 5:
+                combo_avg = pref.avg_goals_with
+                # Buscar média geral do jogador para comparar
+                key = f"player_general_{player_name}"
+                stat = self._cache.get(key)
+                if stat is None:
+                    stat = await self.method_stats.get(key)
+                if stat and stat.total_samples > 0 and stat.hit_rate_25 > 0:
+                    global_rate = stat.hit_rate_25
+                else:
+                    global_rate = 0.515
+
+                # combo_avg/2.5 como proxy de over25 rate vs global_rate
+                combo_proxy = max(0.20, min(0.90, combo_avg / 5.0))
+                factor = max(0.7, min(1.5, combo_proxy / global_rate)) if global_rate > 0 else 1.0
+
+                logger.debug(
+                    f"Player+team {player_name} c/ {team_name}: "
+                    f"avg={combo_avg:.1f} proxy={combo_proxy:.1%} vs global {global_rate:.1%} "
+                    f"→ fator {factor:.2f} (n={pref.times_used})"
+                )
+                return (factor, pref.times_used)
+
+            # Fallback: query direta na Match (lento, mas preciso para dados legacy)
+            from sqlalchemy import select
             from src.db.models import Match as MatchModel
 
             stmt = (
@@ -1056,7 +1086,7 @@ class StatsEngine:
             factor = max(0.7, min(1.5, combo_rate / global_rate)) if global_rate > 0 else 1.0
 
             logger.debug(
-                f"Player+team {player_name} c/ {team_name}: "
+                f"Player+team {player_name} c/ {team_name} (fallback): "
                 f"{combo_rate:.1%} vs global {global_rate:.1%} → fator {factor:.2f} (n={total})"
             )
             return (factor, total)
@@ -1607,19 +1637,46 @@ class StatsEngine:
             return (r25, r35, r45, n)
         return (stat.hit_rate_25, stat.hit_rate_35, stat.hit_rate_45, stat.total_samples)
 
-    async def get_team_probability(self, team_name: str | None, opponent_team: str | None) -> tuple[float, int]:
-        """Hit rate for a team or matchup."""
+    async def get_team_probability(
+        self,
+        team_name: str | None,
+        opponent_team: str | None,
+        player_name: str | None = None,
+    ) -> tuple[float, int]:
+        """Hit rate for a team, matchup, or player+team combo.
+
+        Prioridade:
+        1. Matchup especifico (team vs opponent) se n >= min_team_sample
+        2. Player+team combo (PlayerTeamPreference) se n >= 5
+        3. Team generico se n >= min_team_sample
+        4. Default 0.50
+        """
         if not team_name:
             return (0.50, 0)
         try:
-            team_stat = await self.team_stats.get_or_create(team_name)
-            if team_stat.total_games < settings.min_team_sample:
-                return (0.50, team_stat.total_games)
+            # 1. Matchup especifico
             if opponent_team:
                 matchup = await self.team_stats.get_matchup_stats(team_name, opponent_team)
                 if matchup and matchup.total_games >= settings.min_team_sample:
                     return (matchup.over25_rate, matchup.total_games)
-            return (team_stat.over25_rate, team_stat.total_games)
+
+            # 2. Player+team combo (mais valioso que time generico)
+            if player_name:
+                pref = await self.team_stats.get_player_team_preference(player_name, team_name)
+                if pref and pref.times_used >= 5:
+                    # avg_goals_with é média de gols do jogador com este time
+                    # Converter para proxy de over25_rate: P(goals > 2)
+                    # Usando relação empírica: se média é X, P(>2) ≈ clip(X/5, 0.2, 0.9)
+                    avg = pref.avg_goals_with
+                    over25_proxy = max(0.20, min(0.90, avg / 5.0))
+                    return (over25_proxy, pref.times_used)
+
+            # 3. Team generico
+            team_stat = await self.team_stats.get_or_create(team_name)
+            if team_stat.total_games >= settings.min_team_sample:
+                return (team_stat.over25_rate, team_stat.total_games)
+
+            return (0.50, team_stat.total_games)
         except Exception:
             return (0.50, 0)
 
@@ -1782,6 +1839,24 @@ class StatsEngine:
                 actual_goals=actual_goals,
                 loss_type=getattr(alert, 'loss_type', 'tight'),
             )
+
+            # Update team stats for G2 (return match)
+            try:
+                match = await self.matches.get_by_id(getattr(alert, 'match_id', 0))
+                if match and match.is_return_match:
+                    h_team, a_team = match.team_home, match.team_away
+                    h_goals = match.score_home or 0
+                    a_goals = match.score_away or 0
+                    if h_team:
+                        await self.team_stats.update_stats(h_team, goals_scored=h_goals, goals_conceded=a_goals)
+                        await self.team_stats.update_player_team_preference(match.player_home, h_team, h_goals)
+                    if a_team:
+                        await self.team_stats.update_stats(a_team, goals_scored=a_goals, goals_conceded=h_goals)
+                        await self.team_stats.update_player_team_preference(match.player_away, a_team, a_goals)
+                    if h_team and a_team:
+                        await self.team_stats.update_matchup_stats(h_team, a_team, h_goals + a_goals)
+            except Exception as e:
+                logger.debug(f"Team stats G2 update failed (non-critical): {e}")
 
             logger.info(
                 f"Stats updated for alert {alert_id}: "

@@ -248,6 +248,21 @@ class GameWatcher:
         except Exception as e:
             logger.debug(f"Teams/players save failed (non-critical): {e}")
 
+        # Atualizar team_stats, matchup_stats e player_team_preferences (best-effort)
+        try:
+            h_team, a_team = event.home_team, event.away_team
+            h_goals, a_goals = event.home_score, event.away_score
+            if h_team:
+                await self.teams.update_stats(h_team, goals_scored=h_goals, goals_conceded=a_goals)
+                await self.teams.update_player_team_preference(event.home_name, h_team, h_goals)
+            if a_team:
+                await self.teams.update_stats(a_team, goals_scored=a_goals, goals_conceded=h_goals)
+                await self.teams.update_player_team_preference(event.away_name, a_team, a_goals)
+            if h_team and a_team:
+                await self.teams.update_matchup_stats(h_team, a_team, h_goals + a_goals)
+        except Exception as e:
+            logger.debug(f"Team stats update failed (non-critical): {e}")
+
         if event.home_score == event.away_score:
             logger.debug(f"Draw game {event.id}, skipping pair matching")
             return
