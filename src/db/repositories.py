@@ -732,7 +732,7 @@ class AlertRepository(_BaseRepository):
     async def get_player_performance(self, days: int = 30, min_alerts: int = 2) -> List[Dict]:
         """Return per-player performance stats sorted by profit."""
         async with self._session() as session:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
             stmt = (
                 select(Alert)
                 .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
@@ -864,7 +864,7 @@ class AlertRepository(_BaseRepository):
     async def get_weekly_breakdown(self, weeks: int = 4) -> List[Dict]:
         """Return P&L breakdown by week for the last N weeks."""
         async with self._session() as session:
-            cutoff = datetime.now(timezone.utc) - timedelta(weeks=weeks)
+            cutoff = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).replace(tzinfo=None)
             stmt = (
                 select(Alert)
                 .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
