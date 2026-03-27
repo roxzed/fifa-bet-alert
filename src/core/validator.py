@@ -1,9 +1,11 @@
 """Post-game validator: checks return match results, edits Telegram alerts, exports to CSV.
 
-Correcoes (2026-03-26):
-- Sessao isolada por validacao: cada _validate_match usa sua propria sessao
-  via context manager, evitando corrupcao de sessao por timeout/rollback.
-- Rollback defensivo antes de cada ciclo para garantir estado limpo.
+Robustez (2026-03-27):
+- Retry com backoff individual por match/alert em caso de falha parcial.
+- Limite de tentativas (MAX_RETRIES) para evitar loop infinito em alertas quebrados.
+- Proteção contra odds None no cálculo de P&L.
+- CSV export isolado: copia atributos antes de acessar fora da session.
+- Greenlet-safe: nenhum acesso lazy a ORM objects fora de contexto async.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import asyncio
 import csv
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from loguru import logger
 
@@ -25,6 +28,9 @@ class Validator:
     """
 
     CSV_PATH = Path("data/results.csv")
+    MAX_RETRIES = 10  # max validation attempts per alert before giving up
+    MIN_ELAPSED_SECS = 13 * 60  # 13 min after kickoff before validating
+    STALE_HOURS = 48  # skip matches older than this
 
     def __init__(self, api_client, match_repo, alert_repo, stats_engine, notifier,
                  session_factory=None) -> None:
@@ -34,6 +40,8 @@ class Validator:
         self.stats = stats_engine
         self.notifier = notifier
         self._running = False
+        # Track per-alert retry counts to avoid infinite loops
+        self._retry_counts: dict[int, int] = {}
 
     async def start(self, poll_interval: int = 60) -> None:
         """Start validation loop with circuit breaker."""
@@ -68,20 +76,46 @@ class Validator:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         for return_match in unvalidated:
+            # Skip stale matches that have been stuck too long
             if return_match.started_at:
-                elapsed = (now - return_match.started_at).total_seconds()
-                if elapsed < 13 * 60:
-                    remaining = 13 * 60 - elapsed
-                    logger.debug(
-                        f"Match {return_match.id}: aguardando "
-                        f"{remaining / 60:.0f}min para validar"
+                age_hours = (now - return_match.started_at).total_seconds() / 3600
+                if age_hours > self.STALE_HOURS:
+                    logger.warning(
+                        f"Match {return_match.id}: stale ({age_hours:.0f}h old), "
+                        f"marking alerts as abandoned"
                     )
+                    await self._abandon_match_alerts(return_match.id)
+                    continue
+
+                elapsed = (now - return_match.started_at).total_seconds()
+                if elapsed < self.MIN_ELAPSED_SECS:
                     continue
 
             try:
                 await self._validate_match(return_match)
             except Exception as e:
                 logger.error(f"Failed to validate match {return_match.id}: {e}")
+
+    async def _abandon_match_alerts(self, match_id: int) -> None:
+        """Mark stale alerts as validated with 0 profit to stop retrying."""
+        all_alerts = await self.alerts.get_all_by_match_id(match_id)
+        for alert in all_alerts:
+            if alert.validated_at:
+                continue
+            try:
+                await self.alerts.validate(
+                    alert_id=alert.id,
+                    actual_goals=-1,
+                    over25_hit=False,
+                    over35_hit=False,
+                    over15_hit=False,
+                    over45_hit=False,
+                    profit_flat=0.0,
+                    ml_hit=False,
+                )
+                logger.info(f"Abandoned stale alert {alert.id} (match {match_id})")
+            except Exception as e:
+                logger.error(f"Failed to abandon alert {alert.id}: {e}")
 
     async def _validate_match(self, return_match) -> None:
         """Fetch final score for a return match, edit alert message, export to CSV."""
@@ -103,7 +137,6 @@ class Validator:
             match_id=return_match.id,
             score_home=details.home_score,
             score_away=details.away_score,
-            status="ended",
             ended_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
@@ -117,10 +150,39 @@ class Validator:
         for alert in all_alerts:
             if alert.validated_at:
                 continue
+
+            # Check retry limit
+            retries = self._retry_counts.get(alert.id, 0)
+            if retries >= self.MAX_RETRIES:
+                logger.error(
+                    f"Alert {alert.id} exceeded {self.MAX_RETRIES} retries, abandoning"
+                )
+                try:
+                    await self.alerts.validate(
+                        alert_id=alert.id,
+                        actual_goals=-1,
+                        over25_hit=False,
+                        over35_hit=False,
+                        over15_hit=False,
+                        over45_hit=False,
+                        profit_flat=0.0,
+                        ml_hit=False,
+                    )
+                except Exception:
+                    pass
+                self._retry_counts.pop(alert.id, None)
+                continue
+
             try:
                 await self._validate_alert(alert, return_match, details)
+                # Success — clean up retry counter
+                self._retry_counts.pop(alert.id, None)
             except Exception as e:
-                logger.error(f"Failed to validate alert {alert.id}: {e}")
+                self._retry_counts[alert.id] = retries + 1
+                logger.error(
+                    f"Failed to validate alert {alert.id} "
+                    f"(attempt {retries + 1}/{self.MAX_RETRIES}): {e}"
+                )
 
     async def _validate_alert(self, alert, return_match, details) -> None:
         """Validate a single alert against match result."""
@@ -155,22 +217,11 @@ class Validator:
         over35_hit = loser_goals > 3
         over45_hit = loser_goals > 4
 
-        # P&L flat-bet
-        if best_line == "ml":
-            odds_used = getattr(alert, "ml_odds", None) or 2.60
-        elif best_line == "over45":
-            odds_used = alert.over45_odds
-        elif best_line == "over35":
-            odds_used = alert.over35_odds
-        elif best_line == "over15":
-            odds_used = alert.over15_odds
-        else:
-            odds_used = alert.over25_odds
+        # Resolve odds (protect against None)
+        odds_used = self._get_odds_for_line(alert, best_line)
+        profit_flat = (odds_used - 1.0) if hit and odds_used else (-1.0 if odds_used else 0.0)
 
-        profit_flat = (odds_used - 1.0) if hit else -1.0
-
-        over25_hit = loser_goals > 2
-        over35_hit = loser_goals > 3
+        # Persist validation — this is the critical DB write
         await self.alerts.validate(
             alert_id=alert.id,
             actual_goals=loser_goals,
@@ -182,7 +233,15 @@ class Validator:
             ml_hit=ml_hit,
         )
 
-        # Update stats (sem re-validar o alerta)
+        # === From here on, everything is best-effort (non-critical) ===
+        # Copy all values we need BEFORE any further DB/async calls
+        # to avoid greenlet_spawn errors from lazy ORM attribute access
+        csv_data = self._extract_csv_data(
+            alert, return_match, details, hit, best_line, line_label,
+            loser_goals, odds_used, profit_flat,
+        )
+
+        # Update stats
         try:
             await self.stats.update_after_validation(
                 alert_id=alert.id,
@@ -195,6 +254,82 @@ class Validator:
         score_line = f"{details.home_score}-{details.away_score} ({loser} fez {loser_goals} gols)"
 
         # Edit Telegram message (or send standalone if message_id missing)
+        await self._send_result_notification(
+            alert, return_match, hit, score_line, line_label, odds_used, profit_flat,
+        )
+
+        # Export to CSV (sync, uses pre-extracted data)
+        try:
+            self._export_to_csv(csv_data)
+        except Exception as e:
+            logger.warning(f"CSV export error: {e}")
+
+        logger.info(
+            f"Validated: {alert.losing_player} {line_label} — "
+            f"{'GREEN' if hit else 'RED'} ({score_line})"
+        )
+
+        # Drawdown auto-pause after RED
+        if not hit:
+            try:
+                await self._check_drawdown()
+            except Exception as e:
+                logger.debug(f"Drawdown check failed: {e}")
+
+    def _get_odds_for_line(self, alert, best_line: str) -> Optional[float]:
+        """Extract the correct odds value for the alert's best line."""
+        if best_line == "ml":
+            return getattr(alert, "ml_odds", None) or 2.60
+        elif best_line == "over45":
+            return getattr(alert, "over45_odds", None)
+        elif best_line == "over35":
+            return getattr(alert, "over35_odds", None)
+        elif best_line == "over15":
+            return getattr(alert, "over15_odds", None)
+        else:
+            return getattr(alert, "over25_odds", None)
+
+    def _extract_csv_data(self, alert, return_match, details, hit, best_line,
+                          line_label, loser_goals, odds_used, profit_flat) -> dict:
+        """Extract all data needed for CSV export while ORM objects are still alive.
+
+        This prevents greenlet_spawn errors from lazy attribute access later.
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            from src.config import settings
+            tz_local = ZoneInfo(settings.timezone)
+        except Exception:
+            tz_local = timezone(timedelta(hours=-3))
+
+        sent_at = getattr(alert, "sent_at", None)
+        if sent_at:
+            sent_local = sent_at.replace(tzinfo=timezone.utc).astimezone(tz_local)
+        else:
+            sent_local = datetime.now(tz_local)
+
+        return {
+            "alert_id": alert.id,
+            "date": sent_local.strftime("%Y-%m-%d"),
+            "time": sent_local.strftime("%H:%M"),
+            "losing_player": alert.losing_player,
+            "line_label": line_label,
+            "odds": f"{odds_used:.2f}" if odds_used else "",
+            "true_prob": f"{alert.true_prob:.1%}" if alert.true_prob else "",
+            "result": "GREEN" if hit else "RED",
+            "score": f"{details.home_score}-{details.away_score}",
+            "loser_goals": loser_goals,
+            "green": 1 if hit else 0,
+            "profit": f"{profit_flat:.2f}" if profit_flat is not None else "0.00",
+            "player_home": return_match.player_home,
+            "player_away": return_match.player_away,
+            "team_home": return_match.team_home or "",
+            "team_away": return_match.team_away or "",
+        }
+
+    async def _send_result_notification(self, alert, return_match, hit, score_line,
+                                        line_label, odds_used, profit_flat) -> None:
+        """Edit original Telegram message or send standalone result."""
         edited = False
         if alert.telegram_message_id:
             try:
@@ -213,38 +348,21 @@ class Validator:
                 logger.warning(f"Could not edit alert message {alert.telegram_message_id}: {e}")
 
         if not edited:
-            # Fallback: enviar mensagem standalone com resultado
             emoji = "\u2705" if hit else "\u274c"
+            odds_str = f"{odds_used:.2f}" if odds_used else "?.??"
+            profit_str = f"{profit_flat:+.2f}" if profit_flat is not None else "+0.00"
             result_text = (
                 f"{emoji} <b>RESULTADO {'GREEN' if hit else 'RED'}</b>\n\n"
                 f"\U0001f464 {alert.losing_player}\n"
-                f"\U0001f3af {line_label} @{odds_used:.2f}\n"
+                f"\U0001f3af {line_label} @{odds_str}\n"
                 f"\u26bd {score_line}\n"
-                f"\U0001f4b0 P&L: <b>{profit_flat:+.2f}u</b>"
+                f"\U0001f4b0 P&L: <b>{profit_str}u</b>"
             )
             try:
                 await self.notifier.send_message(result_text)
                 logger.info(f"Standalone result sent for alert {alert.id}")
             except Exception as e:
                 logger.warning(f"Could not send standalone result for alert {alert.id}: {e}")
-
-        # Export to CSV
-        try:
-            self._export_to_csv(alert, return_match, details, hit, best_line, line_label, loser_goals)
-        except Exception as e:
-            logger.warning(f"CSV export error: {e}")
-
-        logger.info(
-            f"Validated: {alert.losing_player} {line_label} — "
-            f"{'GREEN' if hit else 'RED'} ({score_line})"
-        )
-
-        # Drawdown auto-pause: checar apos cada RED
-        if not hit:
-            try:
-                await self._check_drawdown()
-            except Exception as e:
-                logger.debug(f"Drawdown check failed: {e}")
 
     async def _check_drawdown(self) -> None:
         """Pausa alertas se houver drawdown severo (5+ losses seguidas ou -5u)."""
@@ -337,9 +455,12 @@ class Validator:
             pass
         return False
 
-    def _export_to_csv(self, alert, return_match, details, hit: bool, best_line: str, line_label: str, loser_goals: int) -> None:
-        """Append result row to CSV spreadsheet (deduplicado por alert_id)."""
-        if self._already_in_csv(alert.id):
+    def _export_to_csv(self, data: dict) -> None:
+        """Append result row to CSV spreadsheet (deduplicado por alert_id).
+
+        Receives a plain dict (no ORM objects) to avoid greenlet issues.
+        """
+        if self._already_in_csv(data["alert_id"]):
             return
 
         file_exists = self.CSV_PATH.exists()
@@ -355,44 +476,21 @@ class Validator:
                     "player_home", "player_away", "team_home", "team_away",
                 ])
 
-            odds = None
-            if best_line == "ml":
-                odds = getattr(alert, "ml_odds", None)
-            elif best_line == "over45":
-                odds = alert.over45_odds
-            elif best_line == "over35":
-                odds = alert.over35_odds
-            elif best_line == "over15":
-                odds = alert.over15_odds
-            else:
-                odds = alert.over25_odds
-
-            profit = (odds - 1.0) if hit and odds else -1.0
-
-            try:
-                from zoneinfo import ZoneInfo
-                from src.config import settings
-                tz_local = ZoneInfo(settings.timezone)
-            except Exception:
-                tz_local = timezone(timedelta(hours=-3))
-
-            sent_local = alert.sent_at.replace(tzinfo=timezone.utc).astimezone(tz_local) if alert.sent_at else datetime.now(tz_local)
-
             writer.writerow([
-                alert.id,
-                sent_local.strftime("%Y-%m-%d"),
-                sent_local.strftime("%H:%M"),
-                alert.losing_player,
-                line_label,
-                f"{odds:.2f}" if odds else "",
-                f"{alert.true_prob:.1%}" if alert.true_prob else "",
-                "GREEN" if hit else "RED",
-                f"{details.home_score}-{details.away_score}",
-                loser_goals,
-                1 if hit else 0,
-                f"{profit:.2f}",
-                return_match.player_home,
-                return_match.player_away,
-                return_match.team_home or "",
-                return_match.team_away or "",
+                data["alert_id"],
+                data["date"],
+                data["time"],
+                data["losing_player"],
+                data["line_label"],
+                data["odds"],
+                data["true_prob"],
+                data["result"],
+                data["score"],
+                data["loser_goals"],
+                data["green"],
+                data["profit"],
+                data["player_home"],
+                data["player_away"],
+                data["team_home"],
+                data["team_away"],
             ])
