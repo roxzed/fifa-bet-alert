@@ -68,10 +68,8 @@ async def pnl(days: int = 30):
     try:
         factory = _get_session_factory()
         from src.db.repositories import AlertRepository
-        session = factory()
-        repo = AlertRepository(session)
+        repo = AlertRepository(factory)
         result = await repo.get_pnl_summary(days)
-        await session.close()
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -82,15 +80,16 @@ async def recent_alerts(limit: int = 20):
     """Alertas recentes."""
     try:
         factory = _get_session_factory()
+        from src.db.repositories import AlertRepository
+        repo = AlertRepository(factory)
         from src.db.models import Alert
         from sqlalchemy import select
-        session = factory()
         stmt = (
             select(Alert)
             .order_by(Alert.sent_at.desc())
             .limit(limit)
         )
-        result = await session.execute(stmt)
+        result = await repo.execute_query(stmt)
         alerts = result.scalars().all()
         data = []
         for a in alerts:
@@ -107,7 +106,6 @@ async def recent_alerts(limit: int = 20):
                 "sent_at": a.sent_at.isoformat() if a.sent_at else None,
                 "validated": a.validated_at is not None,
             })
-        await session.close()
         return data
     except Exception as e:
         return {"error": str(e)}
@@ -119,10 +117,8 @@ async def player_performance(min_alerts: int = 3, days: int = 30):
     try:
         factory = _get_session_factory()
         from src.db.repositories import AlertRepository
-        session = factory()
-        repo = AlertRepository(session)
+        repo = AlertRepository(factory)
         pnl = await repo.get_pnl_summary(days)
-        await session.close()
 
         players = []
         for name, stats in pnl.get("by_player", {}).items():

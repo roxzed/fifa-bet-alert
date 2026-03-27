@@ -35,11 +35,11 @@ async def main() -> None:
     logger.info("=" * 60)
 
     # --- DB ---
-    from src.db.database import init_db, get_session, async_session_factory
+    from src.db.database import init_db, async_session_factory
     await init_db()
     logger.info("Database initialized")
 
-    # --- Repositories (criados sob demanda com sessão própria) ---
+    # --- Repositories (session-per-method: cada chamada cria sessão isolada) ---
     from src.db.repositories import (
         AlertRepository,
         LeagueRepository,
@@ -50,20 +50,19 @@ async def main() -> None:
         TeamStatsRepository,
     )
 
-    # Sessão de bootstrap (curta, só para inicialização)
-    async with get_session() as session:
-        league_repo = LeagueRepository(session)
+    # Todas as repos recebem a factory — cada método cria sua própria sessão
+    sf = async_session_factory
 
-        # --- Find/create league ---
-        league = await league_repo.get_by_name(settings.default_league_name)
-        if not league:
-            league = await league_repo.create(
-                name=settings.default_league_name,
-                api_league_id=settings.default_league_id,
-            )
-            logger.info(f"Liga configurada: {league.name} (ID: {league.api_league_id})")
+    # --- Find/create league ---
+    league_repo = LeagueRepository(sf)
+    league = await league_repo.get_by_name(settings.default_league_name)
+    if not league:
+        league = await league_repo.create(
+            name=settings.default_league_name,
+            api_league_id=settings.default_league_id,
+        )
+        logger.info(f"Liga configurada: {league.name} (ID: {league.api_league_id})")
 
-    # Guardar dados da liga para uso posterior (fora da sessão)
     league_name = league.name
     league_api_id = league.api_league_id
 
@@ -84,20 +83,14 @@ async def main() -> None:
         chat_id=settings.telegram_chat_id,
     )
 
-    # --- Sessões separadas para componentes concorrentes ---
-    # Sessão 1: game_watcher + pair_matcher (fluxo sequencial)
-    gw_session = async_session_factory()
-    # Sessão 2: stats_engine + alert_engine + odds_monitor (tasks assíncronas)
-    alert_session = async_session_factory()
-
-    # --- Stats Engine (sessão isolada do alert flow) ---
+    # --- Stats Engine ---
     from src.core.stats_engine import StatsEngine
     stats_engine = StatsEngine(
-        match_repo=MatchRepository(alert_session),
-        player_repo=PlayerRepository(alert_session),
-        alert_repo=AlertRepository(alert_session),
-        method_stats_repo=MethodStatsRepository(alert_session),
-        team_stats_repo=TeamStatsRepository(alert_session),
+        match_repo=MatchRepository(sf),
+        player_repo=PlayerRepository(sf),
+        alert_repo=AlertRepository(sf),
+        method_stats_repo=MethodStatsRepository(sf),
+        team_stats_repo=TeamStatsRepository(sf),
     )
 
     # --- Core modules ---
@@ -109,16 +102,24 @@ async def main() -> None:
     from src.core.reporter import Reporter
     from src.core.validator import Validator
 
-    alert_engine = AlertEngine(stats_engine, AlertRepository(alert_session), notifier)
-    odds_monitor = OddsMonitor(api, OddsRepository(alert_session), alert_engine, match_repo=MatchRepository(alert_session), poll_interval=settings.odds_poll_interval_seconds)
-    pair_matcher = PairMatcher(api, MatchRepository(gw_session), odds_monitor, session_factory=async_session_factory)
-    game_watcher = GameWatcher(api, MatchRepository(gw_session), PlayerRepository(gw_session), TeamStatsRepository(gw_session), pair_matcher)
+    alert_engine = AlertEngine(stats_engine, AlertRepository(sf), notifier)
+    odds_monitor = OddsMonitor(
+        api, OddsRepository(sf), alert_engine,
+        match_repo=MatchRepository(sf),
+        poll_interval=settings.odds_poll_interval_seconds,
+    )
+    pair_matcher = PairMatcher(
+        api, MatchRepository(sf), odds_monitor,
+        session_factory=sf,
+    )
+    game_watcher = GameWatcher(
+        api, MatchRepository(sf), PlayerRepository(sf),
+        TeamStatsRepository(sf), pair_matcher,
+    )
 
-    # Validator usa sessão própria — roda em loop concorrente ao game_watcher
-    validator_session = async_session_factory()
     validator = Validator(
-        api, MatchRepository(validator_session), AlertRepository(validator_session),
-        stats_engine, notifier, session_factory=async_session_factory,
+        api, MatchRepository(sf), AlertRepository(sf),
+        stats_engine, notifier, session_factory=sf,
     )
 
     # --- MELHORIA 5: Health Monitor ---
@@ -131,38 +132,19 @@ async def main() -> None:
         check_interval=300,     # 5 min
         status_interval=21600,  # 6 hours
     )
-    # Injetar health_monitor nos componentes de I/O (Fix 3)
     game_watcher._health = health_monitor
 
-    # --- Reporter com sessão própria (roda no scheduler, concorrente) ---
-    reporter_session = async_session_factory()
-    reporter_alert_repo = AlertRepository(reporter_session)
-    reporter_player_repo = PlayerRepository(reporter_session)
-    reporter_method_repo = MethodStatsRepository(reporter_session)
-    reporter = Reporter(reporter_alert_repo, reporter_player_repo, reporter_method_repo, notifier)
+    # --- Reporter ---
+    reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier)
 
-    # --- BotCommands: instanciar e registrar (BUG 1 fix) ---
-    cmd_session = async_session_factory()
-    cmd_match_repo = MatchRepository(cmd_session)
-    cmd_alert_repo = AlertRepository(cmd_session)
-    cmd_league_repo = LeagueRepository(cmd_session)
-    cmd_player_repo = PlayerRepository(cmd_session)
-
-    cmd_stats_engine = StatsEngine(
-        match_repo=cmd_match_repo,
-        player_repo=cmd_player_repo,
-        alert_repo=cmd_alert_repo,
-        method_stats_repo=MethodStatsRepository(cmd_session),
-        team_stats_repo=TeamStatsRepository(cmd_session),
-    )
-
+    # --- BotCommands ---
     bot_commands = BotCommands(
         notifier=notifier,
-        stats_engine=cmd_stats_engine,
-        match_repo=cmd_match_repo,
-        alert_repo=cmd_alert_repo,
-        league_repo=cmd_league_repo,
-        player_repo=cmd_player_repo,
+        stats_engine=stats_engine,  # compartilha o mesmo stats_engine (repos isoladas)
+        match_repo=MatchRepository(sf),
+        alert_repo=AlertRepository(sf),
+        league_repo=LeagueRepository(sf),
+        player_repo=PlayerRepository(sf),
     )
 
     # Registrar handlers e iniciar polling do Telegram
@@ -227,12 +209,11 @@ async def main() -> None:
 
     # --- Recalibracao automatica ---
     from src.core.recalibration import AutoRecalibrator
-    recal_session = async_session_factory()
     recalibrator = AutoRecalibrator(
         stats_engine=stats_engine,
-        alert_repo=AlertRepository(recal_session),
-        match_repo=MatchRepository(recal_session),
-        method_stats_repo=MethodStatsRepository(recal_session),
+        alert_repo=AlertRepository(sf),
+        match_repo=MatchRepository(sf),
+        method_stats_repo=MethodStatsRepository(sf),
         notifier=notifier,
     )
     # Injetar recalibrador no alert_engine para controle de pausa
@@ -249,10 +230,9 @@ async def main() -> None:
 
     # --- Backtest semanal agendado (domingo 08:00) ---
     from src.core.scheduled_backtest import ScheduledBacktest
-    bt_session = async_session_factory()
     scheduled_backtest = ScheduledBacktest(
-        match_repo=MatchRepository(bt_session),
-        method_stats_repo=MethodStatsRepository(bt_session),
+        match_repo=MatchRepository(sf),
+        method_stats_repo=MethodStatsRepository(sf),
         notifier=notifier,
     )
     scheduler.add_weekly_task(
@@ -319,12 +299,9 @@ async def main() -> None:
         scheduler.shutdown()
         await api.close()
 
-        # Fechar sessões
-        for s in [gw_session, alert_session, validator_session, reporter_session, cmd_session, recal_session, bt_session]:
-            try:
-                await s.close()
-            except Exception:
-                pass
+        # Fechar pool de conexões
+        from src.db.database import close_db
+        await close_db()
 
         logger.info("FIFA Bet Alert System stopped")
 

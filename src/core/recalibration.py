@@ -58,7 +58,7 @@ class AutoRecalibrator:
                 select(Alert)
                 .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
             )
-            result = await self.alerts.session.execute(stmt)
+            result = await self.alerts.execute_query(stmt)
             alerts = result.scalars().all()
 
             if len(alerts) < 10:
@@ -180,7 +180,7 @@ class AutoRecalibrator:
                 .order_by(Alert.sent_at.desc())
                 .limit(10)
             )
-            result = await self.alerts.session.execute(stmt)
+            result = await self.alerts.execute_query(stmt)
             recent = result.scalars().all()
 
             if len(recent) < 8:
@@ -196,7 +196,7 @@ class AutoRecalibrator:
                 .order_by(Alert.sent_at.desc())
                 .limit(100)
             )
-            result2 = await self.alerts.session.execute(stmt2)
+            result2 = await self.alerts.execute_query(stmt2)
             historical = result2.scalars().all()
 
             if len(historical) < 20:
@@ -329,14 +329,9 @@ class AutoRecalibrator:
                 status=report["regime"],
                 action_taken="; ".join(report["changes"][:3]) if report["changes"] else None,
             )
-            self.alerts.session.add(regime_check)
-            await self.alerts.session.commit()
+            await self.alerts.save_model(regime_check)
         except Exception as e:
             logger.debug(f"Could not persist regime check: {e}")
-            try:
-                await self.alerts.session.rollback()
-            except Exception:
-                pass
 
     async def _send_recalibration_report(
         self, report: dict, hit_rate: float, total: int

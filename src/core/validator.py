@@ -33,7 +33,6 @@ class Validator:
         self.alerts = alert_repo
         self.stats = stats_engine
         self.notifier = notifier
-        self._session_factory = session_factory
         self._running = False
 
     async def start(self, poll_interval: int = 60) -> None:
@@ -46,7 +45,6 @@ class Validator:
                 logger.warning(f"Validator circuit breaker: {self._db_failures} failures, cooldown 60s")
                 await asyncio.sleep(60)
                 self._db_failures = 0
-                self._recreate_session()
                 continue
 
             try:
@@ -59,43 +57,17 @@ class Validator:
                     logger.error(f"Validator DB error ({self._db_failures}/5): {e}")
                 else:
                     logger.error(f"Validator error: {e}")
-                try:
-                    await self.matches.session.rollback()
-                except Exception:
-                    self._recreate_session()
             await asyncio.sleep(poll_interval)
-
-    def _recreate_session(self) -> None:
-        """Recreate DB session after irrecoverable failure."""
-        try:
-            factory = self._session_factory
-            if factory is None:
-                from src.db.database import async_session_factory
-                factory = async_session_factory
-            from src.db.repositories import MatchRepository, AlertRepository
-            new_session = factory()
-            self.matches = MatchRepository(new_session)
-            self.alerts = AlertRepository(new_session)
-            logger.warning("Validator: sessao DB recriada")
-        except Exception as e:
-            logger.error(f"Validator: falha ao recriar sessao: {e}")
 
     def stop(self) -> None:
         self._running = False
 
     async def _validation_cycle(self) -> None:
         """Find unvalidated alerts whose return match has ended, fetch results."""
-        # Rollback preventivo para garantir sessao limpa
-        try:
-            await self.matches.session.rollback()
-        except Exception:
-            pass
-
         unvalidated = await self.matches.get_unvalidated_return_matches()
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         for return_match in unvalidated:
-            # Esperar 13 min apos inicio do jogo (8 min jogo + 5 min buffer API)
             if return_match.started_at:
                 elapsed = (now - return_match.started_at).total_seconds()
                 if elapsed < 13 * 60:
@@ -110,12 +82,6 @@ class Validator:
                 await self._validate_match(return_match)
             except Exception as e:
                 logger.error(f"Failed to validate match {return_match.id}: {e}")
-                # Rollback para limpar estado e continuar com proximo match
-                try:
-                    await self.matches.session.rollback()
-                except Exception:
-                    self._recreate_session()
-                    break  # sessao recriada, sair do loop e tentar no proximo ciclo
 
     async def _validate_match(self, return_match) -> None:
         """Fetch final score for a return match, edit alert message, export to CSV."""
@@ -155,16 +121,6 @@ class Validator:
                 await self._validate_alert(alert, return_match, details)
             except Exception as e:
                 logger.error(f"Failed to validate alert {alert.id}: {e}")
-
-        # Commit tudo de uma vez
-        try:
-            await self.matches.session.commit()
-        except Exception as e:
-            logger.warning(f"Commit after validation failed: {e}")
-            try:
-                await self.matches.session.rollback()
-            except Exception:
-                pass
 
     async def _validate_alert(self, alert, return_match, details) -> None:
         """Validate a single alert against match result."""
@@ -213,7 +169,6 @@ class Validator:
 
         profit_flat = (odds_used - 1.0) if hit else -1.0
 
-        # Validar o alerta NA SESSÃO DO VALIDATOR (garante commit correto)
         over25_hit = loser_goals > 2
         over35_hit = loser_goals > 3
         await self.alerts.validate(
@@ -223,13 +178,9 @@ class Validator:
             over35_hit=over35_hit,
             over15_hit=over15_hit,
             over45_hit=over45_hit,
+            profit_flat=profit_flat,
+            ml_hit=ml_hit,
         )
-
-        try:
-            alert.profit_flat = profit_flat
-            alert.ml_hit = ml_hit
-        except Exception:
-            pass
 
         # Update stats (sem re-validar o alerta)
         try:

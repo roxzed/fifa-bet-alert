@@ -272,12 +272,7 @@ class StatsEngine:
 
         # Single bulk query for all missing keys
         try:
-            from sqlalchemy import select
-            from src.db.models import MethodStats
-
-            stmt = select(MethodStats).where(MethodStats.stat_key.in_(missing_keys))
-            result = await self.method_stats.session.execute(stmt)
-            rows = result.scalars().all()
+            rows = await self.method_stats.get_by_keys(missing_keys)
 
             fetched = {}
             for row in rows:
@@ -1029,7 +1024,7 @@ class StatsEngine:
                     )
                 )
             )
-            result = await self.matches.session.execute(stmt)
+            result = await self.matches.execute_query(stmt)
             matches = result.scalars().all()
 
             if len(matches) < 5:
@@ -1088,7 +1083,7 @@ class StatsEngine:
                 .order_by(MatchModel.started_at.desc())
                 .limit(10)
             )
-            result = await self.matches.session.execute(stmt)
+            result = await self.matches.execute_query(stmt)
             recent_matches = result.scalars().all()
         except Exception as exc:
             logger.warning(f"Erro ao buscar streak de {losing_player}: {exc}")
@@ -1148,7 +1143,7 @@ class StatsEngine:
                 .order_by(MatchModel.started_at.desc())
                 .limit(5)
             )
-            result = await self.matches.session.execute(stmt)
+            result = await self.matches.execute_query(stmt)
             recent_g2 = result.scalars().all()
         except Exception:
             return 1.0
@@ -1714,7 +1709,6 @@ class StatsEngine:
         except Exception as e:
             logger.warning(f"Cold start check failed: {e}")
             try:
-                await self.matches.session.rollback()
                 oldest = await self.matches.get_oldest_match_date()
                 if oldest:
                     from datetime import timedelta
@@ -1753,12 +1747,6 @@ class StatsEngine:
         over35_hit = actual_goals > 3
         over45_hit = actual_goals > 4
 
-        # Rollback preventivo para garantir session limpa
-        try:
-            await self.method_stats.session.rollback()
-        except Exception:
-            pass
-
         try:
             # Update global stats
             global_stat = await self.method_stats.get_or_create("global")
@@ -1795,8 +1783,6 @@ class StatsEngine:
                 loss_type=getattr(alert, 'loss_type', 'tight'),
             )
 
-            await self.method_stats.session.commit()
-
             logger.info(
                 f"Stats updated for alert {alert_id}: "
                 f"goals={actual_goals}, o25={'OK' if over25_hit else 'X'}, "
@@ -1804,10 +1790,6 @@ class StatsEngine:
             )
         except Exception as e:
             logger.warning(f"Stats update_after_validation failed for alert {alert_id}: {e}")
-            try:
-                await self.method_stats.session.rollback()
-            except Exception:
-                pass
 
         # Invalidar cache independente do sucesso do DB
         self._cache.invalidate("global")

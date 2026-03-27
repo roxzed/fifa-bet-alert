@@ -243,15 +243,7 @@ class AlertEngine:
             "bet365_url": bet365_url,
         }
 
-        # Commit alert antes de enviar Telegram
-        try:
-            await self.alerts.session.commit()
-        except Exception as e:
-            logger.warning(f"Commit before Telegram send failed: {e}")
-            try:
-                await self.alerts.session.rollback()
-            except Exception:
-                pass
+        # Session-per-method: alert.create() already committed
 
         message_id = None
 
@@ -267,20 +259,8 @@ class AlertEngine:
             if message_id:
                 try:
                     await self.alerts.update_telegram_message_id(alert.id, message_id)
-                    await self.alerts.session.commit()
                 except Exception as e:
                     logger.warning(f"Could not save message_id for alert {alert.id}: {e}")
-                    # Rollback e retry com sessão limpa
-                    try:
-                        await self.alerts.session.rollback()
-                        await self.alerts.update_telegram_message_id(alert.id, message_id)
-                        await self.alerts.session.commit()
-                    except Exception as e2:
-                        logger.error(f"Retry save message_id also failed for alert {alert.id}: {e2}")
-                        try:
-                            await self.alerts.session.rollback()
-                        except Exception:
-                            pass
                 logger.bind(category="alert").info(
                     f"OVER alert sent (msg_id={message_id}): {loser} {best_over['label']} @{best_over['odds']:.2f}"
                 )
@@ -301,17 +281,12 @@ class AlertEngine:
                 logger.bind(category="alert").info(
                     f"ML alert sent (msg_id={ml_msg_id}): {loser} ML @{ml_line['odds']:.2f}"
                 )
-                # Se não houve alerta Over, salvar msg_id do ML no alert
                 if not message_id:
                     message_id = ml_msg_id
                     try:
                         await self.alerts.update_telegram_message_id(alert.id, ml_msg_id)
-                        await self.alerts.session.commit()
                     except Exception:
-                        try:
-                            await self.alerts.session.rollback()
-                        except Exception:
-                            pass
+                        pass
 
         return bool(message_id)
 

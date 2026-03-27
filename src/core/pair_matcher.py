@@ -247,11 +247,7 @@ class PairMatcher:
                 day_of_week=event_time.weekday() if event_time else None,
                 hour_of_day=event_time.hour if event_time else None,
             )
-        else:
-            # Se já existe mas não estava marcado como return match, atualizar
-            if not return_match.is_return_match:
-                return_match.is_return_match = True
-                await _matches.session.flush()
+        # link_pair already sets is_return_match=True on return_match
 
         # Link the pair
         time_between = None
@@ -332,97 +328,71 @@ class PairMatcher:
 
         logger.info(f"Retrying {len(self._pending)} pending pairs")
 
-        # Sessão isolada para o ciclo de retry
-        retry_session = None
-        retry_repo = None
-        if self._session_factory:
-            from src.db.repositories import MatchRepository
-            retry_session = self._session_factory()
-            retry_repo = MatchRepository(retry_session)
+        # Session-per-method: repos auto-comitam, não precisa de sessão isolada
 
+        # ── OTIMIZAÇÃO: buscar candidatos UMA VEZ para todos os pares ──
+        first_info = next(iter(self._pending.values()))
+        league_id = first_info["league_id"]
+
+        candidates = []
         try:
-            # ── OTIMIZAÇÃO: buscar candidatos UMA VEZ para todos os pares ──
-            # Pegar league_id do primeiro pendente (todos são da mesma liga)
-            first_info = next(iter(self._pending.values()))
-            league_id = first_info["league_id"]
+            upcoming = await self.api.get_upcoming_events(league_id)
+            candidates.extend(upcoming)
+        except Exception as e:
+            logger.error(f"Failed to fetch upcoming events: {e}")
+        try:
+            inplay = await self.api.get_inplay_events(league_id)
+            candidates.extend(inplay)
+        except Exception as e:
+            logger.warning(f"Could not fetch inplay events: {e}")
+        try:
+            from datetime import date
+            today = date.today().strftime("%Y%m%d")
+            ended = await self.api.get_ended_events(league_id, day=today, use_v2=True)
+            candidates.extend(ended)
+        except Exception as e:
+            logger.warning(f"Could not fetch ended events: {e}")
 
-            candidates = []
-            try:
-                upcoming = await self.api.get_upcoming_events(league_id)
-                candidates.extend(upcoming)
-            except Exception as e:
-                logger.error(f"Failed to fetch upcoming events: {e}")
-            try:
-                inplay = await self.api.get_inplay_events(league_id)
-                candidates.extend(inplay)
-            except Exception as e:
-                logger.warning(f"Could not fetch inplay events: {e}")
-            try:
-                from datetime import date
-                today = date.today().strftime("%Y%m%d")
-                ended = await self.api.get_ended_events(league_id, day=today, use_v2=True)
-                candidates.extend(ended)
-            except Exception as e:
-                logger.warning(f"Could not fetch ended events: {e}")
+        # Dedup candidatos
+        seen_ids: set[str] = set()
+        unique_candidates = []
+        for event in candidates:
+            if event.id not in seen_ids:
+                seen_ids.add(event.id)
+                unique_candidates.append(event)
 
-            # Dedup candidatos
-            seen_ids: set[str] = set()
-            unique_candidates = []
-            for event in candidates:
-                if event.id not in seen_ids:
-                    seen_ids.add(event.id)
-                    unique_candidates.append(event)
+        logger.debug(f"Retry: {len(unique_candidates)} unique candidates fetched")
 
-            logger.debug(f"Retry: {len(unique_candidates)} unique candidates fetched")
+        # ── Iterar sobre os pares pendentes usando os candidatos já buscados ──
+        expired = []
+        resolved = []
 
-            # ── Iterar sobre os pares pendentes usando os candidatos já buscados ──
-            expired = []
-            resolved = []
-            _matches = retry_repo or self.matches
+        for match_id, info in list(self._pending.items()):
+            info["attempts"] += 1
 
-            for match_id, info in list(self._pending.items()):
-                info["attempts"] += 1
-
-                age = datetime.now(timezone.utc) - info["added_at"]
-                if age > timedelta(minutes=120):
-                    logger.warning(
-                        f"Giving up on finding return match for game1={match_id} after {age}"
-                    )
-                    expired.append(match_id)
-                    continue
-
-                # Matching inline usando candidatos já buscados
-                found = await self._match_from_candidates(
-                    game1_match=info["match"],
-                    loser=info["loser"],
-                    winner=info["winner"],
-                    players=set(info["players"]),
-                    loser_goals_g1=info.get("loser_goals_g1", 0),
-                    candidates=unique_candidates,
-                    match_repo=_matches,
+            age = datetime.now(timezone.utc) - info["added_at"]
+            if age > timedelta(minutes=120):
+                logger.warning(
+                    f"Giving up on finding return match for game1={match_id} after {age}"
                 )
-                if found:
-                    resolved.append(match_id)
-                    logger.info(f"Pending pair resolved for game1={match_id}")
+                expired.append(match_id)
+                continue
 
-            for match_id in expired + resolved:
-                self._pending.pop(match_id, None)
+            found = await self._match_from_candidates(
+                game1_match=info["match"],
+                loser=info["loser"],
+                winner=info["winner"],
+                players=set(info["players"]),
+                loser_goals_g1=info.get("loser_goals_g1", 0),
+                candidates=unique_candidates,
+                match_repo=self.matches,
+            )
+            if found:
+                resolved.append(match_id)
+                logger.info(f"Pending pair resolved for game1={match_id}")
 
-            if retry_session:
-                await retry_session.commit()
-        except Exception:
-            if retry_session:
-                try:
-                    await retry_session.rollback()
-                except Exception:
-                    pass
-            raise
-        finally:
-            if retry_session:
-                try:
-                    await retry_session.close()
-                except Exception:
-                    pass
+        for match_id in expired + resolved:
+            self._pending.pop(match_id, None)
 
     async def _match_from_candidates(
         self, game1_match, loser: str, winner: str, players: set[str],
@@ -519,9 +489,7 @@ class PairMatcher:
                 day_of_week=event_time.weekday() if event_time else None,
                 hour_of_day=event_time.hour if event_time else None,
             )
-        elif not return_match.is_return_match:
-            return_match.is_return_match = True
-            await match_repo.session.flush()
+        # link_pair sets is_return_match=True
 
         time_between = None
         ended_utc = _utc(game1_match.ended_at)

@@ -31,7 +31,7 @@ load_dotenv()
 
 
 async def main() -> None:
-    from src.db.database import init_db, get_session
+    from src.db.database import init_db, async_session_factory
     from src.db.repositories import MatchRepository, MethodStatsRepository
     from src.core.probability import (
         classify_loss, wilson_confidence_interval, simulate_roi,
@@ -43,10 +43,11 @@ async def main() -> None:
     print("   BACKTEST COMPLETO - FIFA Bet Alert")
     print("=" * 65)
 
-    async with get_session() as session:
-        match_repo = MatchRepository(session)
-        method_stats_repo = MethodStatsRepository(session)
+    sf = async_session_factory
+    match_repo = MatchRepository(sf)
+    method_stats_repo = MethodStatsRepository(sf)
 
+    if True:
         # -- Load all linked pairs (game1 + game2) --------------------------
         pairs = await match_repo.get_all_pairs()
         if not pairs:

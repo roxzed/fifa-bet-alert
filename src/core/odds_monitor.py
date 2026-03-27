@@ -382,11 +382,8 @@ class OddsMonitor:
                                     match_id=match_id, player=loser,
                                     market=label, odds_value=odds_val,
                                 )
-                            except Exception:
-                                try:
-                                    await self.odds_repo.session.rollback()
-                                except Exception:
-                                    pass
+                            except Exception as snap_err:
+                                logger.debug(f"Odds snapshot save failed: {snap_err}")
 
                     # Log what we found
                     lines_str = " | ".join(
@@ -406,15 +403,6 @@ class OddsMonitor:
                             over25_opening = history[0].odds_value
                     except Exception:
                         history = []
-
-                    # Garantir sessão limpa antes de avaliar
-                    try:
-                        await self.odds_repo.session.commit()
-                    except Exception:
-                        try:
-                            await self.odds_repo.session.rollback()
-                        except Exception:
-                            pass
 
                     # Evaluate and alert (only once, permite ate 3 min apos kickoff)
                     if not alert_sent and (minutes_left is None or minutes_left >= -3):
@@ -450,10 +438,6 @@ class OddsMonitor:
                     if _consecutive_errors >= 5:
                         logger.error(f"Match {match_id}: 5 consecutive errors, stopping monitor")
                         break
-                    try:
-                        await self.odds_repo.session.rollback()
-                    except Exception:
-                        pass
 
                 await asyncio.sleep(interval)
 

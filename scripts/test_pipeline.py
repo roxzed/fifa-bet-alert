@@ -114,25 +114,26 @@ async def test_api_connection():
 async def test_db_and_gamewatcher(ended_events):
     """Etapa 2: Banco de dados e GameWatcher."""
     header(2, "Database + GameWatcher")
-    from src.db.database import get_session
+    from src.db.database import async_session_factory, get_session
     from src.db.repositories import MatchRepository, PlayerRepository
 
-    async with get_session() as session:
-        match_repo = MatchRepository(session)
-        player_repo = PlayerRepository(session)
+    sf = async_session_factory
+    match_repo = MatchRepository(sf)
+    player_repo = PlayerRepository(sf)
 
+    if True:
         # 2a. Verificar dados no banco
         print(f"\n[2a] Estado do banco de dados...")
         from sqlalchemy import text
-        r = await session.execute(text("SELECT COUNT(*) FROM matches"))
+        r = await match_repo.execute_query(text("SELECT COUNT(*) FROM matches"))
         total_matches = r.scalar()
-        r = await session.execute(text("SELECT COUNT(*) FROM matches WHERE is_return_match = true AND score_home IS NOT NULL"))
+        r = await match_repo.execute_query(text("SELECT COUNT(*) FROM matches WHERE is_return_match = true AND score_home IS NOT NULL"))
         total_pairs = r.scalar()
-        r = await session.execute(text("SELECT COUNT(*) FROM players WHERE total_return_matches > 0"))
+        r = await match_repo.execute_query(text("SELECT COUNT(*) FROM players WHERE total_return_matches > 0"))
         total_players = r.scalar()
-        r = await session.execute(text("SELECT COUNT(*) FROM method_stats"))
+        r = await match_repo.execute_query(text("SELECT COUNT(*) FROM method_stats"))
         total_method_stats = r.scalar()
-        r = await session.execute(text("SELECT COUNT(*) FROM alerts"))
+        r = await match_repo.execute_query(text("SELECT COUNT(*) FROM alerts"))
         total_alerts = r.scalar()
 
         print(f"  Matches: {total_matches}")
@@ -172,16 +173,17 @@ async def test_db_and_gamewatcher(ended_events):
 async def test_pair_matcher(ended_events, upcoming_events):
     """Etapa 3: PairMatcher."""
     header(3, "PairMatcher — Encontrar jogo de volta")
-    from src.db.database import get_session
+    from src.db.database import async_session_factory, get_session
     from src.db.repositories import MatchRepository
     from sqlalchemy import text
 
-    async with get_session() as session:
-        match_repo = MatchRepository(session)
+    sf = async_session_factory
+    match_repo = MatchRepository(sf)
 
+    if True:
         # 3a. Checar pares existentes no DB
         print(f"\n[3a] Pares recentes no banco...")
-        r = await session.execute(text("""
+        r = await match_repo.execute_query(text("""
             SELECT m2.id, m1.player_home, m1.player_away,
                    m1.score_home || '-' || m1.score_away as g1_score,
                    m2.score_home || '-' || m2.score_away as g2_score,
@@ -294,23 +296,23 @@ async def test_odds_monitor():
 async def test_stats_engine():
     """Etapa 5: StatsEngine — cálculo de probabilidade."""
     header(5, "StatsEngine + AlertEngine")
-    from src.db.database import get_session
+    from src.db.database import async_session_factory, get_session
     from src.db.repositories import (
         AlertRepository, MatchRepository, MethodStatsRepository,
         PlayerRepository, TeamStatsRepository,
     )
     from src.core.stats_engine import StatsEngine
 
-    async with get_session() as session:
-        stats = StatsEngine(
-            match_repo=MatchRepository(session),
-            player_repo=PlayerRepository(session),
-            alert_repo=AlertRepository(session),
-            method_stats_repo=MethodStatsRepository(session),
-            team_stats_repo=TeamStatsRepository(session),
-            regime_repo=None,
-        )
+    sf = async_session_factory
+    stats = StatsEngine(
+        match_repo=MatchRepository(sf),
+        player_repo=PlayerRepository(sf),
+        alert_repo=AlertRepository(sf),
+        method_stats_repo=MethodStatsRepository(sf),
+        team_stats_repo=TeamStatsRepository(sf),
+    )
 
+    if True:
         # 5a. Base probability (global)
         print(f"\n[5a] Probabilidade base (global)...")
         r25, r35, r45, n = await stats.get_base_probability()
@@ -332,7 +334,7 @@ async def test_stats_engine():
         # 5c. Player probability (testar com jogador conhecido)
         print(f"\n[5c] Probabilidade de jogador específico...")
         from sqlalchemy import text
-        r = await session.execute(text("""
+        r = await stats.matches.execute_query(text("""
             SELECT stat_key, total_samples, hit_rate_25, hit_rate_35
             FROM method_stats
             WHERE stat_type = 'player' AND total_samples >= 30
@@ -429,13 +431,14 @@ async def test_telegram():
 async def test_validator():
     """Etapa 7: Validator — buscar matches não validados."""
     header(7, "Validator — Pós-jogo")
-    from src.db.database import get_session
+    from src.db.database import async_session_factory, get_session
     from src.db.repositories import MatchRepository
     from sqlalchemy import text
 
-    async with get_session() as session:
-        match_repo = MatchRepository(session)
+    sf = async_session_factory
+    match_repo = MatchRepository(sf)
 
+    if True:
         print(f"\n[7a] Return matches não validados...")
         try:
             unvalidated = await match_repo.get_unvalidated_return_matches()
@@ -453,7 +456,7 @@ async def test_validator():
         # 7b. Checar se alertas recentes foram validados
         print(f"\n[7b] Alertas recentes...")
         try:
-            r = await session.execute(text("""
+            r = await match_repo.execute_query(text("""
                 SELECT id, losing_player, best_line, star_rating,
                        validated_at, actual_goals, sent_at
                 FROM alerts

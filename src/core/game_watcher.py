@@ -102,19 +102,8 @@ class GameWatcher:
                 )
                 await asyncio.sleep(self._DB_COOLDOWN)
                 self._db_consecutive_failures = 0
-                # Recriar sessão após cooldown
-                try:
-                    from src.db.database import async_session_factory
-                    from src.db.repositories import MatchRepository, PlayerRepository, TeamStatsRepository
-                    new_session = async_session_factory()
-                    self.matches = MatchRepository(new_session)
-                    self.players = PlayerRepository(new_session)
-                    self.teams = TeamStatsRepository(new_session)
-                    # Atualizar pair_matcher para usar a nova sessão também
-                    self.pair_matcher.matches = MatchRepository(new_session)
-                    logger.info("GameWatcher: sessão DB recriada após cooldown")
-                except Exception as rebuild_err:
-                    logger.error(f"GameWatcher: falha ao recriar sessão: {rebuild_err}")
+                # Com session-per-method, não precisa recriar repos
+                logger.info("GameWatcher: circuit breaker reset após cooldown")
                 continue
 
             try:
@@ -136,11 +125,6 @@ class GameWatcher:
                     )
                     if self._health:
                         self._health.record_db_error()
-                    # Rollback defensivo
-                    try:
-                        await self.matches.session.rollback()
-                    except Exception:
-                        pass
                 else:
                     logger.error(f"GameWatcher poll error: {e}")
                     if self._health:
@@ -197,11 +181,7 @@ class GameWatcher:
             except Exception as e:
                 # Não travar o ciclo inteiro por causa de 1 evento problemático
                 logger.warning(f"Skipping event {event.id} due to error: {e}")
-                self._processed_events[event.id] = True  # marcar como processado para não repetir
-                try:
-                    await self.matches.session.rollback()
-                except Exception:
-                    pass
+                self._processed_events[event.id] = True
 
         # Prune determinístico — mantém os mais recentes
         while len(self._processed_events) > 1000:
@@ -257,8 +237,6 @@ class GameWatcher:
                 )
 
         # Commit imediatamente para isolar este evento
-        await self.matches.session.commit()
-
         # Teams e players (best-effort, não trava se falhar)
         try:
             if event.home_team:
@@ -267,13 +245,8 @@ class GameWatcher:
                 await self.teams.save_match_team(match.id, event.away_name, event.away_team, "away")
             await self.players.get_or_create(event.home_name)
             await self.players.get_or_create(event.away_name)
-            await self.matches.session.commit()
         except Exception as e:
             logger.debug(f"Teams/players save failed (non-critical): {e}")
-            try:
-                await self.matches.session.rollback()
-            except Exception:
-                pass
 
         if event.home_score == event.away_score:
             logger.debug(f"Draw game {event.id}, skipping pair matching")
@@ -304,7 +277,4 @@ class GameWatcher:
             loser_goals_g1=loser_goals_g1,
         )
 
-        try:
-            await self.matches.session.commit()
-        except Exception as e:
-            logger.warning(f"Commit after pair matching failed: {e}")
+        # Session-per-method: cada repo method auto-comita

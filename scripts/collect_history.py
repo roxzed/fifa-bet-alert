@@ -176,10 +176,13 @@ async def main() -> None:
 
     await init_db()
 
-    async with get_session() as session:
-        match_repo = MatchRepository(session)
-        player_repo = PlayerRepository(session)
-        team_repo = TeamStatsRepository(session)
+    from src.db.database import async_session_factory
+    sf = async_session_factory
+    match_repo = MatchRepository(sf)
+    player_repo = PlayerRepository(sf)
+    team_repo = TeamStatsRepository(sf)
+
+    if True:
 
         async with BetsAPIClient(
             settings.betsapi_token,
