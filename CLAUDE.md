@@ -12,6 +12,15 @@ e alerta via Telegram APENAS quando há edge matemático comprovado (probabilida
 **Mercado alvo:** Over 2.5/3.5/4.5 gols do *jogador específico* (não gols totais).
 **Gate de alerta:** `Edge >= 5%` E `EV >= 3%` E `true_prob >= 68%`.
 
+## Regra de Análise — SEMPRE H2H Individual do Perdedor de G1
+
+**NUNCA** fazer análises estatísticas no geral (todos os jogadores juntos). Toda análise DEVE ser feita
+no nível **H2H individual** (jogador A vs jogador B) e **sempre em cima dos dados do jogador que perdeu
+o jogo 1 (G1)**. O foco é exclusivamente no desempenho do perdedor de G1 no jogo de volta (G2).
+Médias globais escondem diferenças entre jogadores e levam a conclusões erradas. Se uma variável
+(ex: gols do loser em G1) importa, ela precisa ser validada **dentro** de cada confronto H2H,
+não na média de todos os confrontos juntos.
+
 ## Comandos
 
 ```bash
@@ -112,6 +121,22 @@ Repositórios em `src/db/repositories.py` — todos os métodos são `async`.
 - **BetsAPI v1** (`api.betsapi.com/v1`) — dados históricos, liga 2025 (ID `42648`)
 - **BetsAPI v2** (`api.betsapi.com/v2`) — jogos ao vivo/upcoming, liga atual (ID `22614`)
 - Liga atual **não aparece no `/league` do v1** — busca direta pelo ID no v2
+
+## Estrutura da Liga — Esoccer Battle 8 mins
+
+A liga funciona em formato **round-robin com 5 jogadores por sessão**:
+
+1. **5 jogadores** entram na sessão, cada um recebe **1 time fixo**
+2. **Todos jogam contra todos** (round-robin completo = 10 confrontos)
+3. Cada confronto tem **ida (G1) + volta (G2)** com os **mesmos times**
+   - G1: Jogador A (Time X) vs Jogador B (Time Y)
+   - G2: Jogador B (Time Y) vs Jogador A (Time X) — mesmos times, ~55-60 min depois
+4. O método analisa o **perdedor de G1** e seus gols em **G2**
+5. Quando todos os confrontos acabam, **jogadores trocam de time** e reiniciam o rodízio
+
+**Implicação para o método:** cada jogador enfrenta 4 adversários por sessão, gerando 4 pares ida+volta.
+Em metade desses (~2), ele será o perdedor de G1, gerando oportunidade de alerta em G2.
+Os dados H2H são **direcionais** (jogador A perdendo para B ≠ jogador B perdendo para A).
 
 ## Convenções
 

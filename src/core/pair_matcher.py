@@ -519,6 +519,60 @@ class PairMatcher:
 
         return True
 
+    async def recover_pending_from_db(self, match_repo, league_id: str) -> int:
+        """Recupera G1 recentes sem G2 pareado ao reiniciar o sistema.
+
+        Busca matches das ultimas 2h que sao G1 (is_return_match=False),
+        nao tem par (pair_match_id IS NULL), e nao foram empate.
+        Re-adiciona na fila _pending para o retry_pending encontrar o G2.
+        """
+        from sqlalchemy import select, and_
+        from src.db.models import Match
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        cutoff_naive = cutoff.replace(tzinfo=None)
+
+        try:
+            async with match_repo._session() as session:
+                stmt = select(Match).where(and_(
+                    Match.is_return_match == False,  # noqa: E712
+                    Match.pair_match_id.is_(None),
+                    Match.ended_at >= cutoff_naive,
+                    Match.score_home.is_not(None),
+                    Match.score_away.is_not(None),
+                ))
+                result = await session.execute(stmt)
+                matches = result.scalars().all()
+
+            recovered = 0
+            for m in matches:
+                # Pular empates
+                if m.score_home == m.score_away:
+                    continue
+                # Pular se ja esta pendente
+                if m.id in self._pending:
+                    continue
+
+                if m.score_home < m.score_away:
+                    loser = m.player_home
+                    winner = m.player_away
+                    loser_goals_g1 = m.score_home
+                else:
+                    loser = m.player_away
+                    winner = m.player_home
+                    loser_goals_g1 = m.score_away
+
+                players = {loser.lower().strip(), winner.lower().strip()}
+                self._add_pending(m, loser, winner, players, league_id, loser_goals_g1)
+                recovered += 1
+
+            if recovered > 0:
+                logger.info(f"Recovered {recovered} pending pairs from DB after restart")
+            return recovered
+        except Exception as e:
+            logger.error(f"Failed to recover pending pairs from DB: {e}")
+            return 0
+
     @property
     def pending_count(self) -> int:
         return len(self._pending)

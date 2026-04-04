@@ -32,6 +32,7 @@ from src.core.probability import classify_loss
 @dataclass
 class PlayerStats:
     total_return_matches: int = 0
+    over15_after_loss: int = 0
     over25_after_loss: int = 0
     over35_after_loss: int = 0
     total_goals: float = 0.0
@@ -86,12 +87,15 @@ async def backfill(full_rebuild: bool = False) -> None:
             loser_goals_g2 = row.g2_sh if row.g2_ph == loser else row.g2_sa
 
             loss_type = classify_loss(score_winner, score_loser)
+            over15_hit = loser_goals_g2 > 1
             over25_hit = loser_goals_g2 > 2
             over35_hit = loser_goals_g2 > 3
 
             s = stats[loser]
             s.total_return_matches += 1
             s.total_goals += loser_goals_g2
+            if over15_hit:
+                s.over15_after_loss += 1
             if over25_hit:
                 s.over25_after_loss += 1
             if over35_hit:
@@ -118,8 +122,10 @@ async def backfill(full_rebuild: bool = False) -> None:
             logger.warning("Modo --full: zerando stats de todos os players antes de atualizar")
             await session.execute(text("""
                 UPDATE players SET
-                    total_return_matches = 0, over25_after_loss = 0, over35_after_loss = 0,
-                    hit_rate_25 = 0.0, hit_rate_35 = 0.0, avg_goals_after_loss = 0.0,
+                    total_return_matches = 0, over15_after_loss = 0,
+                    over25_after_loss = 0, over35_after_loss = 0,
+                    hit_rate_15 = 0.0, hit_rate_25 = 0.0, hit_rate_35 = 0.0,
+                    avg_goals_after_loss = 0.0,
                     tight_loss_count = 0, tight_loss_over25 = 0,
                     medium_loss_count = 0, medium_loss_over25 = 0,
                     blowout_loss_count = 0, blowout_loss_over25 = 0,
@@ -132,6 +138,7 @@ async def backfill(full_rebuild: bool = False) -> None:
 
         for name, s in stats.items():
             n = s.total_return_matches
+            hit15 = s.over15_after_loss / n
             hit25 = s.over25_after_loss / n
             hit35 = s.over35_after_loss / n
             avg_goals = s.total_goals / n
@@ -144,8 +151,10 @@ async def backfill(full_rebuild: bool = False) -> None:
             res = await session.execute(text("""
                 UPDATE players SET
                     total_return_matches  = :trm,
+                    over15_after_loss     = :o15,
                     over25_after_loss     = :o25,
                     over35_after_loss     = :o35,
+                    hit_rate_15           = :hr15,
                     hit_rate_25           = :hr25,
                     hit_rate_35           = :hr35,
                     avg_goals_after_loss  = :avg,
@@ -160,8 +169,9 @@ async def backfill(full_rebuild: bool = False) -> None:
                     last_seen             = :ls
                 WHERE name = :name
             """), {
-                "name": name, "trm": n, "o25": s.over25_after_loss,
-                "o35": s.over35_after_loss, "hr25": hit25, "hr35": hit35,
+                "name": name, "trm": n, "o15": s.over15_after_loss,
+                "o25": s.over25_after_loss,
+                "o35": s.over35_after_loss, "hr15": hit15, "hr25": hit25, "hr35": hit35,
                 "avg": avg_goals, "tlc": s.tight_loss_count, "tlo": s.tight_loss_over25,
                 "mlc": s.medium_loss_count, "mlo": s.medium_loss_over25,
                 "blc": s.blowout_loss_count, "blo": s.blowout_loss_over25,
@@ -173,16 +183,18 @@ async def backfill(full_rebuild: bool = False) -> None:
             else:
                 # Jogador não existe ainda — criar
                 await session.execute(text("""
-                    INSERT INTO players (name, total_return_matches, over25_after_loss,
-                        over35_after_loss, hit_rate_25, hit_rate_35, avg_goals_after_loss,
+                    INSERT INTO players (name, total_return_matches, over15_after_loss,
+                        over25_after_loss, over35_after_loss, hit_rate_15, hit_rate_25,
+                        hit_rate_35, avg_goals_after_loss,
                         tight_loss_count, tight_loss_over25, medium_loss_count,
                         medium_loss_over25, blowout_loss_count, blowout_loss_over25,
                         is_reliable, reliability_score, last_seen)
-                    VALUES (:name, :trm, :o25, :o35, :hr25, :hr35, :avg,
+                    VALUES (:name, :trm, :o15, :o25, :o35, :hr15, :hr25, :hr35, :avg,
                         :tlc, :tlo, :mlc, :mlo, :blc, :blo, :rel, :rs, :ls)
                 """), {
-                    "name": name, "trm": n, "o25": s.over25_after_loss,
-                    "o35": s.over35_after_loss, "hr25": hit25, "hr35": hit35,
+                    "name": name, "trm": n, "o15": s.over15_after_loss,
+                    "o25": s.over25_after_loss,
+                    "o35": s.over35_after_loss, "hr15": hit15, "hr25": hit25, "hr35": hit35,
                     "avg": avg_goals, "tlc": s.tight_loss_count, "tlo": s.tight_loss_over25,
                     "mlc": s.medium_loss_count, "mlo": s.medium_loss_over25,
                     "blc": s.blowout_loss_count, "blo": s.blowout_loss_over25,

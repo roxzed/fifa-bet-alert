@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    telegram_group_id: str = ""
+    telegram_group_v2_id: str = ""  # Grupo do Method 2
 
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"
@@ -33,7 +35,7 @@ class Settings(BaseSettings):
     min_true_prob: float = 0.60
     min_global_sample: int = 500
     min_player_sample: int = 30   # general player stats (elevated from 5)
-    min_h2h_sample: int = 15      # H2H player specific
+    min_h2h_sample: int = 7       # H2H player specific (7 G2 losses vs same opponent)
     min_team_sample: int = 10
     min_odds: float = 1.60
     max_odds: float = 4.00

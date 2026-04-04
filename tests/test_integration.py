@@ -146,7 +146,8 @@ def test_odds_adaptive_interval():
     assert _adaptive_poll_interval(5.0) == 15
     assert _adaptive_poll_interval(8.0) == 15
 
-    # Very close / past kickoff
+    # Very close / past kickoff (<=3 min)
+    assert _adaptive_poll_interval(2.5) == 10
     assert _adaptive_poll_interval(2.0) == 10
     assert _adaptive_poll_interval(0.0) == 10
     assert _adaptive_poll_interval(-1.0) == 10

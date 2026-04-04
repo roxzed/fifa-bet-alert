@@ -159,7 +159,7 @@ class HealthMonitor:
                     logger.info(f"Regime recovered: {self._last_regime} → HEALTHY")
                 self._last_regime = regime_status
         except Exception as e:
-            logger.debug(f"Regime check failed in health monitor: {e}")
+            logger.warning(f"Regime check failed in health monitor: {e}")
 
         # 2. Check API health (só alertar a cada 1h, não a cada 5 min)
         if self._api_failures >= 5:
@@ -227,8 +227,8 @@ class HealthMonitor:
                 from src.db.database import engine
                 pool = engine.pool
                 pool_info = f"DB pool: {pool.checkedout()}/{pool.size()+pool.overflow()} em uso"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not read DB pool status: {e}")
 
             status_data = {
                 "uptime": self.uptime_str,

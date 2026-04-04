@@ -47,8 +47,10 @@ class Player(Base):
     total_return_matches: Mapped[int] = mapped_column(Integer, default=0)
 
     # Over stats apos derrota
+    over15_after_loss: Mapped[int] = mapped_column(Integer, default=0)
     over25_after_loss: Mapped[int] = mapped_column(Integer, default=0)
     over35_after_loss: Mapped[int] = mapped_column(Integer, default=0)
+    hit_rate_15: Mapped[float] = mapped_column(Float, default=0.0)
     hit_rate_25: Mapped[float] = mapped_column(Float, default=0.0)
     hit_rate_35: Mapped[float] = mapped_column(Float, default=0.0)
     avg_goals_after_loss: Mapped[float] = mapped_column(Float, default=0.0)
@@ -342,9 +344,11 @@ class MethodStats(Base):
     stat_key: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     stat_type: Mapped[str] = mapped_column(String, nullable=False)
     total_samples: Mapped[int] = mapped_column(Integer, default=0)
+    over15_hits: Mapped[int] = mapped_column(Integer, default=0)
     over25_hits: Mapped[int] = mapped_column(Integer, default=0)
     over35_hits: Mapped[int] = mapped_column(Integer, default=0)
     over45_hits: Mapped[int] = mapped_column(Integer, default=0)
+    hit_rate_15: Mapped[float] = mapped_column(Float, default=0.0)
     hit_rate_25: Mapped[float] = mapped_column(Float, default=0.0)
     hit_rate_35: Mapped[float] = mapped_column(Float, default=0.0)
     hit_rate_45: Mapped[float] = mapped_column(Float, default=0.0)
@@ -513,6 +517,63 @@ class MatchupStats(Base):
 # ---------------------------------------------------------------------------
 # PlayerTeamPreference
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# AlertV2 (Method 2)
+# ---------------------------------------------------------------------------
+class AlertV2(Base):
+    __tablename__ = "alerts_v2"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("matches.id"), nullable=False
+    )
+    losing_player: Mapped[str] = mapped_column(String, nullable=False)
+    opponent_player: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    game1_score: Mapped[str] = mapped_column(String, nullable=False)
+    camada: Mapped[str] = mapped_column(String, nullable=False)  # C1a, C1b, C2
+
+    best_line: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    over15_odds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    over25_odds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    over35_odds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    over45_odds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Stats da avaliacao
+    prob: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sample_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prob_4elem: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    prob_3elem: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sample_4elem: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sample_3elem: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Telegram
+    telegram_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Resultado pos-jogo
+    actual_goals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    hit: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    profit_flat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    match: Mapped["Match"] = relationship("Match", foreign_keys=[match_id])
+
+    __table_args__ = (
+        Index("ix_alerts_v2_match_id", "match_id"),
+        Index("ix_alerts_v2_losing_player", "losing_player"),
+        Index("ix_alerts_v2_camada", "camada"),
+        Index("ix_alerts_v2_sent_at", "sent_at"),
+        Index("ix_alerts_v2_validated_at", "validated_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AlertV2(id={self.id}, match_id={self.match_id}, "
+            f"loser={self.losing_player!r}, camada={self.camada!r})>"
+        )
+
+
 class PlayerTeamPreference(Base):
     __tablename__ = "player_team_preferences"
 

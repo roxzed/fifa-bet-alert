@@ -42,6 +42,7 @@ async def main() -> None:
     # --- Repositories (session-per-method: cada chamada cria sessão isolada) ---
     from src.db.repositories import (
         AlertRepository,
+        AlertV2Repository,
         LeagueRepository,
         MatchRepository,
         MethodStatsRepository,
@@ -81,6 +82,8 @@ async def main() -> None:
     notifier = TelegramNotifier(
         token=settings.telegram_bot_token,
         chat_id=settings.telegram_chat_id,
+        group_chat_id=settings.telegram_group_id,
+        v2_group_id=settings.telegram_group_v2_id,
     )
 
     # --- Stats Engine ---
@@ -95,18 +98,33 @@ async def main() -> None:
 
     # --- Core modules ---
     from src.core.alert_engine import AlertEngine
+    from src.core.alert_engine_v2 import AlertEngineV2
     from src.core.game_watcher import GameWatcher
     from src.core.health_monitor import HealthMonitor
     from src.core.odds_monitor import OddsMonitor
     from src.core.pair_matcher import PairMatcher
     from src.core.reporter import Reporter
+    from src.core.stats_engine_v2 import StatsEngineV2
     from src.core.validator import Validator
+    from src.core.validator_v2 import ValidatorV2
 
     alert_engine = AlertEngine(stats_engine, AlertRepository(sf), notifier)
+
+    # Method 2
+    stats_engine_v2 = StatsEngineV2(match_repo=MatchRepository(sf))
+    alert_v2_repo = AlertV2Repository(sf)
+    alert_engine_v2 = None
+    if settings.telegram_group_v2_id:
+        alert_engine_v2 = AlertEngineV2(stats_engine_v2, alert_v2_repo, notifier)
+        logger.info(f"Method 2 enabled (group: {settings.telegram_group_v2_id})")
+    else:
+        logger.info("Method 2 disabled (TELEGRAM_GROUP_V2_ID not set)")
+
     odds_monitor = OddsMonitor(
         api, OddsRepository(sf), alert_engine,
         match_repo=MatchRepository(sf),
         poll_interval=settings.odds_poll_interval_seconds,
+        alert_engine_v2=alert_engine_v2,
     )
     pair_matcher = PairMatcher(
         api, MatchRepository(sf), odds_monitor,
@@ -117,10 +135,23 @@ async def main() -> None:
         TeamStatsRepository(sf), pair_matcher,
     )
 
+    # Recuperar G1 sem G2 pareado das ultimas 2h (sobrevive a restarts)
+    recovered = await pair_matcher.recover_pending_from_db(
+        MatchRepository(sf), league_api_id
+    )
+    if recovered:
+        logger.info(f"Startup: {recovered} pares pendentes recuperados do DB")
+
     validator = Validator(
         api, MatchRepository(sf), AlertRepository(sf),
         stats_engine, notifier, session_factory=sf,
     )
+
+    validator_v2 = None
+    if alert_engine_v2:
+        validator_v2 = ValidatorV2(
+            api, MatchRepository(sf), alert_v2_repo, notifier,
+        )
 
     # --- MELHORIA 5: Health Monitor ---
     health_monitor = HealthMonitor(
@@ -145,6 +176,8 @@ async def main() -> None:
         alert_repo=AlertRepository(sf),
         league_repo=LeagueRepository(sf),
         player_repo=PlayerRepository(sf),
+        odds_monitor=odds_monitor,
+        alert_v2_repo=alert_v2_repo,
     )
 
     # Registrar handlers e iniciar polling do Telegram
@@ -219,6 +252,20 @@ async def main() -> None:
     # Injetar recalibrador no alert_engine para controle de pausa
     alert_engine.set_recalibrator(recalibrator)
 
+    # Backfill diario das method_stats as 05:50 (antes da recalibracao)
+    async def _daily_backfill():
+        from scripts.backfill_method_stats import backfill
+        logger.info("Daily backfill: atualizando method_stats (H2H, recent_form, etc.)")
+        try:
+            await backfill(full_rebuild=False)
+            logger.info("Daily backfill concluido com sucesso")
+        except Exception as e:
+            logger.error(f"Daily backfill falhou: {e}")
+
+    scheduler.add_daily_task(
+        _daily_backfill, hour=5, minute=50, task_id="daily_backfill"
+    )
+
     # Recalibracao diaria as 06:00
     scheduler.add_daily_task(
         recalibrator.recalibrate, hour=6, minute=0, task_id="daily_recalibration"
@@ -244,6 +291,9 @@ async def main() -> None:
     )
 
     scheduler.start()
+
+    # Retry imediato no startup para nao perder pares detectados antes do primeiro ciclo
+    await pair_matcher.retry_pending()
 
     # --- Graceful shutdown (MELHORIA 17) ---
     shutdown_event = asyncio.Event()
@@ -277,16 +327,60 @@ async def main() -> None:
             except Exception:
                 pass
 
-    try:
-        await asyncio.gather(
-            game_watcher.start(
-                league_id=league_api_id,
-                poll_interval=settings.poll_interval_seconds,
-            ),
-            validator.start(poll_interval=60),
-            _run_telegram_polling(),
-            health_monitor.start(),  # MELHORIA 5: quarto loop
+    async def _supervised_task(name: str, coro_fn, **kwargs):
+        """Executa uma task com restart automatico se crashar.
+        Envia alerta no Telegram quando uma task morre e reinicia.
+        """
+        restart_count = 0
+        max_restarts = 10
+        while not shutdown_event.is_set() and restart_count < max_restarts:
+            try:
+                await coro_fn(**kwargs)
+                break  # saiu normalmente (shutdown)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                restart_count += 1
+                logger.critical(
+                    f"TASK CRASH [{name}] (restart {restart_count}/{max_restarts}): {e}"
+                )
+                try:
+                    await notifier.send_message(
+                        f"[SISTEMA] Task <b>{name}</b> crashou e sera reiniciada "
+                        f"({restart_count}/{max_restarts}).\n\nErro: {str(e)[:200]}"
+                    )
+                except Exception:
+                    pass  # se Telegram tambem falhou, pelo menos logou
+                await asyncio.sleep(5)  # esperar antes de reiniciar
+
+        if restart_count >= max_restarts:
+            logger.critical(f"TASK [{name}] excedeu {max_restarts} restarts — desistindo")
+            try:
+                await notifier.send_message(
+                    f"[CRITICO] Task <b>{name}</b> morreu apos {max_restarts} tentativas. "
+                    f"Sistema pode estar comprometido. Reinicie manualmente."
+                )
+            except Exception:
+                pass
+
+    tasks_to_run = [
+        _supervised_task(
+            "GameWatcher",
+            game_watcher.start,
+            league_id=league_api_id,
+            poll_interval=settings.poll_interval_seconds,
+        ),
+        _supervised_task("Validator", validator.start, poll_interval=60),
+        _supervised_task("TelegramPolling", _run_telegram_polling),
+        _supervised_task("HealthMonitor", health_monitor.start),
+    ]
+    if validator_v2:
+        tasks_to_run.append(
+            _supervised_task("ValidatorV2", validator_v2.start, poll_interval=60)
         )
+
+    try:
+        await asyncio.gather(*tasks_to_run)
     except asyncio.CancelledError:
         logger.info("Tasks cancelled during shutdown")
     finally:
@@ -296,6 +390,8 @@ async def main() -> None:
         odds_monitor.stop_all()
         game_watcher.stop()
         validator.stop()
+        if validator_v2:
+            validator_v2.stop()
         scheduler.shutdown()
         await api.close()
 

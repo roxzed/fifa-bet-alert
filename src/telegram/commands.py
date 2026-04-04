@@ -18,13 +18,25 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 class BotCommands:
     """Handles /commands sent to the bot in Telegram."""
 
-    def __init__(self, notifier, stats_engine, match_repo, alert_repo, league_repo, player_repo=None) -> None:
+    def __init__(self, notifier, stats_engine, match_repo, alert_repo, league_repo,
+                 player_repo=None, odds_monitor=None, alert_v2_repo=None) -> None:
         self.notifier = notifier
         self.stats_engine = stats_engine
         self.matches = match_repo
         self.alerts = alert_repo
         self.leagues = league_repo
         self.players = player_repo  # BUG 2 fix: recebe instância com sessão
+        self.odds_monitor = odds_monitor
+        self.alerts_v2 = alert_v2_repo  # Method 2 repo (opcional)
+
+    def _is_v2_group(self, update: Update) -> bool:
+        """Retorna True se o comando foi enviado no grupo M2."""
+        from src.config import settings
+        v2_id = settings.telegram_group_v2_id
+        if not v2_id:
+            return False
+        chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+        return chat_id == str(v2_id)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/status - System uptime, monitoring info, regime status."""
@@ -53,15 +65,36 @@ class BotCommands:
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/stats - Overall statistics."""
         try:
+            if self._is_v2_group(update) and self.alerts_v2:
+                days = int(context.args[0]) if context.args else 30
+                pnl = await self.alerts_v2.get_pnl_summary(days)
+                total = pnl.get("total", 0)
+                wins = pnl.get("wins", 0)
+                losses = pnl.get("losses", 0)
+                rate = pnl.get("hit_rate", 0)
+                profit = pnl.get("profit", 0.0)
+                roi = pnl.get("roi", 0.0)
+                by_camada = pnl.get("by_camada", {})
+                camada_str = "\n".join(
+                    f"  {c}: {v['wins']}/{v['total']} = {v['wins']/v['total']:.0%} ({v['profit']:+.1f}u)"
+                    for c, v in sorted(by_camada.items()) if v["total"] > 0
+                )
+                text = (
+                    f"\U0001f4ca <b>M2 STATS (ultimos {days} dias)</b>\n\n"
+                    f"Alertas: {total} ({wins}W / {losses}L)\n"
+                    f"Hit rate: {rate:.0%}\n"
+                    f"Profit: <b>{profit:+.1f}u</b>  ROI: <b>{roi:.1%}</b>\n"
+                )
+                if camada_str:
+                    text += f"\n<b>Por camada:</b>\n{camada_str}"
+                await update.message.reply_html(text)
+                return
+
             stats = await self.alerts.get_period_stats(days=30)
             total = stats.get("total", 0)
             validated = stats.get("validated", 0)
             hits = stats.get("over25_hits", 0)
             rate = (hits / validated * 100) if validated > 0 else 0
-
-            # BUG 5 fix: calcular ROI a partir dos alertas validados
-            # Como não temos odds individuais no get_period_stats, mostramos hit rate
-            # ROI requer dados de odds que não estão no aggregado
             hit_rate_25 = stats.get("hit_rate_25", 0)
 
             text = (
@@ -184,6 +217,63 @@ class BotCommands:
         """Mostra P&L (lucro/prejuizo) dos ultimos N dias. Uso: /pnl [dias]"""
         try:
             days = int(context.args[0]) if context.args else 30
+
+            if self._is_v2_group(update) and self.alerts_v2:
+                pnl = await self.alerts_v2.get_pnl_summary(days)
+                if pnl["total"] == 0:
+                    await update.message.reply_text(f"Sem alertas M2 validados nos ultimos {days} dias.")
+                    return
+                top_players = sorted(pnl["by_player"].items(), key=lambda x: x[1]["profit"], reverse=True)[:5]
+                worst_players = sorted(pnl["by_player"].items(), key=lambda x: x[1]["profit"])[:3]
+                line_str = "\n".join(
+                    f"  {l}: {s['wins']}/{s['total']} = {s['wins']/s['total']:.0%} ({s['profit']:+.1f}u)"
+                    for l, s in sorted(pnl["by_line"].items()) if s["total"] > 0
+                )
+                camada_str = "\n".join(
+                    f"  {c}: {s['wins']}/{s['total']} = {s['wins']/s['total']:.0%} ({s['profit']:+.1f}u)"
+                    for c, s in sorted(pnl["by_camada"].items()) if s["total"] > 0
+                )
+                top_str = "\n".join(
+                    f"  {p}: {s['wins']}/{s['total']} ({s['profit']:+.1f}u)"
+                    for p, s in top_players
+                )
+                weekly = await self.alerts_v2.get_weekly_breakdown(weeks=4)
+                weekly_str = ""
+                if weekly:
+                    weekly_str = "\n\n<b>Por semana:</b>\n"
+                    cumulative = 0.0
+                    for w in sorted(weekly, key=lambda x: x["week"]):
+                        cumulative += w["profit"]
+                        emoji = "\u2705" if w["profit"] >= 0 else "\u274c"
+                        weekly_str += (
+                            f"  {emoji} {w['week']}: {w['wins']}/{w['total']} "
+                            f"({w['profit']:+.1f}u) acum: {cumulative:+.1f}u\n"
+                        )
+                streak_data = await self.alerts_v2.get_recent_streak(20)
+                streak = streak_data["streak"]
+                streak_str = f"\U0001f525 Streak: {streak}W" if streak > 0 else (
+                    f"\u26a0\ufe0f Streak: {abs(streak)}L" if streak < 0 else ""
+                )
+                roi_emoji = "\U0001f4c8" if pnl["roi"] > 0 else "\U0001f4c9"
+                msg = (
+                    f"{roi_emoji} <b>M2 P&L - Ultimos {days} dias</b>\n\n"
+                    f"Alertas: {pnl['total']} ({pnl['wins']}W / {pnl['losses']}L)\n"
+                    f"Hit rate: {pnl['hit_rate']:.0%}\n"
+                    f"Profit: <b>{pnl['profit']:+.1f} unidades</b>\n"
+                    f"ROI: <b>{pnl['roi']:.1%}</b>\n"
+                )
+                if streak_str:
+                    msg += f"{streak_str}\n"
+                if camada_str:
+                    msg += f"\n<b>Por camada:</b>\n{camada_str}\n"
+                if line_str:
+                    msg += f"\n<b>Por linha:</b>\n{line_str}\n"
+                if top_str:
+                    msg += f"\n<b>Top jogadores:</b>\n{top_str}"
+                msg += weekly_str
+                await update.message.reply_text(msg, parse_mode="HTML")
+                return
+
             pnl = await self.alerts.get_pnl_summary(days)
 
             if pnl["total"] == 0:
@@ -258,7 +348,10 @@ class BotCommands:
         """/players - Dashboard de performance por jogador."""
         try:
             days = int(context.args[0]) if context.args else 30
-            players = await self.alerts.get_player_performance(days=days, min_alerts=2)
+            if self._is_v2_group(update) and self.alerts_v2:
+                players = await self.alerts_v2.get_player_performance(days=days, min_alerts=2)
+            else:
+                players = await self.alerts.get_player_performance(days=days, min_alerts=2)
 
             if not players:
                 await update.message.reply_text(f"Sem dados de jogadores nos ultimos {days} dias.")
@@ -268,8 +361,9 @@ class BotCommands:
             profitable = [p for p in players if p["profit"] > 0]
             losing = [p for p in players if p["profit"] <= 0]
 
+            prefix = "M2 " if self._is_v2_group(update) and self.alerts_v2 else ""
             lines = []
-            lines.append(f"\U0001f4ca <b>PERFORMANCE POR JOGADOR ({days}d)</b>\n")
+            lines.append(f"\U0001f4ca <b>{prefix}PERFORMANCE POR JOGADOR ({days}d)</b>\n")
 
             if profitable:
                 lines.append("<b>\u2705 Lucrativos:</b>")
@@ -307,7 +401,11 @@ class BotCommands:
             await update.message.reply_text("Erro ao buscar performance.")
 
     async def cmd_results(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/results - Tabela de resultados do dia (GREEN/RED) com ROI."""
+        """/results [dd/mm] - Tabela de resultados do dia (GREEN/RED) com ROI.
+
+        Sem argumento: resultados de hoje.
+        Com data: resultados do dia especificado (ex: /results 27/03).
+        """
         try:
             from datetime import datetime, timedelta, timezone
             from src.config import settings
@@ -317,10 +415,37 @@ class BotCommands:
                 tz_local = ZoneInfo(settings.timezone)
             except Exception:
                 tz_local = timezone(timedelta(hours=-3))
-            alerts = await self.alerts.get_today_results()
+
+            # Determinar a data solicitada
+            now_local = datetime.now(tz_local)
+            if context.args:
+                date_str = context.args[0]
+                try:
+                    # Aceitar dd/mm ou dd/mm/yyyy
+                    parts = date_str.split("/")
+                    day = int(parts[0])
+                    month = int(parts[1])
+                    year = int(parts[2]) if len(parts) > 2 else now_local.year
+                    target_date = now_local.replace(year=year, month=month, day=day,
+                                                     hour=0, minute=0, second=0, microsecond=0)
+                except (ValueError, IndexError):
+                    await update.message.reply_text("Formato invalido. Use: /results dd/mm ou /results dd/mm/yyyy")
+                    return
+            else:
+                target_date = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Converter meia-noite local → UTC naive
+            start_utc = target_date.astimezone(timezone.utc).replace(tzinfo=None)
+            end_utc = (target_date + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+
+            date_label = target_date.strftime("%d/%m/%Y")
+            if self._is_v2_group(update) and self.alerts_v2:
+                alerts = await self.alerts_v2.get_results_by_date(start_utc, end_utc)
+            else:
+                alerts = await self.alerts.get_results_by_date(start_utc, end_utc)
 
             if not alerts:
-                await update.message.reply_text("Nenhum alerta enviado hoje.")
+                await update.message.reply_text(f"Nenhum alerta em {date_label}.")
                 return
 
             lines = []
@@ -419,8 +544,9 @@ class BotCommands:
             if total > total_validated:
                 summary += f"\n⏳ {total - total_validated} aguardando resultado"
 
+            prefix = "M2 " if self._is_v2_group(update) and self.alerts_v2 else ""
             msg = (
-                f"📋 <b>RESULTADOS DE HOJE</b>\n\n"
+                f"📋 <b>{prefix}RESULTADOS {date_label}</b>\n\n"
                 f"<pre>{header}\n{sep}\n"
                 + "\n".join(lines)
                 + f"</pre>{summary}"
@@ -430,6 +556,102 @@ class BotCommands:
         except Exception as e:
             logger.error(f"cmd_results error: {e}")
             await update.message.reply_text(f"Erro ao buscar resultados: {e}")
+
+    async def cmd_monitor(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/monitor - Jogos de volta sendo monitorados agora."""
+        try:
+            if not self.odds_monitor:
+                await update.message.reply_text("OddsMonitor nao disponivel.")
+                return
+
+            from datetime import datetime, timedelta, timezone
+            try:
+                from zoneinfo import ZoneInfo
+                from src.config import settings
+                tz_local = ZoneInfo(settings.timezone)
+            except Exception:
+                tz_local = timezone(timedelta(hours=-3))
+
+            tasks = self.odds_monitor._tasks
+            meta = self.odds_monitor._task_meta
+
+            if not tasks:
+                await update.message.reply_text("Nenhum jogo sendo monitorado agora.")
+                return
+
+            lines = []
+            for match_id, task in sorted(tasks.items()):
+                if task.done():
+                    continue
+                info = meta.get(match_id, {})
+                loser = info.get("loser", "?")
+                g1 = info.get("game1_match")
+
+                # Buscar dados do return match
+                try:
+                    rm = await self.matches.get_by_id(match_id)
+                except Exception:
+                    rm = None
+
+                if rm:
+                    ph = rm.player_home or "?"
+                    pa = rm.player_away or "?"
+                    th = rm.team_home or ""
+                    ta = rm.team_away or ""
+                    kickoff = rm.started_at
+                    if kickoff:
+                        kick_local = kickoff.replace(tzinfo=timezone.utc).astimezone(tz_local)
+                        kick_str = kick_local.strftime("%H:%M")
+                        now = datetime.now(tz_local)
+                        diff = int((kick_local - now).total_seconds() / 60)
+                        if diff > 0:
+                            time_str = f"em {diff}min"
+                        elif diff > -8:
+                            time_str = "AO VIVO"
+                        else:
+                            time_str = "encerr."
+                    else:
+                        kick_str = "?"
+                        time_str = "?"
+                else:
+                    ph = pa = th = ta = "?"
+                    kick_str = time_str = "?"
+
+                # G1 score
+                if g1:
+                    g1_score = f"{g1.score_home or '?'}-{g1.score_away or '?'}"
+                    # Gols do loser em G1
+                    if g1.player_home == loser:
+                        loser_g1 = g1.score_home or 0
+                    else:
+                        loser_g1 = g1.score_away or 0
+                else:
+                    g1_score = "?"
+                    loser_g1 = "?"
+
+                lines.append(
+                    f"{kick_str} {time_str:>7s} | {loser:<12s} | G1: {g1_score} ({loser_g1}g)"
+                )
+
+            if not lines:
+                await update.message.reply_text("Nenhum jogo ativo no momento.")
+                return
+
+            header = "Hora  Status  | Perdedor     | G1"
+            sep = "-" * 44
+            count = len(lines)
+
+            msg = (
+                f"<b>MONITORANDO ({count} jogos)</b>\n\n"
+                f"<pre>{header}\n{sep}\n"
+                + "\n".join(lines)
+                + "</pre>"
+            )
+
+            await update.message.reply_text(msg, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"cmd_monitor error: {e}")
+            await update.message.reply_text(f"Erro: {e}")
 
     def register_handlers(self, application: Application) -> None:
         """Register all command handlers with the bot application."""
@@ -444,4 +666,5 @@ class BotCommands:
         application.add_handler(CommandHandler("pnl", self.cmd_pnl))
         application.add_handler(CommandHandler("players", self.cmd_players))
         application.add_handler(CommandHandler("results", self.cmd_results))
+        application.add_handler(CommandHandler("monitor", self.cmd_monitor))
         logger.info("Telegram command handlers registered")

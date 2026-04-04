@@ -11,12 +11,27 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sys
 import time
 
 from loguru import logger
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
+
+
+def _sanitize_text(text: str) -> str:
+    """Remove surrogates invalidos que causam UnicodeEncodeError.
+
+    O erro 'surrogates not allowed' acontece quando strings contem
+    UTF-16 surrogates soltos (ex: \\ud83d\\udd04) em vez do codepoint
+    correto (ex: \\U0001f504). Emojis reais (UTF-8) passam normalmente.
+    """
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-8", errors="replace").decode("utf-8")
 
 
 class _CircuitBreaker:
@@ -97,11 +112,17 @@ class TelegramNotifier:
     repetidas quando o Telegram está fora do ar.
     """
 
-    def __init__(self, token: str, chat_id: str) -> None:
+    def __init__(self, token: str, chat_id: str, group_chat_id: str = "",
+                 v2_group_id: str = "") -> None:
         self.bot = Bot(token=token)
         self.chat_id = chat_id
+        self._group_chat_id = group_chat_id
+        self._v2_group_id = v2_group_id  # Grupo do Method 2
         self._paused = False
         self._breaker = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self._breaker_v2 = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        # Mapeia chat_message_id -> group_message_id para editar resultado no grupo
+        self._group_msg_map: dict[int, int] = {}
 
     def pause(self) -> None:
         self._paused = True
@@ -116,6 +137,8 @@ class TelegramNotifier:
 
         Returns message_id on success, None on failure.
         """
+        text = _sanitize_text(text)
+
         if not self._breaker.allow_request():
             remaining = self._breaker.seconds_until_retry
             logger.warning(
@@ -153,6 +176,8 @@ class TelegramNotifier:
 
     async def edit_message(self, message_id: int, text: str, parse_mode: str = ParseMode.HTML) -> bool:
         """Edit an existing message with circuit breaker. Returns True on success."""
+        text = _sanitize_text(text)
+
         if not self._breaker.allow_request():
             remaining = self._breaker.seconds_until_retry
             logger.warning(
@@ -198,10 +223,25 @@ class TelegramNotifier:
             f"Sending alert: {alert_data.get('losing_player')} "
             f"{alert_data.get('alert_label')} {alert_data.get('alert_odds')}"
         )
-        return await self.send_message(text)
+        msg_id = await self.send_message(text)
+
+        # Enviar tambem no grupo, se configurado
+        if self._group_chat_id and msg_id:
+            try:
+                group_msg = await self.bot.send_message(
+                    chat_id=self._group_chat_id,
+                    text=_sanitize_text(text),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                self._group_msg_map[msg_id] = group_msg.message_id
+            except Exception as e:
+                logger.warning(f"Failed to send alert to group: {e}")
+
+        return msg_id
 
     async def edit_alert_result(self, message_id: int, original_data: dict, hit: bool, score_line: str) -> bool:
-        """Edit the original alert message to show the result."""
+        """Edit the original alert message to show the result (chat + grupo)."""
         from src.telegram.messages import format_alert
         original_text = format_alert(original_data)
 
@@ -210,7 +250,25 @@ class TelegramNotifier:
         else:
             result_line = f"\n\n\u274C RED — {score_line}"
 
-        return await self.edit_message(message_id, original_text + result_line)
+        full_text = original_text + result_line
+        success = await self.edit_message(message_id, full_text)
+
+        # Editar tambem no grupo
+        group_msg_id = self._group_msg_map.pop(message_id, None)
+        if group_msg_id and self._group_chat_id:
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=self._group_chat_id,
+                    message_id=group_msg_id,
+                    text=_sanitize_text(full_text),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                logger.info(f"Group message {group_msg_id} edited with result")
+            except TelegramError as e:
+                logger.warning(f"Failed to edit group message {group_msg_id}: {e}")
+
+        return success
 
     async def send_validation(self, validation_data: dict) -> int | None:
         """Send post-game result validation."""
@@ -236,3 +294,162 @@ class TelegramNotifier:
         """Send system health status."""
         from src.telegram.messages import format_system_status
         return await self.send_message(format_system_status(status_data))
+
+    # --- Method 2 (M2) group methods ---
+
+    async def send_alert_v2(self, alert_data: dict) -> int | None:
+        """Format and send M2 alert to the V2 group. Returns message_id."""
+        v2_group = getattr(self, '_v2_group_id', None)
+        if not v2_group:
+            logger.debug("M2 group not configured, skipping send_alert_v2")
+            return None
+        if not self._breaker_v2.allow_request():
+            logger.warning(
+                f"M2 circuit breaker OPEN — skipping send_alert_v2 "
+                f"(retry in {self._breaker_v2.seconds_until_retry:.0f}s)"
+            )
+            return None
+        from src.telegram.messages import format_alert_v2
+        text = _sanitize_text(format_alert_v2(alert_data))
+        try:
+            msg = await self.bot.send_message(
+                chat_id=v2_group,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_v2.record_success()
+            logger.bind(category="alert_v2").info(
+                f"M2 alert sent to group: {alert_data.get('losing_player')} "
+                f"{alert_data.get('camada')} {alert_data.get('alert_label')}"
+            )
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_v2.record_failure()
+            logger.error(f"Failed to send M2 alert to group: {e}")
+            return None
+
+    async def edit_alert_v2_result(self, message_id: int, alert, return_match,
+                                   hit: bool, score_line: str) -> bool:
+        """Edit M2 alert message with result."""
+        v2_group = getattr(self, '_v2_group_id', None)
+        if not v2_group:
+            return False
+        from src.telegram.messages import format_alert_v2
+
+        # Reconstruir dados do G1 a partir do jogo de volta (G1 e G2 trocam home/away,
+        # mas cada jogador mantém o mesmo time em ambos os jogos).
+        loser = alert.losing_player
+        rm_ph = getattr(return_match, 'player_home', '') or ''
+        rm_pa = getattr(return_match, 'player_away', '') or ''
+        rm_th = getattr(return_match, 'team_home', '') or ''
+        rm_ta = getattr(return_match, 'team_away', '') or ''
+
+        # Separar placar G1 armazenado como "loser_goals-opp_goals"
+        g1_parts = (alert.game1_score or "?-?").split("-")
+        loser_g1 = g1_parts[0] if len(g1_parts) >= 2 else "?"
+        opp_g1 = g1_parts[1] if len(g1_parts) >= 2 else "?"
+
+        if rm_ph == loser:
+            # G2: loser(home) vs opp(away) → G1: opp(home) vs loser(away)
+            g1_player_home = rm_pa
+            g1_player_away = loser
+            g1_team_home = rm_ta
+            g1_team_away = rm_th
+            g1_score_home = opp_g1
+            g1_score_away = loser_g1
+        else:
+            # G2: opp(home) vs loser(away) → G1: loser(home) vs opp(away)
+            g1_player_home = loser
+            g1_player_away = rm_ph
+            g1_team_home = rm_ta
+            g1_team_away = rm_th
+            g1_score_home = loser_g1
+            g1_score_away = opp_g1
+
+        # Rebuild alert_data from alert object
+        alert_data = {
+            "camada": alert.camada,
+            "best_line": alert.best_line,
+            "alert_label": self._line_label(alert.best_line, alert.losing_player),
+            "alert_odds": self._line_odds(alert),
+            "prob": alert.prob,
+            "sample_size": alert.sample_size,
+            "prob_4elem": alert.prob_4elem,
+            "prob_3elem": alert.prob_3elem,
+            "sample_4elem": alert.sample_4elem,
+            "sample_3elem": alert.sample_3elem,
+            "losing_player": alert.losing_player,
+            "game1_player_home": g1_player_home,
+            "game1_player_away": g1_player_away,
+            "game1_score_home": g1_score_home,
+            "game1_score_away": g1_score_away,
+            "game1_team_home": g1_team_home,
+            "game1_team_away": g1_team_away,
+            "return_player_home": rm_ph,
+            "return_player_away": rm_pa,
+            "kickoff_time": getattr(return_match, 'started_at', None),
+            "minutes_to_kickoff": 0,
+            "bet365_url": "",
+        }
+        original_text = format_alert_v2(alert_data)
+        result_line = f"\n\n\u2705 GREEN — {score_line}" if hit else f"\n\n\u274c RED — {score_line}"
+        full_text = _sanitize_text(original_text + result_line)
+        try:
+            await self.bot.edit_message_text(
+                chat_id=v2_group,
+                message_id=message_id,
+                text=full_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_v2.record_success()
+            return True
+        except TelegramError as e:
+            self._breaker_v2.record_failure()
+            logger.warning(f"Failed to edit M2 message {message_id}: {e}")
+            return False
+
+    async def send_message_v2(self, text: str) -> int | None:
+        """Send a raw message to the M2 group."""
+        v2_group = getattr(self, '_v2_group_id', None)
+        if not v2_group:
+            return None
+        if not self._breaker_v2.allow_request():
+            logger.warning(
+                f"M2 circuit breaker OPEN — skipping send_message_v2 "
+                f"(retry in {self._breaker_v2.seconds_until_retry:.0f}s)"
+            )
+            return None
+        text = _sanitize_text(text)
+        try:
+            msg = await self.bot.send_message(
+                chat_id=v2_group,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_v2.record_success()
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_v2.record_failure()
+            logger.error(f"Failed to send M2 message: {e}")
+            return None
+
+    @staticmethod
+    def _line_label(best_line: str | None, player: str) -> str:
+        labels = {"over15": "Over 1.5", "over25": "Over 2.5",
+                  "over35": "Over 3.5", "over45": "Over 4.5"}
+        return f"{labels.get(best_line or 'over25', best_line)} gols {player}"
+
+    @staticmethod
+    def _line_odds(alert) -> float:
+        bl = alert.best_line or "over25"
+        if bl == "over45":
+            return alert.over45_odds or 0
+        elif bl == "over35":
+            return alert.over35_odds or 0
+        elif bl == "over15":
+            return alert.over15_odds or 0
+        else:
+            return alert.over25_odds or 0

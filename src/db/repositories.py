@@ -23,6 +23,7 @@ from loguru import logger
 
 from src.db.models import (
     Alert,
+    AlertV2,
     League,
     Match,
     MatchTeam,
@@ -327,7 +328,7 @@ class MatchRepository(_BaseRepository):
                 await session.flush()
 
     async def get_unvalidated_return_matches(self) -> Sequence[Match]:
-        """Return return matches that have at least one unvalidated alert."""
+        """Return return matches that have at least one unvalidated M1 alert."""
         async with self._session() as session:
             stmt = (
                 select(Match)
@@ -335,6 +336,22 @@ class MatchRepository(_BaseRepository):
                 .where(
                     Match.is_return_match == True,  # noqa: E712
                     Alert.validated_at.is_(None),
+                )
+                .distinct()
+                .order_by(Match.started_at.asc())
+            )
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+    async def get_unvalidated_return_matches_v2(self) -> Sequence[Match]:
+        """Return return matches that have at least one unvalidated M2 alert."""
+        async with self._session() as session:
+            stmt = (
+                select(Match)
+                .join(AlertV2, AlertV2.match_id == Match.id)
+                .where(
+                    Match.is_return_match == True,  # noqa: E712
+                    AlertV2.validated_at.is_(None),
                 )
                 .distinct()
                 .order_by(Match.started_at.asc())
@@ -375,6 +392,41 @@ class MatchRepository(_BaseRepository):
             )
             result = await session.execute(stmt)
             return result.scalars().all()
+
+    async def get_h2h_loser_goals(self, loser: str, opponent: str) -> list[tuple]:
+        """Get all G2 results where loser lost to opponent in G1.
+
+        Returns list of (loser_goals_g2, loser_team_g2, opp_team_g2, g2_started_at)
+        ordered by g2_started_at ascending.
+        """
+        async with self._session() as session:
+            from sqlalchemy import text
+            stmt = text("""
+                SELECT
+                    CASE WHEN g1.player_home = :loser THEN g2.score_home
+                         ELSE g2.score_away END as loser_goals,
+                    CASE WHEN g1.player_home = :loser THEN g2.team_home
+                         ELSE g2.team_away END as loser_team,
+                    CASE WHEN g1.player_home = :loser THEN g2.team_away
+                         ELSE g2.team_home END as opp_team,
+                    g2.started_at as g2_date
+                FROM matches g1
+                JOIN matches g2 ON g2.pair_match_id = g1.id
+                WHERE g2.status = 'ended'
+                  AND g2.score_home IS NOT NULL
+                  AND g1.score_home IS NOT NULL
+                  AND g1.score_home != g1.score_away
+                  AND (
+                      (g1.player_home = :loser AND g1.player_away = :opponent
+                       AND g1.score_home < g1.score_away)
+                      OR
+                      (g1.player_away = :loser AND g1.player_home = :opponent
+                       AND g1.score_away < g1.score_home)
+                  )
+                ORDER BY g2.started_at
+            """)
+            result = await session.execute(stmt, {"loser": loser, "opponent": opponent})
+            return result.fetchall()
 
     async def update_result(
         self,
@@ -555,13 +607,32 @@ class AlertRepository(_BaseRepository):
                 )
             ).scalar() or 0
 
+            # Hits pela best_line real de cada alerta (para regime detection)
+            from sqlalchemy import case
+            best_line_hits = (
+                await session.execute(
+                    select(func.count(Alert.id)).where(
+                        base_filter,
+                        Alert.validated_at.is_not(None),
+                        case(
+                            (Alert.best_line == "over15", Alert.over15_hit == True),  # noqa
+                            (Alert.best_line == "over35", Alert.over35_hit == True),  # noqa
+                            (Alert.best_line == "over45", Alert.over45_hit == True),  # noqa
+                            else_=Alert.over25_hit == True,  # noqa: E712
+                        ),
+                    )
+                )
+            ).scalar() or 0
+
             return {
                 "total": total,
                 "validated": validated,
                 "over25_hits": over25_hits,
                 "over35_hits": over35_hits,
+                "best_line_hits": best_line_hits,
                 "hit_rate_25": over25_hits / validated if validated > 0 else 0.0,
                 "hit_rate_35": over35_hits / validated if validated > 0 else 0.0,
+                "hit_rate_best": best_line_hits / validated if validated > 0 else 0.0,
             }
 
     async def get_daily_stats(self, target: date) -> Dict:
@@ -673,6 +744,17 @@ class AlertRepository(_BaseRepository):
             stmt = (
                 select(Alert)
                 .where(Alert.sent_at >= today_start)
+                .order_by(Alert.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_results_by_date(self, start_utc: datetime, end_utc: datetime) -> list[Alert]:
+        """Return all alerts between two UTC datetimes, ordered by sent_at."""
+        async with self._session() as session:
+            stmt = (
+                select(Alert)
+                .where(Alert.sent_at >= start_utc, Alert.sent_at < end_utc)
                 .order_by(Alert.sent_at.asc())
             )
             result = await session.execute(stmt)
@@ -1262,3 +1344,245 @@ class TeamStatsRepository(_BaseRepository):
 
             await session.flush()
             return row
+
+
+# ---------------------------------------------------------------------------
+# AlertV2Repository (Method 2)
+# ---------------------------------------------------------------------------
+class AlertV2Repository(_BaseRepository):
+    """CRUD and querying for the alerts_v2 table (Method 2)."""
+
+    async def create(self, **kwargs) -> AlertV2:
+        async with self._session() as session:
+            alert = AlertV2(**kwargs)
+            session.add(alert)
+            await session.flush()
+            return alert
+
+    async def validate(
+        self,
+        alert_id: int,
+        actual_goals: int,
+        hit: bool,
+        profit_flat: float | None = None,
+    ) -> Optional[AlertV2]:
+        async with self._session() as session:
+            stmt = select(AlertV2).where(AlertV2.id == alert_id)
+            result = await session.execute(stmt)
+            alert = result.scalar_one_or_none()
+            if alert:
+                alert.actual_goals = actual_goals
+                alert.hit = hit
+                if profit_flat is not None:
+                    alert.profit_flat = profit_flat
+                alert.validated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                await session.flush()
+            return alert
+
+    async def get_all_by_match_id(self, match_id: int) -> Sequence[AlertV2]:
+        async with self._session() as session:
+            stmt = (
+                select(AlertV2)
+                .where(AlertV2.match_id == match_id)
+                .order_by(AlertV2.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+    async def update_telegram_message_id(self, alert_id: int, message_id: int) -> None:
+        async with self._session() as session:
+            stmt = (
+                update(AlertV2)
+                .where(AlertV2.id == alert_id)
+                .values(telegram_message_id=message_id)
+            )
+            await session.execute(stmt)
+
+    async def get_results_by_date(self, start_utc: datetime, end_utc: datetime) -> list[AlertV2]:
+        async with self._session() as session:
+            stmt = (
+                select(AlertV2)
+                .where(AlertV2.sent_at >= start_utc, AlertV2.sent_at < end_utc)
+                .order_by(AlertV2.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_pnl_summary(self, days: int = 30) -> Dict:
+        async with self._session() as session:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
+            stmt = (
+                select(AlertV2)
+                .where(AlertV2.validated_at.is_not(None), AlertV2.sent_at >= cutoff)
+                .order_by(AlertV2.sent_at.desc())
+            )
+            result = await session.execute(stmt)
+            alerts = result.scalars().all()
+
+            total = len(alerts)
+            if total == 0:
+                return {"total": 0, "wins": 0, "losses": 0, "profit": 0.0,
+                        "roi": 0.0, "hit_rate": 0.0, "by_line": {}, "by_player": {},
+                        "by_camada": {}}
+
+            profit = 0.0
+            wins = 0
+            by_line: Dict[str, Dict] = {}
+            by_player: Dict[str, Dict] = {}
+            by_camada: Dict[str, Dict] = {}
+
+            for a in alerts:
+                odds = self._get_odds_for_line(a) or 1.0
+                hit = a.hit
+                p = (odds - 1.0) if hit else -1.0
+                profit += p
+                if hit:
+                    wins += 1
+                bl = a.best_line or "over25"
+                for group, key in [(by_line, bl), (by_player, a.losing_player),
+                                   (by_camada, a.camada)]:
+                    if key not in group:
+                        group[key] = {"total": 0, "wins": 0, "profit": 0.0}
+                    group[key]["total"] += 1
+                    group[key]["profit"] += p
+                    if hit:
+                        group[key]["wins"] += 1
+
+            return {"total": total, "wins": wins, "losses": total - wins,
+                    "profit": round(profit, 2),
+                    "roi": round(profit / total, 4) if total else 0.0,
+                    "hit_rate": round(wins / total, 4) if total else 0.0,
+                    "by_line": by_line, "by_player": by_player, "by_camada": by_camada}
+
+    async def get_player_performance(self, days: int = 30, min_alerts: int = 2) -> List[Dict]:
+        async with self._session() as session:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
+            stmt = (
+                select(AlertV2)
+                .where(AlertV2.validated_at.is_not(None), AlertV2.sent_at >= cutoff)
+                .order_by(AlertV2.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            alerts = result.scalars().all()
+
+            players: Dict[str, Dict] = {}
+            for a in alerts:
+                odds = self._get_odds_for_line(a) or 1.0
+                hit = a.hit
+                p = (odds - 1.0) if hit else -1.0
+                name = a.losing_player or "?"
+                if name not in players:
+                    players[name] = {"total": 0, "wins": 0, "profit": 0.0,
+                                     "odds_sum": 0.0, "streak": 0, "max_dd": 0.0}
+                d = players[name]
+                d["total"] += 1
+                d["odds_sum"] += odds
+                d["profit"] += p
+                if hit:
+                    d["wins"] += 1
+                    d["streak"] = max(0, d["streak"]) + 1
+                else:
+                    d["streak"] = min(0, d["streak"]) - 1
+                    d["max_dd"] = min(d["max_dd"], d["streak"])
+
+            result_list = []
+            for name, d in players.items():
+                if d["total"] < min_alerts:
+                    continue
+                result_list.append({
+                    "player": name,
+                    "total": d["total"],
+                    "wins": d["wins"],
+                    "losses": d["total"] - d["wins"],
+                    "profit": round(d["profit"], 2),
+                    "roi": round(d["profit"] / d["total"], 4) if d["total"] else 0.0,
+                    "hit_rate": round(d["wins"] / d["total"], 4) if d["total"] else 0.0,
+                    "avg_odds": round(d["odds_sum"] / d["total"], 2) if d["total"] else 0.0,
+                    "worst_streak": abs(int(d["max_dd"])),
+                })
+            result_list.sort(key=lambda x: x["profit"], reverse=True)
+            return result_list
+
+    async def get_weekly_breakdown(self, weeks: int = 4) -> List[Dict]:
+        async with self._session() as session:
+            cutoff = (datetime.now(timezone.utc) - timedelta(weeks=weeks)).replace(tzinfo=None)
+            stmt = (
+                select(AlertV2)
+                .where(AlertV2.validated_at.is_not(None), AlertV2.sent_at >= cutoff)
+                .order_by(AlertV2.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            alerts = result.scalars().all()
+
+            weekly: Dict[str, Dict] = {}
+            for a in alerts:
+                week_label = a.sent_at.strftime("%Y-W%W") if a.sent_at else "?"
+                odds = self._get_odds_for_line(a) or 1.0
+                hit = a.hit
+                p = (odds - 1.0) if hit else -1.0
+                if week_label not in weekly:
+                    weekly[week_label] = {"week": week_label, "total": 0, "wins": 0, "profit": 0.0}
+                d = weekly[week_label]
+                d["total"] += 1
+                d["profit"] += p
+                if hit:
+                    d["wins"] += 1
+
+            result_list = []
+            for d in weekly.values():
+                d["profit"] = round(d["profit"], 2)
+                d["roi"] = round(d["profit"] / d["total"], 4) if d["total"] else 0.0
+                result_list.append(d)
+            return result_list
+
+    async def get_recent_streak(self, n: int = 20) -> Dict:
+        async with self._session() as session:
+            stmt = (
+                select(AlertV2)
+                .where(AlertV2.validated_at.is_not(None))
+                .order_by(AlertV2.validated_at.desc())
+                .limit(n)
+            )
+            result = await session.execute(stmt)
+            alerts = list(result.scalars().all())
+            alerts.reverse()
+
+            if not alerts:
+                return {"streak": 0, "recent_profit": 0.0, "recent_hits": 0, "recent_total": 0}
+
+            streak = 0
+            profit = 0.0
+            hits = 0
+            for a in alerts:
+                odds = self._get_odds_for_line(a) or 1.0
+                p = (odds - 1.0) if a.hit else -1.0
+                profit += p
+                if a.hit:
+                    hits += 1
+
+            for a in reversed(alerts):
+                if a.hit:
+                    if streak >= 0:
+                        streak += 1
+                    else:
+                        break
+                else:
+                    if streak <= 0:
+                        streak -= 1
+                    else:
+                        break
+
+            return {"streak": streak, "recent_profit": round(profit, 2),
+                    "recent_hits": hits, "recent_total": len(alerts)}
+
+    @staticmethod
+    def _get_odds_for_line(alert: AlertV2) -> float | None:
+        bl = alert.best_line or "over25"
+        if bl == "over45":
+            return alert.over45_odds
+        elif bl == "over35":
+            return alert.over35_odds
+        elif bl == "over15":
+            return alert.over15_odds
+        else:
+            return alert.over25_odds

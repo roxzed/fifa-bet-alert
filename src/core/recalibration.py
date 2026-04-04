@@ -28,14 +28,8 @@ class AutoRecalibrator:
         self.matches = match_repo
         self.method_stats = method_stats_repo
         self.notifier = notifier
-        # Estado em memoria — alertas pausados por regime degradado
-        self._alerts_paused: bool = False
         self._last_regime_status: str = "HEALTHY"
         self._degraded_since: datetime | None = None
-
-    @property
-    def alerts_paused(self) -> bool:
-        return self._alerts_paused
 
     async def recalibrate(self) -> dict:
         """Recalibracao principal. Chamada diariamente pelo scheduler.
@@ -53,7 +47,7 @@ class AutoRecalibrator:
             from src.db.models import Alert
 
             # 1. Buscar alertas validados recentes
-            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).replace(tzinfo=None)
             stmt = (
                 select(Alert)
                 .where(Alert.validated_at.is_not(None), Alert.sent_at >= cutoff)
@@ -165,7 +159,7 @@ class AutoRecalibrator:
     async def detect_regime_change(self) -> dict:
         """Deteccao rapida de regime change (roda a cada hora).
 
-        Compara hit rate dos ultimos 10 alertas vs historico.
+        Compara hit rate dos ultimos 25 alertas vs historico.
         Se DEGRADED: pausa alertas automaticamente.
         Se volta a HEALTHY: reativa alertas.
         """
@@ -173,17 +167,17 @@ class AutoRecalibrator:
             from sqlalchemy import select
             from src.db.models import Alert
 
-            # Ultimos 10 alertas validados
+            # Ultimos 25 alertas validados (window maior para evitar falsos positivos)
             stmt = (
                 select(Alert)
                 .where(Alert.validated_at.is_not(None))
                 .order_by(Alert.sent_at.desc())
-                .limit(10)
+                .limit(25)
             )
             result = await self.alerts.execute_query(stmt)
             recent = result.scalars().all()
 
-            if len(recent) < 8:
+            if len(recent) < 15:
                 return {"status": "INSUFFICIENT_DATA"}
 
             recent_hits = sum(1 for a in recent if self._is_hit(a))
@@ -217,43 +211,37 @@ class AutoRecalibrator:
             prev_status = self._last_regime_status
             self._last_regime_status = status
 
-            if status == "DEGRADED" and not self._alerts_paused:
-                # Pausar alertas
-                self._alerts_paused = True
+            if status == "DEGRADED" and prev_status != "DEGRADED":
                 self._degraded_since = datetime.now(timezone.utc)
                 logger.warning(
-                    f"REGIME DEGRADED — Alertas PAUSADOS automaticamente. "
+                    f"REGIME DEGRADED — alertas continuam ativos. "
                     f"Recent: {recent_rate:.0%} vs Historical: {hist_rate:.0%} (delta {delta:+.0%})"
                 )
                 if self.notifier:
                     await self.notifier.send_message(
-                        "\u26a0\ufe0f <b>Regime DEGRADED — Alertas PAUSADOS</b>\n\n"
+                        "\U0001f6d1 <b>Regime DEGRADED</b>\n\n"
                         f"Hit rate recente: {recent_rate:.0%} ({recent_hits}/{len(recent)})\n"
                         f"Hit rate historico: {hist_rate:.0%} ({hist_hits}/{len(historical)})\n"
                         f"Delta: {delta:+.0%}\n\n"
-                        "Alertas pausados automaticamente.\n"
-                        "Recalibracao automatica sera executada na proxima rodada (06:00).\n"
-                        "Alertas serao reativados quando regime voltar a HEALTHY."
+                        "Alertas continuam ativos — recalibracao automatica na proxima rodada (06:00)."
                     )
                 # Trigger recalibracao imediata
                 await self._trigger_full_recalibration({"changes": [], "regime": "DEGRADED"})
 
-            elif status == "HEALTHY" and self._alerts_paused:
-                # Reativar alertas
-                self._alerts_paused = False
-                paused_duration = ""
+            elif status == "HEALTHY" and prev_status == "DEGRADED":
+                degraded_duration = ""
                 if self._degraded_since:
                     hours = (datetime.now(timezone.utc) - self._degraded_since).total_seconds() / 3600
-                    paused_duration = f" (pausados por {hours:.1f}h)"
+                    degraded_duration = f" (regime degradado por {hours:.1f}h)"
                 self._degraded_since = None
-                logger.info(f"REGIME HEALTHY — Alertas REATIVADOS{paused_duration}")
+                logger.info(f"REGIME HEALTHY{degraded_duration}")
                 if self.notifier:
                     await self.notifier.send_message(
-                        "\u2705 <b>Regime HEALTHY — Alertas REATIVADOS</b>\n\n"
+                        "\u2705 <b>Regime voltou a HEALTHY</b>\n\n"
                         f"Hit rate recente: {recent_rate:.0%}\n"
                         f"Hit rate historico: {hist_rate:.0%}\n"
-                        f"Delta: {delta:+.0%}\n\n"
-                        f"Alertas reativados automaticamente{paused_duration}."
+                        f"Delta: {delta:+.0%}"
+                        + (f"\n\n{degraded_duration.strip()}" if degraded_duration else "")
                     )
 
             elif status == "WARNING" and prev_status == "HEALTHY":
@@ -279,7 +267,6 @@ class AutoRecalibrator:
                 "recent_rate": recent_rate,
                 "historical_rate": hist_rate,
                 "delta": delta,
-                "alerts_paused": self._alerts_paused,
             }
 
         except Exception as e:
@@ -321,7 +308,7 @@ class AutoRecalibrator:
         try:
             from src.db.models import RegimeCheck
             regime_check = RegimeCheck(
-                checked_at=datetime.now(timezone.utc),
+                checked_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 window_size=total,
                 recent_rate=hit_rate,
                 historical_rate=0.55,
@@ -341,19 +328,17 @@ class AutoRecalibrator:
         regime_icon = {
             "HEALTHY": "\u2705",
             "WARNING": "\u26a0\ufe0f",
-            "DEGRADED": "\ud83d\uded1",
+            "DEGRADED": "\U0001f6d1",
         }.get(regime, "\u2753")
 
         changes_str = "\n".join(f"  \u2022 {c}" for c in report["changes"])
-        paused_str = "\n\n<b>Alertas PAUSADOS</b>" if self._alerts_paused else ""
 
         msg = (
-            f"\ud83d\udd04 <b>Recalibracao Automatica</b>\n\n"
+            f"\U0001f504 <b>Recalibracao Automatica</b>\n\n"
             f"Alertas analisados: {total} (7 dias)\n"
             f"Hit rate: {hit_rate:.0%}\n"
             f"Regime: {regime_icon} {regime}\n\n"
             f"<b>Observacoes:</b>\n{changes_str}"
-            f"{paused_str}"
         )
         try:
             await self.notifier.send_message(msg)

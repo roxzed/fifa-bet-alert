@@ -47,11 +47,6 @@ class AlertEngine:
         3. If should_alert, save to DB and send Telegram
         Returns True if alert was sent.
         """
-        # Check se alertas estao pausados por regime degradado
-        if self._recalibrator and self._recalibrator.alerts_paused:
-            logger.info(f"Alert skipped for {loser}: alertas pausados (regime DEGRADED)")
-            return False
-
         score_home = game1_match.score_home or 0
         score_away = game1_match.score_away or 0
 
@@ -61,11 +56,13 @@ class AlertEngine:
             score_loser = score_home
             loser_team = game1_match.team_home
             opponent_team = game1_match.team_away
+            loser_was_home_g1 = True
         else:
             score_winner = score_home
             score_loser = score_away
             loser_team = game1_match.team_away
             opponent_team = game1_match.team_home
+            loser_was_home_g1 = False
 
         kickoff = return_match.started_at
 
@@ -84,6 +81,7 @@ class AlertEngine:
             opponent_team=opponent_team,
             odds_history=odds_history or [],
             loser_goals_g1=loser_goals_g1,
+            loser_was_home_g1=loser_was_home_g1,
         )
 
         if not evaluation.should_alert:
@@ -244,6 +242,8 @@ class AlertEngine:
         }
 
         # Session-per-method: alert.create() already committed
+        # Alerta criado no DB — retornar True mesmo se Telegram falhar/pausado
+        # para evitar que o OddsMonitor crie duplicatas a cada poll
 
         message_id = None
 
@@ -285,10 +285,12 @@ class AlertEngine:
                     message_id = ml_msg_id
                     try:
                         await self.alerts.update_telegram_message_id(alert.id, ml_msg_id)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Could not save ML message_id for alert {alert.id}: {e}")
 
-        return bool(message_id)
+        # Retorna True se alerta foi criado no DB (independente do Telegram)
+        # Isso evita que OddsMonitor crie duplicatas quando alertas estao pausados
+        return True
 
     @staticmethod
     def _level_from_stars(stars: int) -> str:

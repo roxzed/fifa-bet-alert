@@ -9,7 +9,7 @@ Melhorias v2 (2026-03-25):
 - MELHORIA 4: Polling adaptativo no _monitor_loop:
   * Longe do kickoff (>10 min) → poll a cada 60s
   * Perto do kickoff (3-10 min) → poll a cada 15s
-  * Após kickoff (0 a -3 min) → poll a cada 10s (máxima urgência)
+  * Após kickoff (0 a -5.5 min) → poll a cada 10s (máxima urgência)
 """
 
 from __future__ import annotations
@@ -104,15 +104,18 @@ class OddsMonitor:
     _MAX_MONITOR_SECONDS: int = 45 * 60  # 45 min máximo por partida
     _MAX_CONCURRENT_TASKS: int = 30      # máximo de tasks simultâneas
 
-    def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15) -> None:
+    def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15,
+                 alert_engine_v2=None) -> None:
         self.api = api_client
         self.odds_repo = odds_repo
         self.alert_engine = alert_engine
+        self.alert_engine_v2 = alert_engine_v2  # Method 2 (opcional)
         self.match_repo = match_repo  # PROBLEMA 9 fix: acesso direto ao repo
         self.poll_interval = poll_interval  # default, overridden by adaptive logic
         self._tasks: dict[int, asyncio.Task] = {}
         self._task_meta: dict[int, dict] = {}  # match_id → {game1_match, loser, ...}
         self._task_started: dict[int, float] = {}  # match_id → monotonic start time
+        self._alert_v2_sent: dict[int, bool] = {}  # match_id → True se M2 alerta ja foi enviado
 
     async def start_monitoring(
         self,
@@ -191,12 +194,19 @@ class OddsMonitor:
                 best_rate = max(o15_rate, o25_rate, o35_rate, o45_rate)
                 realistic_max = best_rate * 1.15
                 if realistic_max < 0.68:
-                    logger.info(
-                        f"Skip monitoring {loser} (match {match_id}): "
-                        f"O1.5={o15_rate:.0%} O2.5={o25_rate:.0%} O3.5={o35_rate:.0%} "
-                        f"max={realistic_max:.0%} < 68%"
-                    )
-                    return
+                    if self.alert_engine_v2:
+                        # M2 usa taxas H2H específicas — não pode pré-filtrar por taxa global
+                        logger.info(
+                            f"M1 pre-filter skip for {loser} (match {match_id}, "
+                            f"max={realistic_max:.0%}), mas M2 ainda monitora"
+                        )
+                    else:
+                        logger.info(
+                            f"Skip monitoring {loser} (match {match_id}): "
+                            f"O1.5={o15_rate:.0%} O2.5={o25_rate:.0%} O3.5={o35_rate:.0%} "
+                            f"max={realistic_max:.0%} < 68%"
+                        )
+                        return
         except Exception as e:
             logger.debug(f"Pre-filter check failed for {loser}: {e}")
 
@@ -204,86 +214,26 @@ class OddsMonitor:
             self._monitor_loop(return_match, game1_match, loser, winner, loser_goals_g1),
             name=f"odds_monitor_{match_id}",
         )
+
+        def _on_task_done(t: asyncio.Task) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error(
+                    f"OddsMonitor task for match {match_id} ({loser}) died: {exc}"
+                )
+
+        task.add_done_callback(_on_task_done)
         self._tasks[match_id] = task
         self._task_meta[match_id] = {"game1_match": game1_match, "loser": loser}
         self._task_started[match_id] = time.monotonic()
         logger.info(f"Started odds monitoring for return match {match_id} ({loser} as loser, g1_goals={loser_goals_g1})")
 
-        # Enviar aviso de "possível sinal" com probabilidades do motor completo
-        try:
-            kickoff = return_match.started_at
-            if kickoff:
-                from zoneinfo import ZoneInfo
-                if kickoff.tzinfo is None:
-                    kickoff = kickoff.replace(tzinfo=timezone.utc)
-                kickoff_brt = kickoff.astimezone(ZoneInfo("America/Sao_Paulo"))
-                kickoff_str = kickoff_brt.strftime("%H:%M")
-            else:
-                kickoff_str = "?"
-                kickoff_brt = None
-            score_g1 = f"{game1_match.score_home}-{game1_match.score_away}"
-
-            stats = self.alert_engine.stats
-            winner_score = max(game1_match.score_home or 0, game1_match.score_away or 0)
-            loser_score = min(game1_match.score_home or 0, game1_match.score_away or 0)
-
-            # Identificar times do perdedor e oponente em G1
-            loser_team = game1_match.team_home if game1_match.player_home == loser else game1_match.team_away
-            opp_team = game1_match.team_home if game1_match.player_home == winner else game1_match.team_away
-
-            match_time_utc = kickoff or datetime.now(timezone.utc)
-
-            # Usar motor completo (13 layers) — odds placeholder 2.0 pois só usamos true_prob
-            eval_result = await stats.evaluate_opportunity(
-                losing_player=loser,
-                opponent_player=winner,
-                game1_score_winner=winner_score,
-                game1_score_loser=loser_score,
-                over25_odds=2.0,
-                over35_odds=2.0,
-                over45_odds=2.0,
-                over15_odds=2.0,
-                ml_odds=2.60,
-                match_time=match_time_utc,
-                loser_team=loser_team,
-                opponent_team=opp_team,
-                loser_goals_g1=loser_goals_g1,
-            )
-            tp15 = eval_result.line_over15.true_prob if eval_result.line_over15 else 0.0
-            tp25 = eval_result.line_over25.true_prob if eval_result.line_over25 else 0.0
-            tp35 = eval_result.line_over35.true_prob if eval_result.line_over35 else 0.0
-            tp45 = eval_result.line_over45.true_prob if eval_result.line_over45 else 0.0
-            tp_ml = eval_result.line_ml.true_prob if eval_result.line_ml else 0.0
-
-            lines = []
-            if tp_ml >= 0.45:
-                lines.append(f"ML ({tp_ml:.0%})")
-            if tp15 >= 0.68:
-                lines.append(f"O1.5 ({tp15:.0%})")
-            if tp25 >= 0.68:
-                lines.append(f"O2.5 ({tp25:.0%})")
-            if tp35 >= 0.68:
-                lines.append(f"O3.5 ({tp35:.0%})")
-            if tp45 >= 0.68:
-                lines.append(f"O4.5 ({tp45:.0%})")
-
-            if lines:
-                lines_str = " | ".join(lines)
-                msg = (
-                    f"👀 <b>Possível sinal</b>\n"
-                    f"\n"
-                    f"{game1_match.player_home} ({game1_match.team_home}) "
-                    f"{score_g1} "
-                    f"{game1_match.player_away} ({game1_match.team_away})\n"
-                    f"\n"
-                    f"Perdedor: <b>{loser}</b> ({loser_goals_g1}g em G1)\n"
-                    f"Linhas: {lines_str}\n"
-                    f"Kickoff G2: {kickoff_str}\n"
-                    f"Aguardando odds..."
-                )
-                await self.alert_engine.notifier.send_message(msg)
-        except Exception as e:
-            logger.error(f"Could not send monitoring alert: {e}")
+        # Log de monitoramento (sem enviar mensagem no Telegram)
+        logger.info(
+            f"Monitoring {loser} (g1_goals={loser_goals_g1}) for return match {match_id}"
+        )
 
     async def _monitor_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
@@ -322,7 +272,15 @@ class OddsMonitor:
                 interval = _adaptive_poll_interval(minutes_left)
 
                 # Esperar até 3 min antes do kickoff sem fazer requests
+                # Pre-warm: aquecer cache de stats 4 min antes do kickoff
                 if minutes_left is not None and minutes_left > 3:
+                    if 3 < minutes_left <= 4.5 and not getattr(self, f'_warmed_{match_id}', False):
+                        try:
+                            await self.alert_engine.stats.pre_warm_cache(loser, winner)
+                            setattr(self, f'_warmed_{match_id}', True)
+                            logger.info(f"Match {match_id}: cache pre-aquecido para {loser}")
+                        except Exception as e:
+                            logger.debug(f"Pre-warm failed for {loser}: {e}")
                     wait = max(10, (minutes_left - 3) * 60)
                     logger.debug(f"Match {match_id}: {minutes_left:.0f}min pro kickoff, dormindo {wait:.0f}s")
                     await asyncio.sleep(wait)
@@ -401,11 +359,31 @@ class OddsMonitor:
                         history = await self.odds_repo.get_history(match_id, loser, "over_2.5")
                         if history:
                             over25_opening = history[0].odds_value
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"Could not fetch odds history for {match_id}: {e}")
                         history = []
 
-                    # Evaluate and alert (only once, permite ate 3 min apos kickoff)
-                    if not alert_sent and (minutes_left is None or minutes_left >= -3):
+                    # Evaluate and alert (only once, permite ate 5.5 min apos kickoff)
+                    if not alert_sent and (minutes_left is None or minutes_left >= -5.5):
+                        # Re-fetch odds frescas antes de enviar para minimizar delay
+                        try:
+                            fresh_odds, fresh_url, fresh_ev = await self._fetch_loser_odds(return_match, loser)
+                            if fresh_odds:
+                                for po in fresh_odds:
+                                    if po.line == 1.5:
+                                        over15_odds = po.over_odds
+                                    elif po.line == 2.5:
+                                        over25_odds = po.over_odds
+                                    elif po.line == 3.5:
+                                        over35_odds = po.over_odds
+                                    elif po.line == 4.5:
+                                        over45_odds = po.over_odds
+                                if fresh_url:
+                                    bet365_url = fresh_url
+                                logger.debug(f"Match {match_id}: odds atualizadas antes do alerta")
+                        except Exception:
+                            pass  # usa odds do poll anterior
+
                         sent = await self.alert_engine.evaluate_and_alert(
                             return_match=return_match,
                             game1_match=game1_match,
@@ -425,6 +403,29 @@ class OddsMonitor:
                         if sent:
                             alert_sent = True
                             logger.info(f"Alert sent for return match {match_id}")
+
+                    # Method 2: avaliar independentemente (uma vez por partida)
+                    if self.alert_engine_v2 and not self._alert_v2_sent.get(match_id):
+                        if minutes_left is None or minutes_left >= -5.5:
+                            try:
+                                sent_v2 = await self.alert_engine_v2.evaluate_and_alert(
+                                    return_match=return_match,
+                                    game1_match=game1_match,
+                                    loser=loser,
+                                    winner=winner,
+                                    over25_odds=over25_odds or 0.0,
+                                    over35_odds=over35_odds,
+                                    over45_odds=over45_odds,
+                                    over15_odds=over15_odds,
+                                    minutes_to_kickoff=int(minutes_left) if minutes_left is not None else 0,
+                                    loser_goals_g1=loser_goals_g1,
+                                    bet365_url=bet365_url or "",
+                                )
+                                if sent_v2:
+                                    self._alert_v2_sent[match_id] = True
+                                    logger.info(f"M2 alert sent for return match {match_id}")
+                            except Exception as e_v2:
+                                logger.warning(f"M2 alert engine error for match {match_id}: {e_v2}")
 
                     _consecutive_errors = 0
 
@@ -446,6 +447,7 @@ class OddsMonitor:
         finally:
             self._tasks.pop(match_id, None)
             self._task_started.pop(match_id, None)
+            self._alert_v2_sent.pop(match_id, None)
 
     async def _fetch_loser_odds(self, return_match, loser: str):
         """Find bet365 FI for the match and return player goals odds for the loser.

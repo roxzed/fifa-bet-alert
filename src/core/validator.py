@@ -42,6 +42,7 @@ class Validator:
         self._running = False
         # Track per-alert retry counts to avoid infinite loops
         self._retry_counts: dict[int, int] = {}
+        self._drawdown_notified: bool = False  # evita spam de notificacao de drawdown
 
     async def start(self, poll_interval: int = 60) -> None:
         """Start validation loop with circuit breaker."""
@@ -95,6 +96,9 @@ class Validator:
                 await self._validate_match(return_match)
             except Exception as e:
                 logger.error(f"Failed to validate match {return_match.id}: {e}")
+                err_str = str(e).lower()
+                if "sqlalchemy" in err_str or "asyncpg" in err_str or "timeout" in err_str:
+                    self._db_failures += 1
 
     async def _abandon_match_alerts(self, match_id: int) -> None:
         """Mark stale alerts as validated with 0 profit to stop retrying."""
@@ -119,24 +123,43 @@ class Validator:
 
     async def _validate_match(self, return_match) -> None:
         """Fetch final score for a return match, edit alert message, export to CSV."""
+        home_score = None
+        away_score = None
+
+        # 1. Try API first
         try:
             details = await self.api.get_event_details(return_match.api_event_id)
+            if details.status == "ended" and details.home_score is not None and details.away_score is not None:
+                home_score = details.home_score
+                away_score = details.away_score
         except Exception as e:
             logger.warning(f"Could not fetch details for {return_match.id}: {e}")
+
+        # 2. Fallback: use DB score if game_watcher already recorded it
+        #    (some eSoccer events get stuck at time_status=2 in the API)
+        if home_score is None and return_match.score_home is not None and return_match.score_away is not None:
+            if return_match.status == "ended":
+                home_score = return_match.score_home
+                away_score = return_match.score_away
+                logger.info(
+                    f"Match {return_match.id}: using DB score {home_score}-{away_score} "
+                    f"(API stuck at time_status!=3)"
+                )
+
+        if home_score is None or away_score is None:
             return
 
-        # So validar quando o jogo REALMENTE terminou (status=ended / time_status=3)
-        if details.status != "ended":
-            return
-
-        if details.home_score is None or details.away_score is None:
-            return
+        # Build a simple details-like object for downstream use
+        from types import SimpleNamespace
+        details = SimpleNamespace(
+            home_score=home_score, away_score=away_score, status="ended",
+        )
 
         # Update match record
         await self.matches.update_result(
             match_id=return_match.id,
-            score_home=details.home_score,
-            score_away=details.away_score,
+            score_home=home_score,
+            score_away=away_score,
             ended_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
@@ -146,6 +169,10 @@ class Validator:
             # Fallback: busca unica
             single = await self.alerts.get_by_match_id(return_match.id)
             all_alerts = [single] if single else []
+
+        # Rastrear quais best_lines ja foram notificadas para evitar spam de duplicatas
+        # (mesmo match_id + best_line = alerta duplicado, so notifica uma vez)
+        notified_lines: set[str] = set()
 
         for alert in all_alerts:
             if alert.validated_at:
@@ -173,8 +200,14 @@ class Validator:
                 self._retry_counts.pop(alert.id, None)
                 continue
 
+            # Determinar se deve enviar notificacao Telegram para este alerta
+            # Duplicatas (mesmo best_line) nao devem gerar notificacao extra
+            best_line_key = alert.best_line or "over25"
+            should_notify = best_line_key not in notified_lines
+
             try:
-                await self._validate_alert(alert, return_match, details)
+                await self._validate_alert(alert, return_match, details, send_notification=should_notify)
+                notified_lines.add(best_line_key)
                 # Success — clean up retry counter
                 self._retry_counts.pop(alert.id, None)
             except Exception as e:
@@ -184,7 +217,7 @@ class Validator:
                     f"(attempt {retries + 1}/{self.MAX_RETRIES}): {e}"
                 )
 
-    async def _validate_alert(self, alert, return_match, details) -> None:
+    async def _validate_alert(self, alert, return_match, details, send_notification: bool = True) -> None:
         """Validate a single alert against match result."""
         loser = alert.losing_player
         if return_match.player_home == loser:
@@ -254,9 +287,16 @@ class Validator:
         score_line = f"{details.home_score}-{details.away_score} ({loser} fez {loser_goals} gols)"
 
         # Edit Telegram message (or send standalone if message_id missing)
-        await self._send_result_notification(
-            alert, return_match, hit, score_line, line_label, odds_used, profit_flat,
-        )
+        # send_notification=False para alertas duplicados (mesmo match+linha) — evita spam
+        if send_notification:
+            await self._send_result_notification(
+                alert, return_match, hit, score_line, line_label, odds_used, profit_flat,
+            )
+        else:
+            logger.debug(
+                f"Alert {alert.id} ({alert.best_line}): resultado registrado no DB "
+                f"sem notificacao Telegram (duplicata da linha)"
+            )
 
         # Export to CSV (sync, uses pre-extracted data)
         try:
@@ -365,7 +405,7 @@ class Validator:
                 logger.warning(f"Could not send standalone result for alert {alert.id}: {e}")
 
     async def _check_drawdown(self) -> None:
-        """Pausa alertas se houver drawdown severo (5+ losses seguidas ou -5u)."""
+        """Notifica sobre drawdown severo (5+ losses seguidas ou -5u). Nao pausa automaticamente."""
         streak = await self.alerts.get_recent_streak(20)
         consec = streak.get("consecutive_losses", 0)
         recent_profit = streak.get("recent_profit", 0.0)
@@ -373,24 +413,28 @@ class Validator:
 
         # Trigger: 5+ losses seguidas OU -5u nos ultimos 20 alertas
         if current_streak <= -5 or recent_profit <= -5.0:
-            if not self.notifier._paused:
-                self.notifier.pause()
-                msg = (
-                    "\u26a0\ufe0f <b>DRAWDOWN ALERT - Alertas PAUSADOS</b>\n\n"
-                    f"Streak atual: {abs(current_streak)}L seguidas\n"
-                    f"P&L ultimos 20: <b>{recent_profit:+.1f}u</b>\n"
-                    f"Pior sequencia: {consec}L\n\n"
-                    "Alertas pausados automaticamente.\n"
-                    "Use /resume quando quiser retomar."
-                )
-                try:
-                    await self.notifier.send_message(msg)
-                except Exception:
-                    pass
-                logger.warning(
-                    f"DRAWDOWN: alertas pausados ({abs(current_streak)}L, "
-                    f"{recent_profit:+.1f}u nos ultimos 20)"
-                )
+            if self._drawdown_notified:
+                return  # ja notificou, nao spammar
+            self._drawdown_notified = True
+            msg = (
+                "\u26a0\ufe0f <b>DRAWDOWN ALERT</b>\n\n"
+                f"Streak atual: {abs(current_streak)}L seguidas\n"
+                f"P&L ultimos 20: <b>{recent_profit:+.1f}u</b>\n"
+                f"Pior sequencia: {consec}L\n\n"
+                "Alertas continuam ativos.\n"
+                "Use /pause se quiser pausar manualmente."
+            )
+            try:
+                await self.notifier.send_message(msg)
+            except Exception:
+                pass
+            logger.warning(
+                f"DRAWDOWN ALERT: {abs(current_streak)}L, "
+                f"{recent_profit:+.1f}u nos ultimos 20 (sem pausa automatica)"
+            )
+        else:
+            # Saiu do drawdown — resetar flag para notificar se entrar novamente
+            self._drawdown_notified = False
 
     def _rebuild_alert_data(self, alert, return_match) -> dict:
         """Rebuild the alert_data dict from DB fields to re-render the message."""

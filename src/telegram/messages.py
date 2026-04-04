@@ -69,6 +69,7 @@ def format_alert(d: dict) -> str:
         bet_section = f"<b>{bet_type}:</b> {_esc(alert_label)} {_odds(alert_odds)}\nWinrate: {winrate_str}"
 
     return (
+        f"{bet_section}\n"
         f"{_stars(stars)} {level_emoji}\n"
         f"\n"
         f"<b>Jogo anterior:</b>\n"
@@ -76,7 +77,56 @@ def format_alert(d: dict) -> str:
         f"{d.get('game1_score_home', '?')}-{d.get('game1_score_away', '?')} "
         f"{_esc(d.get('game1_player_away'))} ({_esc(d.get('game1_team_away') or d.get('return_team_away'))})\n"
         f"\n"
-        f"{bet_section}\n"
+        f"<b>Jogo:</b> {_esc(d.get('return_player_home'))} vs {_esc(d.get('return_player_away'))}\n"
+        f"Kickoff: {kickoff_str} (em {minutes_left} min)\n"
+        f"\n"
+        f"\U0001f517 <a href=\"{d.get('bet365_url', 'https://www.bet365.bet.br/#/IP/B151/')}\">bet365</a>"
+    )
+
+
+def format_alert_v2(d: dict) -> str:
+    """Format a Method 2 betting alert message."""
+    camada = d.get("camada", "?")
+    camada_desc = {
+        "C1a": "H2H+Team direto",
+        "C1b": "Cross-confirm",
+        "C2": "H2H geral",
+    }.get(camada, camada)
+
+    # Kickoff em BRT
+    kickoff_str = ""
+    kickoff = d.get("kickoff_time")
+    if isinstance(kickoff, datetime):
+        from zoneinfo import ZoneInfo
+        kickoff_brt = kickoff.astimezone(ZoneInfo("America/Sao_Paulo"))
+        kickoff_str = kickoff_brt.strftime("%H:%M")
+    elif kickoff:
+        kickoff_str = str(kickoff)
+    minutes_left = d.get("minutes_to_kickoff", "?")
+
+    alert_label = d.get("alert_label", "Over 2.5")
+    alert_odds = d.get("alert_odds", 0)
+    prob = d.get("prob", 0)
+    sample = d.get("sample_size", 0)
+
+    # Prob detail for C1b
+    prob_detail = ""
+    if camada == "C1b":
+        p4 = d.get("prob_4elem", 0)
+        p3 = d.get("prob_3elem", 0)
+        n4 = d.get("sample_4elem", 0)
+        n3 = d.get("sample_3elem", 0)
+        prob_detail = f"\n4elem: {_pct(p4)} (n={n4}) | 3elem: {_pct(p3)} (n={n3})"
+
+    return (
+        f"\U0001f4ca <b>M2 | {camada}</b> — {_esc(alert_label)} {_odds(alert_odds)}\n"
+        f"Prob: <b>{_pct(prob)}</b> ({sample} jogos — {camada_desc})"
+        f"{prob_detail}\n"
+        f"\n"
+        f"<b>Jogo anterior:</b>\n"
+        f"{_esc(d.get('game1_player_home'))} ({_esc(d.get('game1_team_home'))}) "
+        f"{d.get('game1_score_home', '?')}-{d.get('game1_score_away', '?')} "
+        f"{_esc(d.get('game1_player_away'))} ({_esc(d.get('game1_team_away'))})\n"
         f"\n"
         f"<b>Jogo:</b> {_esc(d.get('return_player_home'))} vs {_esc(d.get('return_player_away'))}\n"
         f"Kickoff: {kickoff_str} (em {minutes_left} min)\n"

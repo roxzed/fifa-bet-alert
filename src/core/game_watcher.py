@@ -147,8 +147,8 @@ class GameWatcher:
         try:
             from pathlib import Path
             Path("data/heartbeat").write_text(str(datetime.now(timezone.utc).isoformat()))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Heartbeat write failed: {e}")
 
     def stop(self) -> None:
         """Stop the game watching loop."""
@@ -160,9 +160,14 @@ class GameWatcher:
 
         Returns True if any new games were processed.
         """
-        from datetime import date
-        today = date.today().strftime("%Y%m%d")
-        ended_events = await self.api.get_ended_events(league_id, day=today, use_v2=True)
+        from datetime import timedelta
+        now_utc = datetime.now(timezone.utc)
+        today_utc = now_utc.strftime("%Y%m%d")
+        yesterday_utc = (now_utc - timedelta(days=1)).strftime("%Y%m%d")
+
+        ended_today = await self.api.get_ended_events(league_id, day=today_utc, use_v2=True)
+        ended_yesterday = await self.api.get_ended_events(league_id, day=yesterday_utc, use_v2=True)
+        ended_events = ended_today + ended_yesterday
 
         new_count = 0
         for event in ended_events:

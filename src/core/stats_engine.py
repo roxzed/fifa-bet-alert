@@ -198,6 +198,12 @@ class OpportunityEvaluation:
     game_pattern_factor: float = 1.0
     player_flag: str = ""  # "blacklist", "elite", ""
 
+    # Layers v3: H2H-validated (gols loser G1, total G1, hora, home/away)
+    loser_g1_cat_factor: float = 1.0
+    total_g1_cat_factor: float = 1.0
+    hour_period_factor: float = 1.0
+    home_away_g1_factor: float = 1.0
+
 
 @dataclass
 class RegimeCheck:
@@ -297,14 +303,47 @@ class StatsEngine:
         return cached
 
     def _extract_stat(
-        self, stats: dict, key: str, default_25: float = 0.50,
-        default_35: float = 0.35, default_45: float = 0.20,
-    ) -> tuple[float, float, float, int]:
-        """Extract hit rates from a stat object, with defaults."""
+        self, stats: dict, key: str, default_15: float = 0.75,
+        default_25: float = 0.50, default_35: float = 0.35,
+        default_45: float = 0.20,
+    ) -> tuple[float, float, float, float, int]:
+        """Extract hit rates (O1.5, O2.5, O3.5, O4.5) from a stat object."""
         stat = stats.get(key)
         if stat is None or stat.total_samples == 0:
-            return (default_25, default_35, default_45, 0)
-        return (stat.hit_rate_25, stat.hit_rate_35, stat.hit_rate_45, stat.total_samples)
+            return (default_15, default_25, default_35, default_45, 0)
+        hr15 = getattr(stat, "hit_rate_15", 0.0) or 0.0
+        # Fallback: se hit_rate_15 nao populado ainda, estimar do over15_hits
+        if hr15 == 0.0 and stat.total_samples > 0:
+            o15_hits = getattr(stat, "over15_hits", 0) or 0
+            if o15_hits > 0:
+                hr15 = o15_hits / stat.total_samples
+            else:
+                # Ultimo fallback: ratio global O1.5/O2.5
+                hr15 = min(0.95, stat.hit_rate_25 * 1.47)
+        return (hr15, stat.hit_rate_25, stat.hit_rate_35, stat.hit_rate_45, stat.total_samples)
+
+    # ------------------------------------------------------------------
+    # Pre-warm cache (chamado antes do kickoff para evitar delay no alerta)
+    # ------------------------------------------------------------------
+
+    async def pre_warm_cache(self, losing_player: str, opponent_player: str) -> None:
+        """Pré-aquece o cache buscando todas as stats necessárias antes do kickoff."""
+        keys = [
+            "global",
+            "loss_tight", "loss_medium", "loss_blowout",
+            f"player_general_{losing_player}",
+            f"recent_form_{losing_player}",
+            f"h2h_{losing_player}_vs_{opponent_player}",
+            f"y_post_win_{opponent_player}",
+            f"ml_player_{losing_player}",
+            f"ml_h2h_{losing_player}_vs_{opponent_player}",
+            f"ml_cedente_{opponent_player}",
+        ]
+        # Adicionar slots de tempo comuns
+        for base in range(0, 24, 6):
+            keys.append(f"time_{base:02d}-{base + 6:02d}h")
+        await self._fetch_stats_bulk(keys)
+        logger.debug(f"Cache pre-warmed for {losing_player} vs {opponent_player} ({len(keys)} keys)")
 
     # ------------------------------------------------------------------
     # Main evaluation
@@ -326,6 +365,7 @@ class StatsEngine:
         opponent_team: str | None = None,
         odds_history: list | None = None,
         loser_goals_g1: int = 0,
+        loser_was_home_g1: bool | None = None,
     ) -> OpportunityEvaluation:
         """Full statistical evaluation for a betting opportunity.
 
@@ -364,24 +404,28 @@ class StatsEngine:
         all_stats = await self._fetch_stats_bulk(stat_keys)
 
         # ── Extrair probabilidades de cada layer ────────────────────────
-        p_base_25, p_base_35, p_base_45, n_global = self._extract_stat(all_stats, "global")
-        p_loss_25, p_loss_35, p_loss_45, n_loss = self._extract_stat(all_stats, f"loss_{loss_type}")
+        p_base_15, p_base_25, p_base_35, p_base_45, n_global = self._extract_stat(all_stats, "global")
+        p_loss_15, p_loss_25, p_loss_35, p_loss_45, n_loss = self._extract_stat(all_stats, f"loss_{loss_type}")
 
         # Player probability (with bayesian update)
         player_key = f"player_general_{losing_player}"
         p_player_stat = all_stats.get(player_key)
         if p_player_stat and p_player_stat.total_samples >= settings.min_player_sample:
+            o15_hits = getattr(p_player_stat, "over15_hits", 0) or 0
+            p_player_15 = bayesian_update(int(0.75 * 10), 10, o15_hits, p_player_stat.total_samples)
             p_player_25 = bayesian_update(int(0.50 * 10), 10, p_player_stat.over25_hits, p_player_stat.total_samples)
             p_player_35 = bayesian_update(int(0.35 * 10), 10, p_player_stat.over35_hits, p_player_stat.total_samples)
             p_player_45 = bayesian_update(int(0.20 * 10), 10, p_player_stat.over45_hits, p_player_stat.total_samples)
             n_player = p_player_stat.total_samples
         else:
-            p_player_25, p_player_35, p_player_45 = 0.50, 0.35, 0.20
+            p_player_15, p_player_25, p_player_35, p_player_45 = 0.75, 0.50, 0.35, 0.20
             n_player = p_player_stat.total_samples if p_player_stat else 0
             # Fallback: Player table
             try:
                 profile = await self.players.get_profile(losing_player)
                 if profile and profile.total_return_matches >= settings.min_player_sample:
+                    o15_loss = getattr(profile, "over15_after_loss", 0) or 0
+                    p_player_15 = bayesian_update(7, 10, o15_loss, profile.total_return_matches)
                     p_player_25 = bayesian_update(5, 10, profile.over25_after_loss, profile.total_return_matches)
                     p_player_35 = bayesian_update(3, 10, profile.over35_after_loss, profile.total_return_matches)
                     p_player_45 = 0.20
@@ -393,72 +437,80 @@ class StatsEngine:
         form_key = f"recent_form_{losing_player}"
         form_stat = all_stats.get(form_key)
         if form_stat and form_stat.total_samples >= 10:
+            o15_hits_f = getattr(form_stat, "over15_hits", 0) or 0
+            p_form_15 = bayesian_update(7, 10, o15_hits_f, form_stat.total_samples)
             p_form_25 = bayesian_update(5, 10, form_stat.over25_hits, form_stat.total_samples)
             p_form_35 = bayesian_update(3, 10, form_stat.over35_hits, form_stat.total_samples)
             p_form_45 = bayesian_update(2, 10, form_stat.over45_hits, form_stat.total_samples)
             n_form = form_stat.total_samples
         else:
-            p_form_25, p_form_35, p_form_45 = 0.50, 0.35, 0.20
+            p_form_15, p_form_25, p_form_35, p_form_45 = 0.75, 0.50, 0.35, 0.20
             n_form = form_stat.total_samples if form_stat else 0
 
         # H2H (with bayesian update)
         h2h_key = f"h2h_{losing_player}_vs_{opponent_player}" if opponent_player else None
         h2h_stat = all_stats.get(h2h_key) if h2h_key else None
         if h2h_stat and h2h_stat.total_samples >= settings.min_h2h_sample:
+            o15_hits_h = getattr(h2h_stat, "over15_hits", 0) or 0
+            p_h2h_15 = bayesian_update(3, 4, o15_hits_h, h2h_stat.total_samples)
             p_h2h_25 = bayesian_update(2, 4, h2h_stat.over25_hits, h2h_stat.total_samples)
             p_h2h_35 = bayesian_update(1, 4, h2h_stat.over35_hits, h2h_stat.total_samples)
             p_h2h_45 = bayesian_update(1, 4, h2h_stat.over45_hits, h2h_stat.total_samples)
             n_h2h = h2h_stat.total_samples
         else:
-            p_h2h_25, p_h2h_35, p_h2h_45 = 0.50, 0.35, 0.20
+            p_h2h_15, p_h2h_25, p_h2h_35, p_h2h_45 = 0.75, 0.50, 0.35, 0.20
             n_h2h = 0
 
         # Y post-win (with bayesian update)
         ypw_key = f"y_post_win_{opponent_player}" if opponent_player else None
         ypw_stat = all_stats.get(ypw_key) if ypw_key else None
         if ypw_stat and ypw_stat.total_samples >= 10:
+            o15_hits_y = getattr(ypw_stat, "over15_hits", 0) or 0
+            p_ypw_15 = bayesian_update(7, 10, o15_hits_y, ypw_stat.total_samples)
             p_ypw_25 = bayesian_update(5, 10, ypw_stat.over25_hits, ypw_stat.total_samples)
             p_ypw_35 = bayesian_update(3, 10, ypw_stat.over35_hits, ypw_stat.total_samples)
             p_ypw_45 = bayesian_update(2, 10, ypw_stat.over45_hits, ypw_stat.total_samples)
             n_ypw = ypw_stat.total_samples
         else:
-            p_ypw_25, p_ypw_35, p_ypw_45 = 0.50, 0.35, 0.20
+            p_ypw_15, p_ypw_25, p_ypw_35, p_ypw_45 = 0.75, 0.50, 0.35, 0.20
             n_ypw = 0
 
         # Time slot
         time_key = f"time_{slot}"
         time_stat = all_stats.get(time_key)
         if time_stat and time_stat.total_samples >= 10:
+            p_time_15 = getattr(time_stat, "hit_rate_15", 0.0) or p_base_15
             p_time_25, p_time_35, p_time_45 = time_stat.hit_rate_25, time_stat.hit_rate_35, time_stat.hit_rate_45
         else:
-            p_time_25, p_time_35, p_time_45 = p_base_25, p_base_35, p_base_45
+            p_time_15, p_time_25, p_time_35, p_time_45 = p_base_15, p_base_25, p_base_35, p_base_45
 
         # Loss type fallback to global
         loss_stat = all_stats.get(f"loss_{loss_type}")
         if not loss_stat or loss_stat.total_samples < 10:
-            p_loss_25, p_loss_35, p_loss_45 = p_base_25, p_base_35, p_base_45
+            p_loss_15, p_loss_25, p_loss_35, p_loss_45 = p_base_15, p_base_25, p_base_35, p_base_45
 
         # Team probability (inclui correlação jogador+time)
         p_team_25, n_team = await self.get_team_probability(loser_team, opponent_team, losing_player)
         # Scale team rate proportionally for other lines using global base ratios
         if p_base_25 > 0:
+            p_team_15 = p_team_25 * (p_base_15 / p_base_25)
             p_team_35 = p_team_25 * (p_base_35 / p_base_25)
             p_team_45 = p_team_25 * (p_base_45 / p_base_25)
         else:
-            p_team_35, p_team_45 = p_base_35, p_base_45
+            p_team_15, p_team_35, p_team_45 = p_base_15, p_base_35, p_base_45
 
         # p_market_adj agora calculado pelo enhanced_market_adjustment (mais abaixo)
 
         # Hierarquia de player layer:
-        # H2H (min 15) > forma recente (min 10) > player geral (min 30) > base
+        # H2H (min 7) > forma recente (min 10) > player geral (min 30) > base
         if n_h2h >= settings.min_h2h_sample:
-            eff_p25, eff_p35, eff_p45, eff_n = p_h2h_25, p_h2h_35, p_h2h_45, n_h2h
+            eff_p15, eff_p25, eff_p35, eff_p45, eff_n = p_h2h_15, p_h2h_25, p_h2h_35, p_h2h_45, n_h2h
         elif n_form >= 10:
-            eff_p25, eff_p35, eff_p45, eff_n = p_form_25, p_form_35, p_form_45, n_form
+            eff_p15, eff_p25, eff_p35, eff_p45, eff_n = p_form_15, p_form_25, p_form_35, p_form_45, n_form
         elif n_player >= settings.min_player_sample:
-            eff_p25, eff_p35, eff_p45, eff_n = p_player_25, p_player_35, p_player_45, n_player
+            eff_p15, eff_p25, eff_p35, eff_p45, eff_n = p_player_15, p_player_25, p_player_35, p_player_45, n_player
         else:
-            eff_p25, eff_p35, eff_p45, eff_n = p_base_25, p_base_35, p_base_45, 0
+            eff_p15, eff_p25, eff_p35, eff_p45, eff_n = p_base_15, p_base_25, p_base_35, p_base_45, 0
 
         # Y post-win bonus: se Y tende a ceder (alta taxa), boost +3%
         ypw_adj = 0.0
@@ -507,6 +559,18 @@ class StatsEngine:
         # Layer: tipo de matchup (elite vs elite)
         matchup_type_factor = self.get_matchup_type_factor(losing_player, opponent_player or "")
 
+        # Layer: H2H-validated — gols do loser em G1 (categoria)
+        loser_g1_cat_factor = self.get_loser_g1_cat_factor(loser_goals_g1)
+
+        # Layer: H2H-validated — total gols G1 (categoria)
+        total_g1_cat_factor = self.get_total_g1_cat_factor(total_g1)
+
+        # Layer: H2H-validated — periodo do dia
+        hour_period_factor = self.get_hour_period_factor(match_time.hour)
+
+        # Layer: H2H-validated — loser era home ou away em G1
+        home_away_g1_factor = self.get_home_away_g1_factor(loser_was_home_g1)
+
         # Layer: momentum de sessao (W/L nos ultimos 5 G2)
         session_momentum = await self.get_session_momentum_factor(losing_player)
 
@@ -515,6 +579,10 @@ class StatsEngine:
 
         # Layer: jogador novo (gate mais restritivo)
         is_new_player, new_player_matches = await self.check_new_player(losing_player)
+
+        def _dampen(factor: float, strength: float = 0.5) -> float:
+            """Compress factor towards 1.0. strength=0.5 = half effect."""
+            return 1.0 + (factor - 1.0) * strength
 
         def compute_true_prob(pb, pl, pp, pt, pteam, pma, extra_adj=0.0):
             # Base principal: historico do jogador em G2 (via pp = player prob)
@@ -529,37 +597,34 @@ class StatsEngine:
                 n_team=n_team,
                 min_sample=settings.min_player_sample,
             )
-            # Fatores multiplicativos em cascata (todos os insights)
+            # Fatores multiplicativos consolidados (5 independentes, dampened)
+            # Removidos: hour_factor (ja em p_time_slot), on_fire (ja em exact_score),
+            #   matchup_type (redundante c/ winner+player), elite/blacklist (ja em p_player)
             effective_team_factor = player_team_factor if player_team_n >= 5 else loser_team_factor
-            tp = (tp
-                  * streak_factor        # streak de derrotas
-                  * exact_score_factor   # placar exato G1
-                  * winner_factor        # quem ganhou G1 (cede ou tranca)
-                  * effective_team_factor # combo jogador+time (ou time generico)
-                  * opp_team_factor      # time oponente em G2 (defesa)
-                  * hour_factor          # hora do dia
-                  * on_fire_factor       # perdedor fez 3+ gols em G1
-                  * matchup_type_factor  # elite vs elite
-                  * session_momentum     # W/L nos ultimos 5 G2
-                  )
-            # Elite boost +5%, blacklist penalty -8%
-            if player_flag == "elite":
-                tp = tp * 1.05
-            elif player_flag == "blacklist":
-                tp = tp * 0.92
+            # Absorve streak no session_momentum (ambos medem forma recente)
+            combined_momentum = session_momentum * streak_factor
+
+            product = (
+                _dampen(exact_score_factor)    # placar exato G1 (absorve on_fire)
+                * _dampen(winner_factor)        # quem ganhou G1 (absorve matchup_type)
+                * _dampen(effective_team_factor) # combo jogador+time (ou time generico)
+                * _dampen(opp_team_factor)      # time oponente em G2 (defesa)
+                * _dampen(combined_momentum)    # momentum + streak combinados
+                # H2H-validated factors (dampening mais fraco pois overlap parcial)
+                * _dampen(loser_g1_cat_factor, 0.3)  # gols loser G1: shutout/normal/on-fire
+                * _dampen(total_g1_cat_factor, 0.3)   # total G1: fechado/normal/aberto
+                * _dampen(hour_period_factor, 0.2)     # periodo: manha/tarde/madrugada/noite
+                * _dampen(home_away_g1_factor, 0.4)    # perdeu em casa ou fora
+            )
+            # Cap: max ±20% de ajuste sobre a media ponderada
+            product = max(0.80, min(1.20, product))
+            tp = tp * product
             return max(0.0, min(1.0, tp))
 
+        tp15 = compute_true_prob(p_base_15, p_loss_15, eff_p15, p_time_15, p_team_15, p_market_adj, ypw_adj)
         tp25 = compute_true_prob(p_base_25, p_loss_25, eff_p25, p_time_25, p_team_25, p_market_adj, ypw_adj)
         tp35 = compute_true_prob(p_base_35, p_loss_35, eff_p35, p_time_35, p_team_35, p_market_adj, ypw_adj)
         tp45 = compute_true_prob(p_base_45, p_loss_45, eff_p45, p_time_45, p_team_45, p_market_adj, ypw_adj)
-        # O1.5: aplicar ratio 1.48 nos inputs individuais (não no output composto)
-        # para evitar amplificar fatores multiplicativos em 48%
-        p_base_15 = min(0.98, p_base_25 * 1.48)
-        p_loss_15 = min(0.98, p_loss_25 * 1.48)
-        eff_p15 = min(0.98, eff_p25 * 1.48)
-        p_time_15 = min(0.98, p_time_25 * 1.48)
-        p_team_15 = min(0.98, p_team_25 * 1.48)
-        tp15 = compute_true_prob(p_base_15, p_loss_15, eff_p15, p_time_15, p_team_15, p_market_adj, ypw_adj)
 
         # Bloqueios hard: nao alertar
         # 1. Streak >= 5
@@ -605,6 +670,10 @@ class StatsEngine:
                 game_pattern=game_pattern,
                 game_pattern_factor=game_pattern_factor,
                 player_flag=player_flag,
+                loser_g1_cat_factor=loser_g1_cat_factor,
+                total_g1_cat_factor=total_g1_cat_factor,
+                hour_period_factor=hour_period_factor,
+                home_away_g1_factor=home_away_g1_factor,
             )
 
         # 2. Blacklist: penalidade forte ja aplicada (x0.92) no compute_true_prob
@@ -616,31 +685,98 @@ class StatsEngine:
         regime = await self.check_regime()
         cold_done = await self.is_cold_start_complete()
 
-        # Observed hits for Wilson CI (actual data, not model output)
+        # Wilson CI: usar dados do jogador quando disponivel (mais preciso)
+        # Hierarquia: H2H (min 10) > forma recente (min 10) > player geral (min 10) > global
         global_stat = all_stats.get("global")
-        _obs = {
-            "over15": int(global_stat.over25_hits * 1.48) if global_stat else 0,
-            "over25": global_stat.over25_hits if global_stat else 0,
-            "over35": global_stat.over35_hits if global_stat else 0,
-            "over45": global_stat.over45_hits if global_stat else 0,
-            "ml": 0,
-        }
-        _obs_total = global_stat.total_samples if global_stat else 0
+        _MIN_CI_SAMPLES = 10  # minimo pra confiar no CI individual
+
+        # Escolher a melhor fonte de dados para o CI
+        _ci_stat = None
+        _ci_source = "global"
+        if h2h_stat and h2h_stat.total_samples >= _MIN_CI_SAMPLES:
+            _ci_stat = h2h_stat
+            _ci_source = "h2h"
+        elif form_stat and form_stat.total_samples >= _MIN_CI_SAMPLES:
+            _ci_stat = form_stat
+            _ci_source = "recent_form"
+        elif p_player_stat and p_player_stat.total_samples >= _MIN_CI_SAMPLES:
+            _ci_stat = p_player_stat
+            _ci_source = "player"
+
+        if _ci_stat:
+            _obs = {
+                "over15": getattr(_ci_stat, "over15_hits", 0) or 0,
+                "over25": _ci_stat.over25_hits,
+                "over35": _ci_stat.over35_hits,
+                "over45": _ci_stat.over45_hits,
+                "ml": 0,
+            }
+            _obs_total = _ci_stat.total_samples
+        else:
+            _obs = {
+                "over15": getattr(global_stat, "over15_hits", 0) if global_stat else 0,
+                "over25": global_stat.over25_hits if global_stat else 0,
+                "over35": global_stat.over35_hits if global_stat else 0,
+                "over45": global_stat.over45_hits if global_stat else 0,
+                "ml": 0,
+            }
+            _obs_total = global_stat.total_samples if global_stat else 0
+
+        logger.debug(
+            f"Wilson CI source for {losing_player}: {_ci_source} "
+            f"(n={_obs_total})"
+        )
 
         def eval_line(line_name: str, odds: float | None, tp: float, n_samp: int) -> LineEvaluation | None:
             if odds is None or odds <= 0:
                 return None
-            # Wilson CI from actual observed data (not model output * sample size)
+
+            # ── Filtros por linha (auditoria 2026-04-04) ──────────────
+            # O1.5: só alerta se odds >= 1.65 E perdedor fez 2+ gols em G1
+            if line_name == "over15":
+                if odds < 1.65 or loser_goals_g1 < 2:
+                    return LineEvaluation(
+                        line=line_name, odds=odds, true_prob=tp,
+                        true_prob_conservative=tp,
+                        implied_prob=implied_probability(odds),
+                        edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
+                        should_alert=False,
+                        reason=f"O1.5 filtrado: odds={odds:.2f}<1.65 ou g1_goals={loser_goals_g1}<2",
+                    )
+
+            # O2.5 e O3.5: odds mínima 1.80
+            if line_name in ("over25", "over35"):
+                if odds < 1.80:
+                    return LineEvaluation(
+                        line=line_name, odds=odds, true_prob=tp,
+                        true_prob_conservative=tp,
+                        implied_prob=implied_probability(odds),
+                        edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
+                        should_alert=False,
+                        reason=f"{line_name} filtrado: odds={odds:.2f}<1.80",
+                    )
+
+            # Probabilidade de decisao: blend entre tp (Bayesiano, todas camadas)
+            # e taxa individual real do jogador.
+            # Com 6+ amostras individuais, individual pesa mais que tp.
             obs_hits = min(_obs.get(line_name, 0), _obs_total)
+            individual_rate = obs_hits / _obs_total if _obs_total > 0 else tp
+
+            # Peso individual: n=3 -> 30%, n=6 -> 60%, n=10+ -> 100%
+            ind_weight = min(1.0, _obs_total / 10.0) if _obs_total > 0 else 0.0
+            decision_prob = tp * (1.0 - ind_weight) + individual_rate * ind_weight
+
+            # Wilson CI conservador (para display/transparencia)
             ci = wilson_confidence_interval(
                 successes=obs_hits,
                 total=_obs_total,
             )
             tp_cons = ci[0] if _obs_total > 0 else tp
+
             impl = implied_probability(odds)
-            edge_v = edge(tp_cons, odds)  # consistent: both edge and EV use conservative prob
-            ev_v = expected_value(tp_cons, odds)
-            kelly_v = fractional_kelly(tp_cons, odds, settings.kelly_fraction)
+            edge_v = edge(decision_prob, odds)
+            ev_v = expected_value(decision_prob, odds)
+            kelly_v = fractional_kelly(decision_prob, odds, settings.kelly_fraction)
             stars = star_rating(edge_v, ev_v)
             # Jogador novo: exigir edge mais alto (menos dados = mais incerteza)
             effective_min_edge = settings.min_edge
@@ -650,7 +786,7 @@ class StatsEngine:
             alert, reason = should_alert(
                 edge_val=edge_v,
                 ev_val=ev_v,
-                true_prob_conservative=tp_cons,
+                true_prob_conservative=decision_prob,
                 odds=odds,
                 global_sample=n_samp,
                 regime_status=regime["status"],
@@ -666,7 +802,7 @@ class StatsEngine:
                 line=line_name,
                 odds=odds,
                 true_prob=tp,
-                true_prob_conservative=tp_cons,
+                true_prob_conservative=decision_prob,
                 implied_prob=impl,
                 edge_val=edge_v,
                 ev_val=ev_v,
@@ -765,6 +901,10 @@ class StatsEngine:
             game_pattern=game_pattern,
             game_pattern_factor=game_pattern_factor,
             player_flag=player_flag,
+            loser_g1_cat_factor=loser_g1_cat_factor,
+            total_g1_cat_factor=total_g1_cat_factor,
+            hour_period_factor=hour_period_factor,
+            home_away_g1_factor=home_away_g1_factor,
         )
 
     def _blocked_evaluation(self, reason: str, **kw) -> OpportunityEvaluation:
@@ -807,6 +947,10 @@ class StatsEngine:
             game_pattern=kw.get("game_pattern", ""),
             game_pattern_factor=kw.get("game_pattern_factor", 1.0),
             player_flag=kw.get("player_flag", ""),
+            loser_g1_cat_factor=kw.get("loser_g1_cat_factor", 1.0),
+            total_g1_cat_factor=kw.get("total_g1_cat_factor", 1.0),
+            hour_period_factor=kw.get("hour_period_factor", 1.0),
+            home_away_g1_factor=kw.get("home_away_g1_factor", 1.0),
         )
 
     # ------------------------------------------------------------------
@@ -911,6 +1055,35 @@ class StatsEngine:
         18: 1.15, 19: 0.94, 20: 0.98, 21: 0.91, 22: 0.85, 23: 0.99,
     }
 
+    # H2H-validated (10165 pares, 312 H2Hs com 10+ jogos, 2026-03-28)
+    # Gols do loser em G1 — delta medio 25.9%, 91% dos H2Hs com efeito
+    LOSER_G1_CAT_FACTOR: dict[str, float] = {
+        "shutout": 0.85,   # 0 gols: O1.5=66.9%, O2.5=39.0%, O3.5=19.1%
+        "neutral": 1.00,   # 1 gol: baseline
+        "on_fire": 1.10,   # 2+ gols: O1.5=78.2%, O2.5=55.1%, O3.5=31.1%
+    }
+
+    # Total gols G1 — delta medio 27.5%, 96% dos H2Hs com efeito
+    TOTAL_G1_CAT_FACTOR: dict[str, float] = {
+        "fechado": 0.88,   # 1-4 gols: O1.5=71.5%, O2.5=44.2%, O3.5=22.0%
+        "normal": 1.00,    # 5-6 gols: baseline
+        "aberto": 1.10,    # 7+ gols: O1.5=79.9%, O2.5=56.5%, O3.5=33.6%
+    }
+
+    # Periodo do dia — delta medio 18.4%, 82% dos H2Hs com efeito
+    HOUR_PERIOD_FACTOR: dict[str, float] = {
+        "manha": 1.08,       # 6-11h: O1.5=80.4%, O2.5=55.7%, O3.5=31.6%
+        "tarde": 1.00,       # 12-17h: baseline
+        "madrugada": 0.93,   # 0-5h: O1.5=74.0%, O2.5=47.1%, O3.5=24.9%
+        "noite": 0.92,       # 18-23h: O1.5=71.7%, O2.5=46.8%, O3.5=24.5%
+    }
+
+    # Home/Away em G1 — delta medio 16.6%, 82% dos H2Hs com efeito
+    HOME_AWAY_G1_FACTOR: dict[str, float] = {
+        "away": 1.04,    # perdeu fora: O2.5=51.4%
+        "home": 0.96,    # perdeu em casa: O2.5=49.3%
+    }
+
     def get_g1_goals_factor(self, loser_goals_g1: int) -> float:
         return self.G1_GOALS_FACTOR[min(loser_goals_g1, 5)]
 
@@ -995,6 +1168,38 @@ class StatsEngine:
 
     def get_hour_factor(self, hour: int) -> float:
         return self.HOUR_FACTOR.get(hour, 1.0)
+
+    def get_loser_g1_cat_factor(self, loser_goals_g1: int) -> float:
+        """H2H-validated: shutout(0) vs neutral(1) vs on-fire(2+)."""
+        if loser_goals_g1 == 0:
+            return self.LOSER_G1_CAT_FACTOR["shutout"]
+        elif loser_goals_g1 == 1:
+            return self.LOSER_G1_CAT_FACTOR["neutral"]
+        return self.LOSER_G1_CAT_FACTOR["on_fire"]
+
+    def get_total_g1_cat_factor(self, total_g1: int) -> float:
+        """H2H-validated: fechado(1-4) vs normal(5-6) vs aberto(7+)."""
+        if total_g1 <= 4:
+            return self.TOTAL_G1_CAT_FACTOR["fechado"]
+        elif total_g1 <= 6:
+            return self.TOTAL_G1_CAT_FACTOR["normal"]
+        return self.TOTAL_G1_CAT_FACTOR["aberto"]
+
+    def get_hour_period_factor(self, hour: int) -> float:
+        """H2H-validated: manha(6-11) vs tarde(12-17) vs madrugada(0-5) vs noite(18-23)."""
+        if 6 <= hour <= 11:
+            return self.HOUR_PERIOD_FACTOR["manha"]
+        elif 12 <= hour <= 17:
+            return self.HOUR_PERIOD_FACTOR["tarde"]
+        elif hour <= 5:
+            return self.HOUR_PERIOD_FACTOR["madrugada"]
+        return self.HOUR_PERIOD_FACTOR["noite"]
+
+    def get_home_away_g1_factor(self, loser_was_home_g1: bool | None) -> float:
+        """H2H-validated: loser perdeu em casa ou fora em G1."""
+        if loser_was_home_g1 is None:
+            return 1.0
+        return self.HOME_AWAY_G1_FACTOR["home" if loser_was_home_g1 else "away"]
 
     def get_exact_score_factor(self, winner_goals: int, loser_goals: int) -> float:
         return self.EXACT_SCORE_FACTOR.get(f"{winner_goals}-{loser_goals}", 1.0)
@@ -1697,22 +1902,28 @@ class StatsEngine:
     # ------------------------------------------------------------------
 
     async def check_regime(self) -> dict:
-        """Check if method is performing within expectations."""
+        """Check if method is performing within expectations.
+
+        Uses best_line_hits (hit pela linha que foi alertada) em vez de
+        over25_hit fixo, para nao penalizar alertas de O1.5 que acertam
+        mas nao batem O2.5.
+        """
         try:
-            stat = self._cache.get("global")
-            if stat is None:
-                stat = await self.method_stats.get_or_create("global")
-                if stat:
-                    self._cache.put("global", stat)
-            if not stat or stat.total_samples < 100:
+            recent = await self.alerts.get_period_stats(days=settings.regime_window)
+            validated = recent.get("validated", 0)
+            if validated < 20:
                 return {"status": "HEALTHY", "z_score": 0.0, "recent_rate": 0.0,
                         "message": "Insufficient data", "action": "Collect more data"}
 
-            recent = await self.alerts.get_period_stats(days=settings.regime_window)
+            best_hits = recent.get("best_line_hits", 0)
+            recent_rate = best_hits / validated
+            # Taxa historica esperada: ~60% (baseline do metodo)
+            historical_rate = 0.60
+
             result = detect_regime_change(
-                recent_hits=recent.get("over25_hits", 0),
-                recent_total=recent.get("total", 0),
-                historical_rate=stat.hit_rate_25,
+                recent_hits=best_hits,
+                recent_total=validated,
+                historical_rate=historical_rate,
                 z_threshold_warning=settings.regime_warning_z,
                 z_threshold_degraded=settings.regime_degraded_z,
             )

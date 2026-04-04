@@ -7,9 +7,12 @@ build/
 .eggs/
 *.egg
 .env
+.env.*
 data/*.db
 data/*.csv
 data/*.json
+data/
+logs/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
@@ -18,3 +21,8 @@ htmlcov/
 *.log
 .vscode/
 .idea/
+.claude/
+analysis/
+check_output.txt
+test.txt
+*.bat
