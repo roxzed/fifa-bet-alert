@@ -986,9 +986,9 @@ class StatsEngine:
 
     # Jogadores com O2.5 < 40% em G2 ou padroes consistentemente ruins (n>=40)
     PLAYER_BLACKLIST: set[str] = {
-        "Kavviro", "MeLToSik", "hrk", "SPACE", "R0ge",
-        "maksdh", "Kot", "Grellz", "Nightxx", "cappo",
-        "Boulevard", "tohi4", "hotShot", "KraftVK",
+        "Kavviro", "SPACE", "R0ge",
+        "maksdh", "Kot",
+        "Boulevard", "tohi4", "KraftVK",
     }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)

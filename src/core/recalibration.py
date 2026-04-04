@@ -124,6 +124,9 @@ class AutoRecalibrator:
                     report["changes"].append(f"BLACKLIST adicionado: {player} ({rate:.0%}, n={n})")
                     logger.info(f"Auto-recal: {player} adicionado a BLACKLIST ({rate:.0%})")
 
+            # 5b. Auditoria blacklist/elite baseada nos ultimos 20 jogos de volta
+            await self._audit_blacklist_elite(report)
+
             # 6. Performance por hora
             by_hour = defaultdict(lambda: {"total": 0, "hits": 0})
             for a in alerts:
@@ -344,6 +347,133 @@ class AutoRecalibrator:
             await self.notifier.send_message(msg)
         except Exception as e:
             logger.error(f"Failed to send recalibration report: {e}")
+
+    async def _audit_blacklist_elite(self, report: dict) -> None:
+        """Audita blacklist/elite com base nos ultimos 20 jogos de volta de cada jogador.
+
+        - Jogador na blacklist com O2.5 >= 50% nos ultimos 20: REMOVE
+        - Jogador na blacklist com O1.5 >= 65% e G1>=2 frequente (>=40%): REMOVE
+        - Jogador fora da blacklist com O2.5 < 30% nos ultimos 20 (min 15 jogos): ADICIONA
+        - Jogador fora da elite com O2.5 >= 65% nos ultimos 20 (min 15 jogos): ADICIONA elite
+        - Jogador na elite com O2.5 < 45% nos ultimos 20: REMOVE elite
+        """
+        try:
+            from sqlalchemy import text
+            from src.db.database import get_session
+
+            async with get_session() as session:
+                # Buscar todos os jogadores com jogos de volta recentes
+                result = await session.execute(text("""
+                    SELECT
+                        CASE WHEN m1.player_home = m1.player_home
+                             AND m1.score_home < m1.score_away
+                             THEN m1.player_home
+                             ELSE m1.player_away END AS loser,
+                        m1.player_home, m1.player_away,
+                        m1.score_home AS g1_sh, m1.score_away AS g1_sa,
+                        m2.player_home AS g2_ph,
+                        m2.score_home AS g2_sh, m2.score_away AS g2_sa,
+                        m1.ended_at
+                    FROM matches m2
+                    JOIN matches m1 ON m2.pair_match_id = m1.id
+                    WHERE m2.is_return_match = true
+                      AND m2.score_home IS NOT NULL AND m2.score_away IS NOT NULL
+                      AND m1.score_home IS NOT NULL AND m1.score_away IS NOT NULL
+                      AND m1.score_home != m1.score_away
+                    ORDER BY m1.ended_at DESC
+                """))
+                rows = result.fetchall()
+
+            # Agrupar por jogador (como perdedor)
+            from collections import defaultdict
+            player_games: dict[str, list] = defaultdict(list)
+
+            for r in rows:
+                _, g1_ph, g1_pa, g1_sh, g1_sa, g2_ph, g2_sh, g2_sa, ended = r
+                if g1_sh < g1_sa:
+                    loser = g1_ph
+                else:
+                    loser = g1_pa
+
+                # Gols do perdedor em G2
+                loser_goals_g2 = g2_sh if g2_ph == loser else g2_sa
+                # Gols do perdedor em G1
+                loser_goals_g1 = g1_sh if g1_ph == loser else g1_sa
+
+                player_games[loser].append({
+                    "g2_goals": loser_goals_g2,
+                    "g1_goals": loser_goals_g1,
+                })
+
+            # Auditar cada jogador (ultimos 20 jogos)
+            changes_made = 0
+            for player, games in player_games.items():
+                recent = games[:20]  # ja ordenado DESC
+                n = len(recent)
+                if n < 15:
+                    continue
+
+                o15 = sum(1 for g in recent if g["g2_goals"] > 1)
+                o25 = sum(1 for g in recent if g["g2_goals"] > 2)
+                g1_2plus = sum(1 for g in recent if g["g1_goals"] >= 2)
+                o25_rate = o25 / n
+                o15_rate = o15 / n
+                g1_active = g1_2plus / n
+
+                # --- Blacklist audit ---
+                if player in self.stats.PLAYER_BLACKLIST:
+                    should_remove = False
+                    reason = ""
+                    if o25_rate >= 0.50:
+                        should_remove = True
+                        reason = f"O2.5={o25_rate:.0%} nos ult 20"
+                    elif o15_rate >= 0.65 and g1_active >= 0.40:
+                        should_remove = True
+                        reason = f"O1.5={o15_rate:.0%}, G1>=2={g1_active:.0%} nos ult 20"
+
+                    if should_remove:
+                        self.stats.PLAYER_BLACKLIST.discard(player)
+                        report["changes"].append(
+                            f"BLACKLIST removido: {player} ({reason})"
+                        )
+                        logger.info(f"Auto-audit: {player} REMOVIDO da blacklist ({reason})")
+                        changes_made += 1
+
+                elif player not in self.stats.PLAYER_BLACKLIST:
+                    # Candidato a blacklist
+                    if o25_rate < 0.30 and o15_rate < 0.55:
+                        self.stats.PLAYER_BLACKLIST.add(player)
+                        report["changes"].append(
+                            f"BLACKLIST adicionado: {player} (O2.5={o25_rate:.0%}, O1.5={o15_rate:.0%} ult 20)"
+                        )
+                        logger.info(f"Auto-audit: {player} ADICIONADO a blacklist (O2.5={o25_rate:.0%})")
+                        changes_made += 1
+
+                # --- Elite audit ---
+                if player in self.stats.PLAYER_ELITE:
+                    if o25_rate < 0.45:
+                        self.stats.PLAYER_ELITE.discard(player)
+                        report["changes"].append(
+                            f"ELITE removido: {player} (O2.5={o25_rate:.0%} nos ult 20)"
+                        )
+                        logger.info(f"Auto-audit: {player} REMOVIDO da elite (O2.5={o25_rate:.0%})")
+                        changes_made += 1
+
+                elif player not in self.stats.PLAYER_ELITE and player not in self.stats.PLAYER_BLACKLIST:
+                    if o25_rate >= 0.65:
+                        self.stats.PLAYER_ELITE.add(player)
+                        report["changes"].append(
+                            f"ELITE adicionado: {player} (O2.5={o25_rate:.0%} nos ult 20)"
+                        )
+                        logger.info(f"Auto-audit: {player} ADICIONADO a elite (O2.5={o25_rate:.0%})")
+                        changes_made += 1
+
+            logger.info(f"Blacklist/elite audit: {changes_made} alteracoes, "
+                        f"blacklist={len(self.stats.PLAYER_BLACKLIST)}, "
+                        f"elite={len(self.stats.PLAYER_ELITE)}")
+
+        except Exception as e:
+            logger.error(f"Blacklist/elite audit failed: {e}")
 
     @staticmethod
     def _is_hit(alert) -> bool:
