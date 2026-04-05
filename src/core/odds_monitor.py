@@ -312,36 +312,12 @@ class OddsMonitor:
                         elif po.line == 4.5:
                             over45_odds = po.over_odds
 
-                    # ML odds: buscar 1X2 (match result) da mesma partida
-                    ml_odds = None
-                    try:
-                        mr = await self.api.bet365_get_match_result_odds(matched_ev.fi)
-                        if mr:
-                            loser_norm = _normalize_player(loser)
-                            if _name_similarity(loser_norm, _normalize_player(matched_ev.home_player)) >= 0.80:
-                                ml_odds = mr.home_odds
-                            elif _name_similarity(loser_norm, _normalize_player(matched_ev.away_player)) >= 0.80:
-                                ml_odds = mr.away_odds
-                    except Exception as e:
-                        logger.debug(f"Could not fetch ML odds for {loser}: {e}")
+                    ml_odds = None  # ML removido: nunca gerou alerta e custava 2-3s de API
 
-                    best_odds = over25_odds or over35_odds or over15_odds or over45_odds or ml_odds
+                    best_odds = over25_odds or over35_odds or over15_odds or over45_odds
                     if not best_odds:
                         await asyncio.sleep(interval)
                         continue
-
-                    # Save snapshots (rollback on failure to prevent session corruption)
-                    for label, odds_val in [("over_1.5", over15_odds), ("over_2.5", over25_odds),
-                                             ("over_3.5", over35_odds), ("over_4.5", over45_odds),
-                                             ("ml", ml_odds)]:
-                        if odds_val:
-                            try:
-                                await self.odds_repo.save_snapshot(
-                                    match_id=match_id, player=loser,
-                                    market=label, odds_value=odds_val,
-                                )
-                            except Exception as snap_err:
-                                logger.debug(f"Odds snapshot save failed: {snap_err}")
 
                     # Log what we found
                     lines_str = " | ".join(
@@ -349,40 +325,19 @@ class OddsMonitor:
                         [(1.5, over15_odds), (2.5, over25_odds), (3.5, over35_odds), (4.5, over45_odds)]
                         if o
                     )
-                    if ml_odds:
-                        lines_str += f" | ML@{ml_odds:.2f}"
                     logger.info(f"Bet365 odds for {loser} (match {match_id}): {lines_str}")
 
-                    # Get opening odds
-                    over25_opening = None
-                    try:
-                        history = await self.odds_repo.get_history(match_id, loser, "over_2.5")
-                        if history:
-                            over25_opening = history[0].odds_value
-                    except Exception as e:
-                        logger.debug(f"Could not fetch odds history for {match_id}: {e}")
-                        history = []
-
-                    # Evaluate and alert (only once, permite ate 5.5 min apos kickoff)
+                    # Evaluate and alert PRIMEIRO — DB saves depois (reduz delay)
                     if not alert_sent and (minutes_left is None or minutes_left >= -5.5):
-                        # Re-fetch odds frescas antes de enviar para minimizar delay
+                        # Get opening odds (necessário para eval)
+                        over25_opening = None
+                        history = []
                         try:
-                            fresh_odds, fresh_url, fresh_ev = await self._fetch_loser_odds(return_match, loser)
-                            if fresh_odds:
-                                for po in fresh_odds:
-                                    if po.line == 1.5:
-                                        over15_odds = po.over_odds
-                                    elif po.line == 2.5:
-                                        over25_odds = po.over_odds
-                                    elif po.line == 3.5:
-                                        over35_odds = po.over_odds
-                                    elif po.line == 4.5:
-                                        over45_odds = po.over_odds
-                                if fresh_url:
-                                    bet365_url = fresh_url
-                                logger.debug(f"Match {match_id}: odds atualizadas antes do alerta")
+                            history = await self.odds_repo.get_history(match_id, loser, "over_2.5")
+                            if history:
+                                over25_opening = history[0].odds_value
                         except Exception:
-                            pass  # usa odds do poll anterior
+                            pass
 
                         sent = await self.alert_engine.evaluate_and_alert(
                             return_match=return_match,
@@ -426,6 +381,18 @@ class OddsMonitor:
                                     logger.info(f"M2 alert sent for return match {match_id}")
                             except Exception as e_v2:
                                 logger.warning(f"M2 alert engine error for match {match_id}: {e_v2}")
+
+                    # DB saves DEPOIS da avaliação (não bloqueia o alerta)
+                    for label, odds_val in [("over_1.5", over15_odds), ("over_2.5", over25_odds),
+                                             ("over_3.5", over35_odds), ("over_4.5", over45_odds)]:
+                        if odds_val:
+                            try:
+                                await self.odds_repo.save_snapshot(
+                                    match_id=match_id, player=loser,
+                                    market=label, odds_value=odds_val,
+                                )
+                            except Exception as snap_err:
+                                logger.debug(f"Odds snapshot save failed: {snap_err}")
 
                     _consecutive_errors = 0
 
