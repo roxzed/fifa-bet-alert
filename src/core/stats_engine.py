@@ -781,7 +781,7 @@ class StatsEngine:
             # Jogador novo: exigir edge mais alto (menos dados = mais incerteza)
             effective_min_edge = settings.min_edge
             if is_new_player:
-                effective_min_edge = max(settings.min_edge, 0.08)  # min 8% para novos
+                effective_min_edge = max(settings.min_edge, 0.25)  # min 25% para novos
 
             alert, reason = should_alert(
                 edge_val=edge_v,

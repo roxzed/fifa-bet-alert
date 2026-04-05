@@ -111,7 +111,10 @@ async def main() -> None:
     alert_engine = AlertEngine(stats_engine, AlertRepository(sf), notifier)
 
     # Method 2
-    stats_engine_v2 = StatsEngineV2(match_repo=MatchRepository(sf))
+    stats_engine_v2 = StatsEngineV2(
+        match_repo=MatchRepository(sf),
+        blacklist=stats_engine.PLAYER_BLACKLIST,
+    )
     alert_v2_repo = AlertV2Repository(sf)
     alert_engine_v2 = None
     if settings.telegram_group_v2_id:

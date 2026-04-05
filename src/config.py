@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     odds_poll_interval_seconds: int = 15
 
     # Stats Engine Thresholds
-    min_edge: float = 0.05
+    min_edge: float = 0.20
     min_ev: float = 0.03
     min_true_prob: float = 0.60
     min_global_sample: int = 500

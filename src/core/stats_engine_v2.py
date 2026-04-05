@@ -3,10 +3,11 @@
 Cascata de camadas:
   C1a: 4-element (loser, opp, loser_team, opp_team) >=6 games, last 20, prob >=69%
   C1b: Cross-confirmation — 4elem >=3 (>=65%) AND 3elem (loser, opp, loser_team) >=5 (>=69%)
-  C2:  H2H geral (loser, opp) min 10 games, last 20, prob >=75%
+  C2:  H2H geral (loser, opp) min 10 games, last 20, prob >=85%
 
 Linha prioritaria: O4.5 → O3.5 → O2.5 → O1.5 (mais agressiva primeiro).
 Odds minima: 1.60.
+Respeita blacklist do M1 (jogadores com O2.5 consistentemente ruim).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ LINES_ORDER = [
     ("over15", 1),
 ]
 
-MIN_ODDS = 1.60
+MIN_ODDS = 1.65
 
 
 @dataclass
@@ -46,8 +47,9 @@ class EvaluationV2:
 class StatsEngineV2:
     """Motor estatistico do Metodo 2 — H2H puro sem edge/EV gates."""
 
-    def __init__(self, match_repo) -> None:
+    def __init__(self, match_repo, blacklist: set[str] | None = None) -> None:
         self.matches = match_repo
+        self.blacklist = blacklist or set()
 
     async def evaluate_opportunity(
         self,
@@ -69,6 +71,12 @@ class StatsEngineV2:
         Returns:
             EvaluationV2 com should_alert e detalhes da camada que disparou.
         """
+        if loser in self.blacklist:
+            return EvaluationV2(
+                should_alert=False,
+                reason=f"Jogador {loser} na blacklist"
+            )
+
         h2h_data = await self.matches.get_h2h_loser_goals(loser, opponent)
 
         if not h2h_data:
@@ -183,7 +191,7 @@ class StatsEngineV2:
         rows: Sequence,
         odds_dict: dict[str, float | None],
     ) -> EvaluationV2 | None:
-        """C2: H2H geral (loser, opp). Min 10 jogos, last 20, prob >= 75%."""
+        """C2: H2H geral (loser, opp). Min 10 jogos, last 20, prob >= 85%."""
         if len(rows) < 10:
             return None
 
@@ -195,7 +203,7 @@ class StatsEngineV2:
             if not odds_val or odds_val < MIN_ODDS:
                 continue
             prob = sum(1 for g in recent if g > threshold) / len(recent)
-            if prob >= 0.75:
+            if prob >= 0.85:
                 logger.info(
                     f"M2 C2: {line} prob={prob:.0%} (n={len(recent)}/{len(rows)}) "
                     f"odds={odds_val:.2f}"
