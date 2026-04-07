@@ -259,9 +259,9 @@ class TestShouldAlert:
         assert alert is False
         assert "cold start" in reason.lower() or "collecting" in reason.lower()
 
-    def test_degraded_regime(self):
+    def test_degraded_regime_no_longer_blocks(self):
         alert, reason = should_alert(**self._base_kwargs(regime_status="DEGRADED"))
-        assert alert is False
+        assert alert is True  # edge 20% ja filtra suficiente, regime nao bloqueia
 
     def test_warning_regime_still_alerts(self):
         alert, reason = should_alert(**self._base_kwargs(regime_status="WARNING"))

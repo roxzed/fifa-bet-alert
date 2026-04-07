@@ -372,9 +372,9 @@ def should_alert(
     if not cold_start_complete:
         return (False, "Cold start not complete - still collecting data")
 
-    # Regime must not be DEGRADED
-    if regime_status == "DEGRADED":
-        return (False, f"Regime is DEGRADED - alerts paused for safety")
+    # Regime DEGRADED: apenas logar, nao bloquear (edge 20% ja filtra suficiente)
+    # if regime_status == "DEGRADED":
+    #     return (False, f"Regime is DEGRADED - alerts paused for safety")
 
     # Global sample size
     if global_sample < min_global_sample:
