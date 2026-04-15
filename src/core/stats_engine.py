@@ -241,6 +241,19 @@ class StatsEngine:
     - Cache TTL: resultados são cacheados por 5 min para evitar queries repetidas.
     """
 
+    # Blacklist dinâmica: jogadores com WR < 30% em 8+ alertas validados
+    DYNAMIC_BLACKLIST_MIN_ALERTS: int = 8
+    DYNAMIC_BLACKLIST_MAX_WR: float = 0.30
+
+    # Horários ruins (producao 05-14/Abr: ROI < -10% com 4+ tips)
+    # Dentro desses horarios: HOME+sem tight = WR 50%, outros = lixo
+    BAD_HOURS: set[int] = {0, 1, 9, 14, 16, 18}
+    BAD_HOUR_MIN_EDGE: float = 0.15  # edge minimo para horarios ruins
+
+    # tight AWAY: bloqueio total (WR=39.5%, ROI=-24.9%, 43 tips, -10.71u)
+    # tight HOME: permitido (WR=52.9%, ROI=-0.2%, neutro)
+    # Nota: filtro AWAY edge extra removido — blacklist + tight_away ja limpam os piores
+
     def __init__(
         self,
         match_repo,
@@ -256,6 +269,92 @@ class StatsEngine:
         self.team_stats = team_stats_repo
         # MELHORIA 2: Cache em memória com TTL de 5 minutos
         self._cache = _StatsCache(ttl_seconds=300.0)
+        # Cache da blacklist dinâmica (TTL 15 min para não consultar DB toda vez)
+        self._dynamic_blacklist: set[str] = set()
+        self._dynamic_blacklist_expires: float = 0.0
+        # Cache de jogadores com histórico positivo (para filtro de horário)
+        self._positive_players: set[str] = set()
+        self._positive_players_expires: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Blacklist dinâmica e jogadores positivos (cache com TTL)
+    # ------------------------------------------------------------------
+
+    async def _refresh_dynamic_blacklist(self) -> None:
+        """Atualiza blacklist dinâmica consultando performance real dos jogadores.
+
+        Jogadores com WR < 30% em 8+ alertas validados são bloqueados.
+        Cache de 15 minutos para não sobrecarregar o banco.
+        """
+        now = time.monotonic()
+        if now < self._dynamic_blacklist_expires:
+            return  # cache ainda válido
+
+        try:
+            perf = await self.alerts.get_player_performance(days=30, min_alerts=1)
+            blacklisted = set()
+            positive = set()
+            for p in perf:
+                total = p["total"]
+                hr = p["hit_rate"]
+                if total >= self.DYNAMIC_BLACKLIST_MIN_ALERTS and hr < self.DYNAMIC_BLACKLIST_MAX_WR:
+                    blacklisted.add(p["player"])
+                    logger.info(
+                        f"Blacklist dinâmica: {p['player']} bloqueado "
+                        f"(WR={hr:.1%}, {total} alertas, P/L={p['profit']:+.2f})"
+                    )
+                # Jogador positivo: 5+ alertas com WR >= 50% e profit > 0
+                if total >= 5 and hr >= 0.50 and p["profit"] > 0:
+                    positive.add(p["player"])
+
+            self._dynamic_blacklist = blacklisted
+            self._positive_players = positive
+            self._dynamic_blacklist_expires = now + 900.0  # 15 min TTL
+            self._positive_players_expires = now + 900.0
+            logger.debug(
+                f"Blacklist dinâmica atualizada: {len(blacklisted)} bloqueados, "
+                f"{len(positive)} positivos"
+            )
+        except Exception as e:
+            logger.warning(f"Erro ao atualizar blacklist dinâmica: {e}")
+            # Manter cache anterior em caso de erro
+            self._dynamic_blacklist_expires = now + 60.0  # retry em 1 min
+
+    def is_dynamically_blacklisted(self, player: str) -> bool:
+        """Verifica se jogador está na blacklist dinâmica (cache)."""
+        return player in self._dynamic_blacklist
+
+    def is_positive_player(self, player: str) -> bool:
+        """Verifica se jogador tem histórico positivo recente."""
+        return player in self._positive_players
+
+    def is_conditionally_blacklisted(
+        self, player: str, line_name: str, loser_was_home_g1: bool | None
+    ) -> tuple[bool, str]:
+        """Verifica blacklist condicional (jogador bloqueado em contextos específicos).
+
+        Em Esoccer Battle, o loser mantém o mesmo lado (home/away) em G1 e G2.
+        Portanto loser_was_home_g1=True significa loser é HOME em G2 também.
+
+        Returns (is_blocked, reason).
+        """
+        cond = self.PLAYER_CONDITIONAL_BLACKLIST.get(player)
+        if cond is None:
+            return False, ""
+
+        # Check home/away block (G2 side = same as G1 side in Esoccer)
+        if loser_was_home_g1 is not None:
+            if cond.get("block_home_g2") and loser_was_home_g1:
+                return True, f"{player} bloqueado HOME em G2"
+            if cond.get("block_away_g2") and not loser_was_home_g1:
+                return True, f"{player} bloqueado AWAY em G2"
+
+        # Check line block
+        blocked_lines = cond.get("block_lines")
+        if blocked_lines and line_name in blocked_lines:
+            return True, f"{player} bloqueado em {line_name}"
+
+        return False, ""
 
     # ------------------------------------------------------------------
     # MELHORIA 1: Consulta única com IN
@@ -376,6 +475,36 @@ class StatsEngine:
 
         if match_time is None:
             match_time = datetime.now(timezone.utc)
+
+        # ── Blacklist dinâmica: atualiza cache e bloqueia jogadores ruins ──
+        await self._refresh_dynamic_blacklist()
+        if self.is_dynamically_blacklisted(losing_player):
+            logger.info(
+                f"Jogador {losing_player} na blacklist dinâmica: bloqueado"
+            )
+            loss_type = classify_loss(game1_score_winner, game1_score_loser)
+            return OpportunityEvaluation(
+                should_alert=False,
+                reason=f"Blacklist dinâmica: {losing_player} WR<30% em 8+ alertas",
+                best_line="over25",
+                implied_prob=0.0,
+                true_prob=0.0,
+                true_prob_conservative=0.0,
+                confidence_interval=(0.0, 1.0),
+                edge_val=0.0,
+                expected_value_val=0.0,
+                kelly_fraction_val=0.0,
+                star_rating_val=0,
+                p_base=0.0, p_loss_type=0.0, p_player=0.0,
+                p_recent_form=0.0, p_h2h=0.0, p_y_post_win=0.0,
+                p_time_slot=0.0, p_team=0.0, p_market_adj=0.0,
+                player_sample_size=0, h2h_sample_size=0,
+                recent_form_sample=0, global_sample_size=0,
+                loss_type_sample_size=0, team_sample_size=0,
+                loss_type=loss_type,
+                loss_margin=game1_score_winner - game1_score_loser,
+                player_flag="blacklist",
+            )
 
         loss_type = classify_loss(game1_score_winner, game1_score_loser)
         loss_margin = game1_score_winner - game1_score_loser
@@ -731,6 +860,20 @@ class StatsEngine:
             if odds is None or odds <= 0:
                 return None
 
+            # ── Blacklist condicional (producao 05-14/Abr) ──────────────
+            cond_blocked, cond_reason = self.is_conditionally_blacklisted(
+                losing_player, line_name, loser_was_home_g1
+            )
+            if cond_blocked:
+                return LineEvaluation(
+                    line=line_name, odds=odds, true_prob=tp,
+                    true_prob_conservative=tp,
+                    implied_prob=implied_probability(odds),
+                    edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
+                    should_alert=False,
+                    reason=f"Blacklist condicional: {cond_reason}",
+                )
+
             # ── Filtros por linha (auditoria 2026-04-04) ──────────────
             # O1.5: só alerta se odds >= 1.65 E perdedor fez 2+ gols em G1
             if line_name == "over15":
@@ -782,6 +925,25 @@ class StatsEngine:
             effective_min_edge = settings.min_edge
             if is_new_player:
                 effective_min_edge = max(settings.min_edge, 0.25)  # min 25% para novos
+
+            # Loser é HOME ou AWAY em G2 (mesmo lado que G1 no Esoccer)
+            loser_is_home_g2 = loser_was_home_g1  # None se desconhecido
+
+            # Filtro tight AWAY: bloqueio total (WR=39.5%, ROI=-24.9%)
+            if loser_is_home_g2 is False and loss_type == "tight":
+                return LineEvaluation(
+                    line=line_name, odds=odds, true_prob=tp,
+                    true_prob_conservative=tp,
+                    implied_prob=implied_probability(odds),
+                    edge_val=edge_v, ev_val=0.0, kelly_val=0.0, stars=0,
+                    should_alert=False,
+                    reason="tight AWAY bloqueado (WR=39.5%, ROI=-24.9%)",
+                )
+
+            # Filtro de horário: horários ruins exigem edge mais alto
+            # OU jogador com histórico positivo (WR>=50%, profit>0 em 5+ alertas)
+            if hour in self.BAD_HOURS and not self.is_positive_player(losing_player):
+                effective_min_edge = max(effective_min_edge, self.BAD_HOUR_MIN_EDGE)
 
             alert, reason = should_alert(
                 edge_val=edge_v,
@@ -984,17 +1146,39 @@ class StatsEngine:
         "goleada_open": 1.19,         # 3+g perdedor, margem>=3 (O2.5=61.2%)
     }
 
-    # Jogadores com O2.5 < 40% em G2 ou padroes consistentemente ruins (n>=40)
+    # Jogadores com WR consistentemente ruim em alertas reais
+    # Atualizado 2026-04-14 com dados de producao (05-14/Abr, 385 alertas)
     PLAYER_BLACKLIST: set[str] = {
         "Kavviro", "SPACE", "R0ge",
         "maksdh", "Kot",
-        "Boulevard", "tohi4", "KraftVK",
+        "Boulevard", "A1ose",
+        # Novos (producao 05-14/Abr): WR < 35%, sem nichos positivos consistentes
+        "Revange",   # 5 alertas, WR=0%, P/L=-5.00
+        "Kivu17",    # 12 alertas, WR=25%, P/L=-6.34
+        "V1nn",      # 12 alertas, WR=33%, P/L=-4.73
+    }
+
+    # Jogadores bloqueados condicionalmente (producao 05-14/Abr)
+    # Formato: jogador -> {"block_home": bool, "block_away": bool, "block_lines": set}
+    # Bloqueio se QUALQUER condicao bater (OR)
+    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
+        # volvo: HOME=WR 57% P/L+0.69 (OK), AWAY=WR 0% P/L-5.00 (desastroso)
+        "volvo": {"block_away_g2": True},
+        # Grellz: HOME=WR 0% P/L-4.00 (zero greens), AWAY=WR 62% P/L+0.66 (OK)
+        "Grellz": {"block_home_g2": True},
+        # nikkitta: HOME=WR 25% P/L-4.53 (ruim), Over2.5=WR 0% P/L-4.00 (zero greens)
+        "nikkitta": {"block_home_g2": True, "block_lines": {"over25", "over35", "over45"}},
+        # Cira: Over1.5=WR 75% P/L+1.12 (bom), Over2.5=WR 25% P/L-3.98 (ruim)
+        "Cira": {"block_lines": {"over25", "over35", "over45"}},
+        # tohi4: Over1.5=WR 75% P/L+1.24 (bom), Over2.5=WR 20% P/L-3.13 (ruim)
+        "tohi4": {"block_lines": {"over25", "over35", "over45"}},
     }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
+    # V1nn removido: WR=33% em producao (05-14/Abr), movido para blacklist
     PLAYER_ELITE: set[str] = {
-        "KraftVK", "Bomb1to", "DaVa", "LaikingDast", "dor1an",
-        "OG", "V1nn", "DangerDim77", "tonexo",
+        "Bomb1to", "DaVa", "LaikingDast", "dor1an",
+        "OG", "DangerDim77", "tonexo",
         "Wboy", "RuBIX", "Uncle", "Kray",
     }
 
