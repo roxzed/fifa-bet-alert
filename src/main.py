@@ -278,6 +278,22 @@ async def main() -> None:
         recalibrator.detect_regime_change, seconds=3600, task_id="regime_detection"
     )
 
+    # --- Auditoria semanal de filtros (domingo 10:00) ---
+    from src.core.weekly_filter_audit import WeeklyFilterAudit
+    weekly_audit = WeeklyFilterAudit(
+        alert_repo=AlertRepository(sf),
+        match_repo=MatchRepository(sf),
+        stats_engine=stats_engine,
+        notifier=notifier,
+    )
+    scheduler.add_weekly_task(
+        weekly_audit.run_and_notify,
+        day_of_week="sun",
+        hour=10,
+        minute=0,
+        task_id="weekly_filter_audit",
+    )
+
     # --- Backtest semanal agendado (domingo 08:00) ---
     from src.core.scheduled_backtest import ScheduledBacktest
     scheduled_backtest = ScheduledBacktest(
