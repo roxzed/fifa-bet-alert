@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lenda_BOT Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --green: #4ade80; --green-dim: rgba(74,222,128,0.7); --green-bg: rgba(74,222,128,0.08);
+            --red: #f87171; --red-dim: rgba(248,113,113,0.7); --red-bg: rgba(248,113,113,0.06);
+            --blue: #3b82f6; --purple: #818cf8; --yellow: #fbbf24;
+            --bg: #080a0f; --card: rgba(13,17,23,0.85); --border: rgba(74,222,128,0.06);
+        }
+        body { background: var(--bg); overflow-x: hidden; }
+        * { box-sizing: border-box; }
+
+        /* Animated background mesh */
+        .bg-mesh {
+            position: fixed; inset: 0; z-index: 0; pointer-events: none;
+            background:
+                radial-gradient(ellipse 600px 400px at 20% 20%, rgba(74,222,128,0.04) 0%, transparent 70%),
+                radial-gradient(ellipse 500px 500px at 80% 80%, rgba(59,130,246,0.04) 0%, transparent 70%);
+            animation: meshFloat 20s ease-in-out infinite alternate;
+        }
+        @keyframes meshFloat {
+            0% { background-position: 0% 0%, 100% 100%; }
+            100% { background-position: 10% 10%, 90% 85%; }
+        }
+
+        /* Glass cards */
+        .glass {
+            background: var(--card); backdrop-filter: blur(16px);
+            border: 1px solid var(--border); border-radius: 16px;
+            transition: all 0.35s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+        }
+        .glass:hover {
+            border-color: rgba(74,222,128,0.15);
+            box-shadow: 0 8px 32px rgba(74,222,128,0.06);
+            transform: translateY(-2px);
+        }
+
+        /* Animated gradient border for hero card */
+        .hero-glow {
+            position: relative; overflow: hidden;
+        }
+        .hero-glow::before {
+            content: ''; position: absolute; inset: -2px;
+            background: conic-gradient(from 0deg, var(--green), var(--blue), var(--purple), var(--green));
+            border-radius: 18px; z-index: -1;
+            animation: spinGlow 4s linear infinite;
+            opacity: 0.4;
+        }
+        @keyframes spinGlow {
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Pulse dot */
+        .pulse-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--green); position: relative;
+        }
+        .pulse-dot::after {
+            content: ''; position: absolute; inset: -3px;
+            border-radius: 50%; border: 2px solid var(--green);
+            animation: pulse 2s ease-out infinite;
+        }
+        @keyframes pulse { 0% { opacity: 0.8; transform: scale(1); } 100% { opacity: 0; transform: scale(2.5); } }
+
+        /* Slide-in animation */
+        .reveal { opacity: 0; transform: translateY(24px); transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
+        .reveal.visible { opacity: 1; transform: translateY(0); }
+
+        /* Counter animation */
+        .counter { display: inline-block; }
+
+        /* Chart card hover */
+        .chart-card canvas { transition: filter 0.3s; }
+        .chart-card:hover canvas { filter: brightness(1.1); }
+
+        /* Table row hover */
+        .tbl-row { transition: all 0.2s; }
+        .tbl-row:hover { background: rgba(74,222,128,0.04) !important; transform: translateX(4px); }
+
+        /* Smooth scrollbar */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(74,222,128,0.2); border-radius: 3px; }
+
+        /* Nav blur */
+        nav { background: rgba(8,10,15,0.7); backdrop-filter: blur(20px) saturate(180%); }
+
+        /* Animated number ticker */
+        @keyframes countUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .tick { animation: countUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+        /* Gradient text shimmer */
+        .shimmer {
+            background: linear-gradient(90deg, var(--green), var(--blue), var(--green));
+            background-size: 200% auto;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            animation: shimmer 3s linear infinite;
+        }
+        @keyframes shimmer { 100% { background-position: 200% center; } }
+
+        /* Progress bar animation */
+        .progress-fill { transition: width 1.5s cubic-bezier(0.16, 1, 0.3, 1); }
+
+        /* Logo spin on hover */
+        .logo-img {
+            transition: transform 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            filter: drop-shadow(0 0 8px rgba(74,222,128,0.3));
+        }
+        .logo-img:hover {
+            transform: rotateY(360deg);
+            filter: drop-shadow(0 0 16px rgba(74,222,128,0.5));
+        }
+        .logo-hero {
+            transition: transform 1s cubic-bezier(0.25, 0.46, 0.45, 0.94), filter 0.4s;
+            filter: drop-shadow(0 0 20px rgba(74,222,128,0.2));
+            animation: floatLogo 4s ease-in-out infinite;
+        }
+        .logo-hero:hover {
+            transform: rotateY(360deg) scale(1.1);
+            filter: drop-shadow(0 0 32px rgba(74,222,128,0.5)) drop-shadow(0 0 60px rgba(59,130,246,0.3));
+        }
+        @keyframes floatLogo {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-6px); }
+        }
+        .logo-hero:hover { animation: none; }
+
+        /* Money card hover */
+        .money-card {
+            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            cursor: default;
+        }
+        .money-card:hover {
+            transform: scale(1.08);
+            box-shadow: 0 4px 24px rgba(74,222,128,0.12);
+        }
+    </style>
+</head>
+<body class="font-sans text-gray-200 min-h-screen relative">
+
+<div class="bg-mesh"></div>
+
+<!-- Nav -->
+<nav class="sticky top-0 z-50 border-b border-gray-800/50">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <img src="/static/logo.png" alt="Lenda_BOT" class="logo-img w-9 h-9 rounded-lg" />
+            <span class="text-xl font-black shimmer">Lenda_BOT</span>
+            <div class="flex items-center gap-1.5 bg-green-900/30 border border-green-800/30 px-2 py-0.5 rounded-full">
+                <span class="pulse-dot"></span>
+                <span class="text-[10px] text-green-400 font-medium uppercase tracking-wider">Live</span>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <a href="/" class="text-sm font-semibold text-green-400 border-b-2 border-green-400 pb-0.5 transition-all">Dashboard</a>
+            <a href="/resultados" class="text-sm font-medium text-gray-500 hover:text-white transition-all duration-300">Resultados</a>
+            <span class="text-[10px] text-gray-600 font-mono">{{ updated }}</span>
+        </div>
+    </div>
+</nav>
+
+<div class="max-w-7xl mx-auto px-4 py-6 space-y-5 relative z-10">
+
+    <!-- Date Filter -->
+    <div class="glass p-4 flex flex-wrap items-center gap-3">
+        <span class="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">Periodo</span>
+        <form id="dateForm" class="flex flex-wrap items-center gap-2" method="get" action="/">
+            <input type="date" name="de" value="{{ filter_from }}"
+                class="text-xs bg-gray-800/80 border border-gray-700/50 rounded-lg px-3 py-1.5 text-gray-300 focus:outline-none focus:border-green-500/50 transition-colors cursor-pointer" />
+            <span class="text-gray-600 text-xs">ate</span>
+            <input type="date" name="ate" value="{{ filter_to }}"
+                class="text-xs bg-gray-800/80 border border-gray-700/50 rounded-lg px-3 py-1.5 text-gray-300 focus:outline-none focus:border-green-500/50 transition-colors cursor-pointer" />
+            <button type="submit"
+                class="text-xs font-semibold bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-500 hover:to-blue-500 text-white px-4 py-1.5 rounded-lg transition-all duration-300 hover:shadow-lg hover:shadow-green-900/20 active:scale-95">
+                Filtrar
+            </button>
+            {% if filter_from or filter_to %}
+            <a href="/"
+                class="text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1.5 rounded hover:bg-red-900/10">
+                Limpar
+            </a>
+            {% endif %}
+        </form>
+        {% if filter_from or filter_to %}
+        <span class="text-[10px] text-green-500 bg-green-900/20 px-2 py-0.5 rounded-full border border-green-800/30 ml-auto">
+            Filtro ativo
+        </span>
+        {% endif %}
+    </div>
+
+    {% set s = stats %}
+
+    <!-- Hero P/L Card -->
+    <div class="reveal hero-glow glass p-6 text-center" data-delay="0">
+        <p class="text-xs text-gray-500 uppercase tracking-[0.2em] mb-2">Lucro Total com Filtros</p>
+        <p class="text-5xl md:text-6xl font-black {% if s.pl > 0 %}text-green-400{% else %}text-red-400{% endif %} counter" data-target="{{ s.pl }}" data-prefix="+" data-suffix="u">
+            {{ '%+.2f'|format(s.pl) }}u
+        </p>
+        <div class="flex items-center justify-center gap-6 mt-3 text-sm text-gray-400">
+            <span>{{ s.total }} tips</span>
+            <span class="text-gray-700">|</span>
+            <span>WR {{ s.wr }}%</span>
+            <span class="text-gray-700">|</span>
+            <span>ROI <b class="{% if s.roi > 0 %}text-green-400{% else %}text-red-400{% endif %}">{{ '%+.1f'|format(s.roi) }}%</b></span>
+            <span class="text-gray-700">|</span>
+            <span>{{ s.tips_per_day }}/dia</span>
+            <span class="text-gray-700">|</span>
+            <span>{{ s.days }} dias</span>
+        </div>
+        <!-- Win Rate Progress Bar -->
+        <div class="max-w-md mx-auto mt-4">
+            <div class="flex justify-between text-[10px] text-gray-500 mb-1">
+                <span>Win Rate</span>
+                <span>{{ s.hits }} / {{ s.total }}</span>
+            </div>
+            <div class="h-2 bg-gray-800 rounded-full overflow-hidden">
+                <div class="progress-fill h-full rounded-full bg-gradient-to-r from-green-500 to-blue-500" style="width: 0%;" data-width="{{ s.wr }}"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stat Cards -->
+    <div class="grid grid-cols-3 gap-3">
+        <div class="reveal glass p-4" data-delay="100">
+            <p class="text-[10px] text-gray-500 uppercase tracking-widest">Odds Media</p>
+            <p class="text-2xl font-bold text-blue-400 mt-1 tick">{{ s.avg_odds }}</p>
+        </div>
+        <div class="reveal glass p-4" data-delay="200">
+            <p class="text-[10px] text-gray-500 uppercase tracking-widest">Sem Filtros</p>
+            <p class="text-lg font-bold {% if stats_all.roi > 0 %}text-green-400{% else %}text-red-400{% endif %} mt-1">{{ '%+.1f'|format(stats_all.roi) }}% ROI</p>
+            <p class="text-[10px] text-gray-600 mt-0.5">{{ '%+.2f'|format(stats_all.pl) }}u / {{ stats_all.total }} tips</p>
+        </div>
+        <div class="reveal glass p-4" data-delay="250">
+            <p class="text-[10px] text-gray-500 uppercase tracking-widest">Melhoria</p>
+            {% set improvement = s.roi - stats_all.roi %}
+            <p class="text-lg font-bold text-green-400 mt-1">+{{ '%.1f'|format(improvement) }}pp</p>
+            <p class="text-[10px] text-gray-600 mt-0.5">ROI com filtros vs sem</p>
+        </div>
+    </div>
+
+    <!-- Charts Row 1 -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="reveal glass p-5 chart-card" data-delay="300">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Lucro Acumulado</h3>
+            <canvas id="cumChart" height="200"></canvas>
+        </div>
+        <div class="reveal glass p-5 chart-card" data-delay="350">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">P/L Diario</h3>
+            <canvas id="dailyChart" height="200"></canvas>
+        </div>
+    </div>
+
+    <!-- Charts Row 2 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="reveal glass p-5 chart-card" data-delay="400">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">P/L por Horario</h3>
+            <canvas id="hourChart" height="200"></canvas>
+        </div>
+        <div class="reveal glass p-5 chart-card" data-delay="450">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">P/L por Linha</h3>
+            <canvas id="lineChart" height="200"></canvas>
+        </div>
+    </div>
+
+    <!-- Charts Row 3: Players + Teams -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="reveal glass p-5 chart-card" data-delay="500">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Top 10 Jogadores</h3>
+            <canvas id="playerChart" height="280"></canvas>
+        </div>
+        <div class="reveal glass p-5 chart-card" data-delay="550">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Top 10 Times</h3>
+            <canvas id="teamChart" height="280"></canvas>
+        </div>
+    </div>
+
+    <!-- Day of Week -->
+    <div class="reveal glass p-5 chart-card" data-delay="600">
+        <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">P/L por Dia da Semana</h3>
+        <canvas id="weekdayChart" height="120"></canvas>
+    </div>
+
+    <!-- Rankings -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="reveal glass p-5 overflow-hidden" data-delay="650">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Ranking Jogadores</h3>
+            <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead><tr class="text-gray-600 border-b border-gray-800/60">
+                    <th class="text-left py-2 px-1">#</th>
+                    <th class="text-left py-2 px-1">Jogador</th>
+                    <th class="text-center py-2 px-1">Tips</th>
+                    <th class="text-center py-2 px-1">WR</th>
+                    <th class="text-right py-2 px-1">P/L</th>
+                    <th class="text-right py-2 px-1">ROI</th>
+                </tr></thead>
+                <tbody>
+                {% for name, ps in stats.players_ranked %}
+                {% if loop.index <= 15 %}
+                <tr class="tbl-row border-b border-gray-800/30" style="animation-delay: {{ loop.index * 40 }}ms">
+                    <td class="py-1.5 px-1 text-gray-600 font-mono text-[10px]">{{ loop.index }}</td>
+                    <td class="py-1.5 px-1 font-semibold text-white">{{ name }}</td>
+                    <td class="text-center py-1.5 px-1 text-gray-400">{{ ps.n }}</td>
+                    <td class="text-center py-1.5 px-1 text-gray-400">{{ ps.wr }}%</td>
+                    <td class="text-right py-1.5 px-1 font-bold {% if ps.pl > 0 %}text-green-400{% elif ps.pl < 0 %}text-red-400{% endif %}">{{ '%+.2f'|format(ps.pl) }}</td>
+                    <td class="text-right py-1.5 px-1 {% if ps.roi > 0 %}text-green-400{% elif ps.roi < 0 %}text-red-400{% endif %}">{{ '%+.1f'|format(ps.roi) }}%</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </div>
+
+        <div class="reveal glass p-5 overflow-hidden" data-delay="700">
+            <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Ranking Times (Perdedor)</h3>
+            <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead><tr class="text-gray-600 border-b border-gray-800/60">
+                    <th class="text-left py-2 px-1">#</th>
+                    <th class="text-left py-2 px-1">Time</th>
+                    <th class="text-center py-2 px-1">Tips</th>
+                    <th class="text-center py-2 px-1">WR</th>
+                    <th class="text-right py-2 px-1">P/L</th>
+                    <th class="text-right py-2 px-1">ROI</th>
+                </tr></thead>
+                <tbody>
+                {% for name, ts in stats.teams_ranked %}
+                {% if loop.index <= 15 %}
+                <tr class="tbl-row border-b border-gray-800/30">
+                    <td class="py-1.5 px-1 text-gray-600 font-mono text-[10px]">{{ loop.index }}</td>
+                    <td class="py-1.5 px-1 font-semibold text-white">{{ name }}</td>
+                    <td class="text-center py-1.5 px-1 text-gray-400">{{ ts.n }}</td>
+                    <td class="text-center py-1.5 px-1 text-gray-400">{{ ts.wr }}%</td>
+                    <td class="text-right py-1.5 px-1 font-bold {% if ts.pl > 0 %}text-green-400{% elif ts.pl < 0 %}text-red-400{% endif %}">{{ '%+.2f'|format(ts.pl) }}</td>
+                    <td class="text-right py-1.5 px-1 {% if ts.roi > 0 %}text-green-400{% elif ts.roi < 0 %}text-red-400{% endif %}">{{ '%+.1f'|format(ts.roi) }}%</td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+                </tbody>
+            </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Lucro em Reais -->
+    <div class="reveal glass p-5" data-delay="750">
+        <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Lucro em Reais (R$) por Unidade</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+            {% for stake in [1, 2, 5, 10, 25, 50, 100] %}
+            {% set money = stats.pl * stake %}
+            <div class="money-card bg-gray-800/40 rounded-xl p-3 text-center border border-gray-800/50">
+                <p class="text-[10px] text-gray-500 font-medium">R$ {{ stake }}/tip</p>
+                <p class="text-lg font-black {% if money > 0 %}text-green-400{% else %}text-red-400{% endif %} mt-1">
+                    R$ {{ '%+.2f'|format(money) }}
+                </p>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="text-center py-6 text-[10px] text-gray-700 space-y-1">
+        <p class="shimmer inline-block font-bold text-xs">Lenda_BOT</p>
+        <p>Esoccer Battle 8 mins &middot; Over Goals do perdedor de G1 em G2</p>
+        <p>Atualizado a cada 30min &middot; {{ updated }}</p>
+    </div>
+</div>
+
+<script>
+// ==================== CHART CONFIG ====================
+Chart.defaults.color = '#6b7280';
+Chart.defaults.borderColor = 'rgba(55, 65, 81, 0.25)';
+Chart.defaults.font.family = 'Inter';
+Chart.defaults.font.size = 11;
+Chart.defaults.plugins.legend.display = false;
+
+const G = '#4ade80', R = '#f87171', B = '#3b82f6';
+const Gd = 'rgba(74,222,128,0.7)', Rd = 'rgba(248,113,113,0.7)';
+const Gbg = 'rgba(74,222,128,0.08)';
+
+// Shared animation config
+const anim = (delay = 0) => ({
+    animation: { duration: 1200, delay, easing: 'easeOutQuart' }
+});
+
+// Shared tooltip
+const tip = (extra) => ({
+    plugins: {
+        tooltip: {
+            backgroundColor: 'rgba(13,17,23,0.95)',
+            borderColor: 'rgba(74,222,128,0.15)',
+            borderWidth: 1,
+            padding: 10,
+            cornerRadius: 8,
+            titleFont: { weight: '600' },
+            ...(extra || {})
+        }
+    }
+});
+
+// ==================== CUMULATIVE P/L ====================
+const cumData = {{ stats.cum_by_day | tojson }};
+const cumCtx = document.getElementById('cumChart').getContext('2d');
+const cumGrad = cumCtx.createLinearGradient(0, 0, 0, 350);
+cumGrad.addColorStop(0, 'rgba(74,222,128,0.2)');
+cumGrad.addColorStop(1, 'rgba(74,222,128,0)');
+
+new Chart(cumCtx, {
+    type: 'line',
+    data: {
+        labels: cumData.map(d => d.day),
+        datasets: [{
+            label: 'Acumulado',
+            data: cumData.map(d => d.cum),
+            borderColor: G,
+            backgroundColor: cumGrad,
+            fill: true,
+            tension: 0.4,
+            pointRadius: 5,
+            pointHoverRadius: 8,
+            pointBackgroundColor: cumData.map(d => d.cum >= 0 ? G : R),
+            pointBorderColor: 'transparent',
+            borderWidth: 2.5,
+        }]
+    },
+    options: {
+        ...anim(),
+        interaction: { intersect: false, mode: 'index' },
+        scales: {
+            y: { grid: { color: 'rgba(55,65,81,0.15)' }, ticks: { callback: v => v + 'u' } },
+            x: { grid: { display: false } }
+        },
+        ...tip({
+            callbacks: { label: ctx => `Acum: ${ctx.parsed.y > 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}u` }
+        })
+    }
+});
+
+// ==================== DAILY P/L ====================
+new Chart(document.getElementById('dailyChart'), {
+    type: 'bar',
+    data: {
+        labels: cumData.map(d => d.day),
+        datasets: [{
+            label: 'P/L',
+            data: cumData.map(d => d.pl),
+            backgroundColor: cumData.map(d => d.pl >= 0 ? Gd : Rd),
+            hoverBackgroundColor: cumData.map(d => d.pl >= 0 ? G : R),
+            borderRadius: 6,
+            borderSkipped: false,
+        }]
+    },
+    options: {
+        ...anim(200),
+        scales: {
+            y: { grid: { color: 'rgba(55,65,81,0.15)' }, ticks: { callback: v => v + 'u' } },
+            x: { grid: { display: false } }
+        },
+        ...tip()
+    }
+});
+
+// ==================== BY HOUR ====================
+const hourData = {{ stats.by_hour | tojson }};
+const hours = Object.keys(hourData).sort((a,b) => a-b);
+new Chart(document.getElementById('hourChart'), {
+    type: 'bar',
+    data: {
+        labels: hours.map(h => h.toString().padStart(2,'0') + 'h'),
+        datasets: [{
+            label: 'P/L',
+            data: hours.map(h => hourData[h].pl),
+            backgroundColor: hours.map(h => hourData[h].pl >= 0 ? Gd : Rd),
+            hoverBackgroundColor: hours.map(h => hourData[h].pl >= 0 ? G : R),
+            borderRadius: 4,
+            borderSkipped: false,
+        }]
+    },
+    options: {
+        ...anim(400),
+        scales: {
+            y: { grid: { color: 'rgba(55,65,81,0.15)' } },
+            x: { grid: { display: false } }
+        },
+        ...tip({
+            callbacks: {
+                afterLabel: ctx => {
+                    const d = hourData[hours[ctx.dataIndex]];
+                    return `Tips: ${d.n} | WR: ${d.wr}% | ROI: ${d.roi > 0 ? '+' : ''}${d.roi}%`;
+                }
+            }
+        })
+    }
+});
+
+// ==================== BY LINE ====================
+const lineData = {{ stats.by_line | tojson }};
+const lineLabels = Object.keys(lineData);
+new Chart(document.getElementById('lineChart'), {
+    type: 'bar',
+    data: {
+        labels: lineLabels,
+        datasets: [{
+            label: 'P/L',
+            data: lineLabels.map(l => lineData[l].pl),
+            backgroundColor: lineLabels.map(l => {
+                const colors = [G, B, '#818cf8', '#fbbf24'];
+                return colors[lineLabels.indexOf(l)] || G;
+            }),
+            hoverBackgroundColor: lineLabels.map(l => lineData[l].pl >= 0 ? G : R),
+            borderRadius: 6,
+            borderSkipped: false,
+        }]
+    },
+    options: {
+        ...anim(600),
+        indexAxis: 'y',
+        scales: {
+            x: { grid: { color: 'rgba(55,65,81,0.15)' } },
+            y: { grid: { display: false } }
+        },
+        ...tip({
+            callbacks: {
+                afterLabel: ctx => {
+                    const d = lineData[lineLabels[ctx.dataIndex]];
+                    return `Tips: ${d.n} | WR: ${d.wr}% | ROI: ${d.roi > 0 ? '+' : ''}${d.roi}%`;
+                }
+            }
+        })
+    }
+});
+
+// ==================== TOP PLAYERS ====================
+const playerData = {{ stats.by_player | tojson }};
+const playersSorted = Object.entries(playerData).sort((a,b) => b[1].pl - a[1].pl).slice(0, 10);
+new Chart(document.getElementById('playerChart'), {
+    type: 'bar',
+    data: {
+        labels: playersSorted.map(p => p[0]),
+        datasets: [{
+            label: 'P/L',
+            data: playersSorted.map(p => p[1].pl),
+            backgroundColor: playersSorted.map((p, i) => {
+                if (p[1].pl < 0) return Rd;
+                const alpha = 0.9 - (i * 0.06);
+                return `rgba(74,222,128,${alpha})`;
+            }),
+            hoverBackgroundColor: playersSorted.map(p => p[1].pl >= 0 ? G : R),
+            borderRadius: 4,
+            borderSkipped: false,
+        }]
+    },
+    options: {
+        ...anim(800),
+        indexAxis: 'y',
+        scales: {
+            x: { grid: { color: 'rgba(55,65,81,0.15)' } },
+            y: { grid: { display: false }, ticks: { font: { weight: '600' } } }
+        },
+        ...tip({
+            callbacks: {
+                afterLabel: ctx => {
+                    const d = playersSorted[ctx.dataIndex][1];
+                    return `Tips: ${d.n} | WR: ${d.wr}% | ROI: ${d.roi > 0 ? '+' : ''}${d.roi}%`;
+                }
+            }
+        })
+    }
+});
+
+// ==================== TOP TEAMS ====================
+const teamData = {{ stats.by_team | tojson }};
+const teamsSorted = Object.entries(teamData).filter(t => t[1].n >= 3).sort((a,b) => b[1].pl - a[1].pl).slice(0, 10);
+new Chart(document.getElementById('teamChart'), {
+    type: 'bar',
+    data: {
+        labels: teamsSorted.map(t => t[0]),
+        datasets: [{
+            label: 'P/L',
+            data: teamsSorted.map(t => t[1].pl),
+            backgroundColor: teamsSorted.map((t, i) => {
+                if (t[1].pl < 0) return Rd;
+                const alpha = 0.9 - (i * 0.06);
+                return `rgba(59,130,246,${alpha})`;
+            }),
+            hoverBackgroundColor: teamsSorted.map(t => t[1].pl >= 0 ? B : R),
+            borderRadius: 4,
+            borderSkipped: false,
+        }]
+    },
+    options: {
+        ...anim(1000),
+        indexAxis: 'y',
+        scales: {
+            x: { grid: { color: 'rgba(55,65,81,0.15)' } },
+            y: { grid: { display: false }, ticks: { font: { weight: '600' } } }
+        },
+        ...tip({
+            callbacks: {
+                afterLabel: ctx => {
+                    const d = teamsSorted[ctx.dataIndex][1];
+                    return `Tips: ${d.n} | WR: ${d.wr}% | ROI: ${d.roi > 0 ? '+' : ''}${d.roi}%`;
+                }
+            }
+        })
+    }
+});
+
+// ==================== DAY OF WEEK ====================
+const wdData = {{ stats.by_weekday | tojson }};
+const wdOrder = ['Segunda', 'Terca', 'Quarta', 'Quinta', 'Sexta', 'Sabado', 'Domingo'];
+const wdLabels = wdOrder.filter(d => wdData[d]);
+new Chart(document.getElementById('weekdayChart'), {
+    type: 'bar',
+    data: {
+        labels: wdLabels,
+        datasets: [{
+            label: 'P/L',
+            data: wdLabels.map(d => wdData[d].pl),
+            backgroundColor: wdLabels.map(d => wdData[d].pl >= 0 ? Gd : Rd),
+            hoverBackgroundColor: wdLabels.map(d => wdData[d].pl >= 0 ? G : R),
+            borderRadius: 6,
+            borderSkipped: false,
+        }]
+    },
+    options: {
+        ...anim(1200),
+        scales: {
+            y: { grid: { color: 'rgba(55,65,81,0.15)' } },
+            x: { grid: { display: false } }
+        },
+        ...tip({
+            callbacks: {
+                afterLabel: ctx => {
+                    const d = wdData[wdLabels[ctx.dataIndex]];
+                    return `Tips: ${d.n} | WR: ${d.wr}%`;
+                }
+            }
+        })
+    }
+});
+
+// ==================== ANIMATIONS ====================
+
+// Scroll reveal
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            const delay = entry.target.dataset.delay || 0;
+            setTimeout(() => entry.target.classList.add('visible'), delay);
+            observer.unobserve(entry.target);
+        }
+    });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// Progress bar animation
+setTimeout(() => {
+    document.querySelectorAll('.progress-fill').forEach(bar => {
+        bar.style.width = bar.dataset.width + '%';
+    });
+}, 600);
+
+// Auto-refresh a cada 30 minutos
+setTimeout(() => location.reload(), 1800000);
+</script>
+</body>
+</html>

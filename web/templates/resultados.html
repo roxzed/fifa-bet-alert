@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resultados - Lenda_BOT</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        dark: { 900: '#080a0f', 800: '#0d1117', 700: '#161b22', 600: '#1e2530' },
+                        profit: '#4ade80',
+                        loss: '#f87171',
+                        accent: '#3b82f6',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background: #080a0f; }
+        .glass { background: rgba(13, 17, 23, 0.85); backdrop-filter: blur(12px); border: 1px solid rgba(74, 222, 128, 0.06); }
+        ::-webkit-scrollbar { width: 6px; height: 6px; } ::-webkit-scrollbar-track { background: #111827; } ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+        .row-green { background: rgba(74, 222, 128, 0.05); }
+        .row-red { background: rgba(239, 68, 68, 0.05); }
+        .row-blocked { background: rgba(107, 114, 128, 0.08); }
+        tr:hover td { background: rgba(255,255,255,0.03); }
+        .logo-img {
+            transition: transform 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            filter: drop-shadow(0 0 8px rgba(74,222,128,0.3));
+        }
+        .logo-img:hover {
+            transform: rotateY(360deg);
+            filter: drop-shadow(0 0 16px rgba(74,222,128,0.5));
+        }
+    </style>
+</head>
+<body class="font-sans text-gray-200 min-h-screen">
+
+<!-- Nav -->
+<nav class="glass sticky top-0 z-50 border-b border-gray-800">
+    <div class="max-w-[1400px] mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <img src="/static/logo.png" alt="Lenda_BOT" class="logo-img w-9 h-9 rounded-lg" />
+            <span class="text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">Lenda_BOT</span>
+            <span class="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">LIVE</span>
+        </div>
+        <div class="flex items-center gap-4">
+            <a href="/" class="text-sm font-medium text-gray-400 hover:text-white transition">Dashboard</a>
+            <a href="/resultados" class="text-sm font-medium text-green-400 border-b-2 border-green-400 pb-0.5">Resultados</a>
+            <span class="text-xs text-gray-600">{{ updated }}</span>
+        </div>
+    </div>
+</nav>
+
+<div class="max-w-[1400px] mx-auto px-4 py-6 space-y-4">
+
+    <!-- Date Filter -->
+    <div class="glass rounded-xl p-4 flex flex-wrap items-center gap-3">
+        <span class="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">Periodo</span>
+        <form class="flex flex-wrap items-center gap-2" method="get" action="/resultados">
+            <input type="date" name="de" value="{{ filter_from }}"
+                class="text-xs bg-gray-800/80 border border-gray-700/50 rounded-lg px-3 py-1.5 text-gray-300 focus:outline-none focus:border-green-500/50 transition-colors cursor-pointer" />
+            <span class="text-gray-600 text-xs">ate</span>
+            <input type="date" name="ate" value="{{ filter_to }}"
+                class="text-xs bg-gray-800/80 border border-gray-700/50 rounded-lg px-3 py-1.5 text-gray-300 focus:outline-none focus:border-green-500/50 transition-colors cursor-pointer" />
+            <button type="submit"
+                class="text-xs font-semibold bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-500 hover:to-blue-500 text-white px-4 py-1.5 rounded-lg transition-all duration-300 hover:shadow-lg hover:shadow-green-900/20 active:scale-95">
+                Filtrar
+            </button>
+            {% if filter_from or filter_to %}
+            <a href="/resultados"
+                class="text-xs text-gray-500 hover:text-red-400 transition-colors px-2 py-1.5 rounded hover:bg-red-900/10">
+                Limpar
+            </a>
+            {% endif %}
+        </form>
+        {% if filter_from or filter_to %}
+        <span class="text-[10px] text-green-400 bg-green-900/20 px-2 py-0.5 rounded-full border border-green-800/30 ml-auto">
+            Filtro ativo
+        </span>
+        {% endif %}
+    </div>
+
+    <!-- Summary Bar -->
+    <div class="glass rounded-xl p-4">
+        <div class="flex flex-wrap items-center gap-6">
+            <div>
+                <span class="text-xs text-gray-500">FILTRADOS</span>
+                <span class="ml-2 text-lg font-bold text-white">{{ stats.total }}</span>
+                <span class="text-xs text-gray-500">tips</span>
+            </div>
+            <div>
+                <span class="text-xs text-gray-500">WR</span>
+                <span class="ml-2 text-lg font-bold text-white">{{ stats.wr }}%</span>
+            </div>
+            <div>
+                <span class="text-xs text-gray-500">P/L</span>
+                <span class="ml-2 text-lg font-bold {% if stats.pl > 0 %}text-green-400{% else %}text-red-400{% endif %}">{{ '%+.2f'|format(stats.pl) }}u</span>
+            </div>
+            <div>
+                <span class="text-xs text-gray-500">ROI</span>
+                <span class="ml-2 text-lg font-bold {% if stats.roi > 0 %}text-green-400{% else %}text-red-400{% endif %}">{{ '%+.1f'|format(stats.roi) }}%</span>
+            </div>
+            <div class="ml-auto"></div>
+            <div>
+                <input id="searchBox" type="text" placeholder="Buscar jogador, time..." class="text-xs bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-gray-300 placeholder-gray-600 focus:outline-none focus:border-blue-500 w-48">
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Table -->
+    <div class="glass rounded-xl overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs whitespace-nowrap" id="resultsTable">
+                <thead>
+                    <tr class="text-gray-500 bg-gray-900/50 border-b border-gray-800">
+                        <th class="text-left py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(0)">Data</th>
+                        <th class="text-left py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(1)">Hora</th>
+                        <th class="text-left py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(2)">Jogador</th>
+                        <th class="text-left py-2.5 px-2">vs</th>
+                        <th class="text-left py-2.5 px-2">Time</th>
+                        <th class="text-left py-2.5 px-2">vs Time</th>
+                        <th class="text-center py-2.5 px-2">G1</th>
+                        <th class="text-center py-2.5 px-2">Linha</th>
+                        <th class="text-center py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(10)">Odds</th>
+                        <th class="text-center py-2.5 px-2">Edge</th>
+                        <th class="text-center py-2.5 px-2">Gols G2</th>
+                        <th class="text-center py-2.5 px-2">Resultado</th>
+                        <th class="text-right py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(14)">P/L</th>
+                        <th class="text-right py-2.5 px-2">Acumulado</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% set ns = namespace(cum=0) %}
+                {% set alerts_chrono = passed | sort(attribute='datetime') %}
+                {% for a in alerts | sort(attribute='datetime', reverse=true) %}
+                <tr class="border-b border-gray-800/40 {% if a.passed %}{% if a.hit %}row-green{% elif a.hit == false %}row-red{% endif %}{% else %}row-blocked{% endif %}"
+                    data-passed="{{ 'yes' if a.passed else 'no' }}"
+                    data-search="{{ a.player|lower }} {{ a.opponent|lower }} {{ a.team|lower }} {{ a.opp_team|lower }}">
+                    <td class="py-2 px-2 text-gray-300">{{ a.date }}</td>
+                    <td class="py-2 px-2 text-gray-400">{{ a.time }}</td>
+                    <td class="py-2 px-2 font-medium text-white">{{ a.player }}</td>
+                    <td class="py-2 px-2 text-gray-400">{{ a.opponent }}</td>
+                    <td class="py-2 px-2 text-gray-300">{{ a.team }}</td>
+                    <td class="py-2 px-2 text-gray-400">{{ a.opp_team }}</td>
+                    <td class="py-2 px-2 text-center text-gray-300">{{ a.g1_score }}</td>
+                    <td class="py-2 px-2 text-center font-medium text-blue-300">{{ a.line }}</td>
+                    <td class="py-2 px-2 text-center text-yellow-300 font-medium">{{ a.odds }}</td>
+                    <td class="py-2 px-2 text-center text-gray-400">{{ a.edge }}%</td>
+                    <td class="py-2 px-2 text-center text-lg font-bold text-white">{{ a.goals if a.goals is not none else '-' }}</td>
+                    <td class="py-2 px-2 text-center">
+                        {% if a.hit == true %}
+                            <span class="text-green-400 font-bold">GREEN</span>
+                        {% elif a.hit == false %}
+                            <span class="text-red-400 font-bold">RED</span>
+                        {% else %}
+                            <span class="text-gray-600">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="py-2 px-2 text-right font-bold {% if a.pl > 0 %}text-green-400{% elif a.pl < 0 %}text-red-400{% else %}text-gray-500{% endif %}">
+                        {{ '%+.2f'|format(a.pl) }}
+                    </td>
+                    <td class="py-2 px-2 text-right text-gray-400">
+                        {% if a.passed and a.cum_pl is defined %}{{ '%+.2f'|format(a.cum_pl) }}{% else %}-{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="glass rounded-xl p-3">
+        <div class="flex flex-wrap items-center gap-4 text-[10px] text-gray-500">
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-emerald-500/20 border border-green-500/30"></span> Green (acertou)</div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-500/20 border border-red-500/30"></span> Red (errou)</div>
+            <div class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-gray-500/20 border border-gray-500/30"></span> Bloqueado por filtro</div>
+            <div class="ml-auto">
+                Metodo: Over Goals do perdedor de G1 em G2 &middot; Esoccer Battle 8 mins &middot; Flat stake 1u/tip
+            </div>
+        </div>
+    </div>
+
+    <div class="text-center py-3 text-xs text-gray-600">
+        Dados atualizados a cada 30min &middot; {{ updated }}
+    </div>
+</div>
+
+<script>
+// Filter buttons
+let currentFilter = 'passed';
+
+function toggleFilter(mode) {
+    currentFilter = mode;
+    document.getElementById('btnAll').className = mode === 'all'
+        ? 'text-xs px-3 py-1 rounded bg-blue-700 text-blue-200'
+        : 'text-xs px-3 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600';
+    document.getElementById('btnPassed').className = mode === 'passed'
+        ? 'text-xs px-3 py-1 rounded bg-green-700 text-green-200'
+        : 'text-xs px-3 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600';
+    document.getElementById('btnBlocked').className = mode === 'blocked'
+        ? 'text-xs px-3 py-1 rounded bg-red-700 text-red-200'
+        : 'text-xs px-3 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600';
+    applyFilters();
+}
+
+function applyFilters() {
+    const search = document.getElementById('searchBox').value.toLowerCase();
+    const rows = document.querySelectorAll('#resultsTable tbody tr');
+    rows.forEach(row => {
+        const passed = row.dataset.passed === 'yes';
+        const searchText = row.dataset.search || '';
+        let show = true;
+
+        if (currentFilter === 'passed' && !passed) show = false;
+        if (currentFilter === 'blocked' && passed) show = false;
+        if (search && !searchText.includes(search)) show = false;
+
+        row.style.display = show ? '' : 'none';
+    });
+}
+
+document.getElementById('searchBox').addEventListener('input', applyFilters);
+
+// Column sorting
+let sortCol = -1;
+let sortAsc = true;
+
+function sortTable(col) {
+    if (sortCol === col) {
+        sortAsc = !sortAsc;
+    } else {
+        sortCol = col;
+        sortAsc = true;
+    }
+    const tbody = document.querySelector('#resultsTable tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+
+    rows.sort((a, b) => {
+        let va = a.cells[col].textContent.trim();
+        let vb = b.cells[col].textContent.trim();
+        // Try numeric
+        let na = parseFloat(va.replace(/[+%,]/g, ''));
+        let nb = parseFloat(vb.replace(/[+%,]/g, ''));
+        if (!isNaN(na) && !isNaN(nb)) {
+            return sortAsc ? na - nb : nb - na;
+        }
+        return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+
+    rows.forEach(r => tbody.appendChild(r));
+}
+
+// Auto-refresh
+// Auto-refresh a cada 30 minutos
+setTimeout(() => location.reload(), 1800000);
+</script>
+</body>
+</html>
