@@ -171,7 +171,6 @@
                         <th class="text-center py-2.5 px-2">G1</th>
                         <th class="text-center py-2.5 px-2">Linha</th>
                         <th class="text-center py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(8)">Odds</th>
-                        <th class="text-center py-2.5 px-2">Edge</th>
                         <th class="text-center py-2.5 px-2">Gols G2</th>
                         <th class="text-center py-2.5 px-2">Resultado</th>
                         <th class="text-right py-2.5 px-2 cursor-pointer hover:text-white" onclick="sortTable(12)">P/L</th>
@@ -191,7 +190,6 @@
                     <td class="py-2 px-2 text-center text-gray-300" data-label="G1">{{ a.g1_score }}</td>
                     <td class="py-2 px-2 text-center font-medium text-blue-300" data-label="Linha">{{ a.line }}</td>
                     <td class="py-2 px-2 text-center text-yellow-300 font-medium" data-label="Odds">{{ a.odds }}</td>
-                    <td class="py-2 px-2 text-center text-gray-400" data-label="Edge">{{ a.edge }}%</td>
                     <td class="py-2 px-2 text-center text-lg font-bold text-white cell-goals" data-label="Gols G2">{{ a.goals if a.goals is not none else '-' }}</td>
                     <td class="py-2 px-2 text-center cell-result" data-label="Resultado">
                         {% if a.hit == true %}
