@@ -4,7 +4,13 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    TZ_LOCAL = ZoneInfo("America/Sao_Paulo")
+except Exception:
+    TZ_LOCAL = timezone(timedelta(hours=-3))
 
 import psycopg2
 import psycopg2.extras
@@ -16,11 +22,11 @@ from fastapi.templating import Jinja2Templates
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DB_HOST = os.getenv("DB_HOST", "")
+DB_HOST = os.getenv("DB_HOST", "db.aoxwotodixhzfgcbuoem.supabase.co")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASS = os.getenv("DB_PASS", "")
+DB_PASS = os.getenv("DB_PASS", "CEKA2uwnKGPGAws6")
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "1800"))
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
@@ -181,9 +187,12 @@ def _get_updated() -> str:
 # Build enriched dataset
 # ---------------------------------------------------------------------------
 def build_dataset(rows: list[dict]) -> dict:
-    """Process raw rows into enriched alerts + aggregated stats."""
+    """Process raw rows into enriched alerts + aggregated stats.
+
+    All alerts in the DB were already sent via Telegram (passed production
+    filters), so no re-filtering is needed here.
+    """
     alerts = []
-    passed_alerts = []
 
     for r in rows:
         line = r["best_line"] or "over25"
@@ -191,17 +200,23 @@ def build_dataset(rows: list[dict]) -> dict:
         hit = get_hit(r)
         odds = get_odds(r)
         pl = get_profit(r)
-        ok, reason = apply_filter(r)
 
         loser_team = r.get("team_home") if is_home else r.get("team_away")
         opp_team = r.get("team_away") if is_home else r.get("team_home")
         opponent = r.get("player_away") if is_home else r.get("player_home")
 
+        # Convert UTC to local timezone (same as Telegram bot)
+        sent_utc = r["sent_at"]
+        if sent_utc:
+            sent_local = sent_utc.replace(tzinfo=timezone.utc).astimezone(TZ_LOCAL)
+        else:
+            sent_local = None
+
         alert = {
             "id": r["id"],
-            "date": r["sent_at"].strftime("%d/%m") if r["sent_at"] else "",
-            "time": r["sent_at"].strftime("%H:%M") if r["sent_at"] else "",
-            "datetime": r["sent_at"],
+            "date": sent_local.strftime("%d/%m") if sent_local else "",
+            "time": sent_local.strftime("%H:%M") if sent_local else "",
+            "datetime": sent_local,
             "player": r["losing_player"],
             "opponent": opponent or "?",
             "team": loser_team or "?",
@@ -217,34 +232,25 @@ def build_dataset(rows: list[dict]) -> dict:
             "star": r["star_rating"] or 0,
             "hit": hit,
             "pl": round(pl, 2),
-            "passed": ok,
-            "filter_reason": reason,
-            "hour": r["sent_at"].hour if r["sent_at"] else 0,
-            "weekday": WEEKDAYS_PT.get(r["sent_at"].weekday(), "?") if r["sent_at"] else "?",
+            "passed": True,
+            "hour": sent_local.hour if sent_local else 0,
+            "weekday": WEEKDAYS_PT.get(sent_local.weekday(), "?") if sent_local else "?",
         }
         alerts.append(alert)
-        if ok:
-            passed_alerts.append(alert)
 
-    # Sort chronologically for cumulative calc (alerts are DESC from DB)
-    passed_chrono = sorted(passed_alerts, key=lambda a: a["datetime"])
+    # Cumulative P/L
+    chrono = sorted(alerts, key=lambda a: a["datetime"])
     cum = 0
-    for a in passed_chrono:
+    for a in chrono:
         cum += a["pl"]
         a["cum_pl"] = round(cum, 2)
 
-    # Also calculate cumulative for all alerts (for comparison)
-    all_chrono = sorted(alerts, key=lambda a: a["datetime"])
-    cum_all = 0
-    for a in all_chrono:
-        cum_all += a["pl"]
-        a["cum_pl_all"] = round(cum_all, 2)
-
+    stats = _aggregate(alerts)
     return {
         "alerts": alerts,
-        "passed": passed_alerts,
-        "stats": _aggregate(passed_alerts),
-        "stats_all": _aggregate(alerts),
+        "passed": alerts,
+        "stats": stats,
+        "stats_all": stats,
         "updated": _get_updated(),
     }
 
@@ -335,13 +341,20 @@ def _filter_by_date(rows: list[dict], date_from: str | None, date_to: str | None
     if date_from:
         try:
             dt_from = datetime.strptime(date_from, "%Y-%m-%d")
-            filtered = [r for r in filtered if r["sent_at"] and r["sent_at"] >= dt_from]
+            # Compare using local time (BRT)
+            filtered = [
+                r for r in filtered
+                if r["sent_at"] and r["sent_at"].replace(tzinfo=timezone.utc).astimezone(TZ_LOCAL).replace(tzinfo=None) >= dt_from
+            ]
         except ValueError:
             pass
     if date_to:
         try:
             dt_to = datetime.strptime(date_to, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-            filtered = [r for r in filtered if r["sent_at"] and r["sent_at"] <= dt_to]
+            filtered = [
+                r for r in filtered
+                if r["sent_at"] and r["sent_at"].replace(tzinfo=timezone.utc).astimezone(TZ_LOCAL).replace(tzinfo=None) <= dt_to
+            ]
         except ValueError:
             pass
     return filtered
