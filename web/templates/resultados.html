@@ -139,7 +139,7 @@
                 <tbody>
                 {% set ns = namespace(cum=0) %}
                 {% set alerts_chrono = passed | sort(attribute='datetime') %}
-                {% for a in alerts | sort(attribute='datetime', reverse=true) %}
+                {% for a in passed | sort(attribute='datetime', reverse=true) %}
                 <tr class="border-b border-gray-800/40 {% if a.passed %}{% if a.hit %}row-green{% elif a.hit == false %}row-red{% endif %}{% else %}row-blocked{% endif %}"
                     data-passed="{{ 'yes' if a.passed else 'no' }}"
                     data-search="{{ a.player|lower }} {{ a.opponent|lower }} {{ a.team|lower }} {{ a.opp_team|lower }}">
@@ -167,7 +167,7 @@
                         {{ '%+.2f'|format(a.pl) }}
                     </td>
                     <td class="py-2 px-2 text-right text-gray-400">
-                        {% if a.cum_pl_all is defined %}{{ '%+.2f'|format(a.cum_pl_all) }}{% else %}-{% endif %}
+                        {% if a.cum_pl is defined %}{{ '%+.2f'|format(a.cum_pl) }}{% else %}-{% endif %}
                     </td>
                 </tr>
                 {% endfor %}
