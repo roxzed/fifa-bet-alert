@@ -167,7 +167,7 @@
                         {{ '%+.2f'|format(a.pl) }}
                     </td>
                     <td class="py-2 px-2 text-right text-gray-400">
-                        {% if a.passed and a.cum_pl is defined %}{{ '%+.2f'|format(a.cum_pl) }}{% else %}-{% endif %}
+                        {% if a.cum_pl_all is defined %}{{ '%+.2f'|format(a.cum_pl_all) }}{% else %}-{% endif %}
                     </td>
                 </tr>
                 {% endfor %}
