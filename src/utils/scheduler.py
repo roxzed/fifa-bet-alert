@@ -41,12 +41,12 @@ class TaskScheduler:
         """Add a task that runs once per day at a specific time."""
         self.scheduler.add_job(
             func,
-            trigger=CronTrigger(hour=hour, minute=minute),
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=settings.timezone),
             id=task_id,
             args=args or (),
             replace_existing=True,
         )
-        logger.info(f"Scheduled daily task '{task_id}' at {hour:02d}:{minute:02d}")
+        logger.info(f"Scheduled daily task '{task_id}' at {hour:02d}:{minute:02d} ({settings.timezone})")
 
     def add_weekly_task(
         self,
@@ -60,12 +60,12 @@ class TaskScheduler:
         """Add a task that runs once per week."""
         self.scheduler.add_job(
             func,
-            trigger=CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute),
+            trigger=CronTrigger(day_of_week=day_of_week, hour=hour, minute=minute, timezone=settings.timezone),
             id=task_id,
             args=args or (),
             replace_existing=True,
         )
-        logger.info(f"Scheduled weekly task '{task_id}' on {day_of_week} at {hour:02d}:{minute:02d}")
+        logger.info(f"Scheduled weekly task '{task_id}' on {day_of_week} at {hour:02d}:{minute:02d} ({settings.timezone})")
 
     def remove_task(self, task_id: str) -> None:
         """Remove a scheduled task."""
