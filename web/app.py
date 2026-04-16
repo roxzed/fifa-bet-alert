@@ -68,6 +68,11 @@ COND_BL = {
 BAD_HOURS = {0, 1, 9, 14, 16, 18}
 BAD_HOUR_MIN_EDGE = 0.15
 
+# Date when filters were deployed to production (local BRT time)
+# Before this: simulate filters on all alerts
+# After this: alerts already passed production filters
+FILTERS_DEPLOY_DATE = datetime(2026, 4, 14)
+
 WEEKDAYS_PT = {
     0: "Segunda", 1: "Terca", 2: "Quarta", 3: "Quinta",
     4: "Sexta", 5: "Sabado", 6: "Domingo",
@@ -79,14 +84,17 @@ LINE_LABELS = {
 }
 
 
-def apply_filter(r: dict) -> tuple[bool, str]:
-    """Return (passed, reason) mirroring production filters."""
+def apply_filter(r: dict, sent_local: datetime | None) -> tuple[bool, str]:
+    """Return (passed, reason) mirroring production filters.
+
+    Used only for alerts BEFORE FILTERS_DEPLOY_DATE (simulation).
+    """
     player = r["losing_player"]
     line = r["best_line"] or "over25"
     is_home = player == r.get("player_home")
     edg = r["edge"] or 0
     lt = r["loss_type"] or "?"
-    hour = r["sent_at"].hour if r["sent_at"] else 0
+    hour = sent_local.hour if sent_local else 0
 
     if player in BLACKLIST:
         return False, "Blacklist"
@@ -189,8 +197,9 @@ def _get_updated() -> str:
 def build_dataset(rows: list[dict]) -> dict:
     """Process raw rows into enriched alerts + aggregated stats.
 
-    All alerts in the DB were already sent via Telegram (passed production
-    filters), so no re-filtering is needed here.
+    Hybrid approach:
+    - Before FILTERS_DEPLOY_DATE (14/04): simulate filters on all alerts
+    - After FILTERS_DEPLOY_DATE: alerts already passed production filters
     """
     alerts = []
 
@@ -211,6 +220,13 @@ def build_dataset(rows: list[dict]) -> dict:
             sent_local = sent_utc.replace(tzinfo=timezone.utc).astimezone(TZ_LOCAL)
         else:
             sent_local = None
+
+        # Before filters deploy: simulate filters; after: already filtered
+        is_before_deploy = sent_local and sent_local.replace(tzinfo=None) < FILTERS_DEPLOY_DATE
+        if is_before_deploy:
+            passed, _ = apply_filter(r, sent_local)
+            if not passed:
+                continue  # skip alerts that would have been blocked
 
         alert = {
             "id": r["id"],
