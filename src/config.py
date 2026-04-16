@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    telegram_admin_chat_id: str = ""  # Private chat for status/regime msgs
     telegram_group_id: str = ""
     telegram_group_v2_id: str = ""  # Grupo do Method 2
 

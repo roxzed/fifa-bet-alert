@@ -425,7 +425,7 @@ class Validator:
                 "Use /pause se quiser pausar manualmente."
             )
             try:
-                await self.notifier.send_message(msg)
+                await self.notifier.send_admin_message(msg)
             except Exception:
                 pass
             logger.warning(

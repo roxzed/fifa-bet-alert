@@ -113,11 +113,12 @@ class TelegramNotifier:
     """
 
     def __init__(self, token: str, chat_id: str, group_chat_id: str = "",
-                 v2_group_id: str = "") -> None:
+                 v2_group_id: str = "", admin_chat_id: str = "") -> None:
         self.bot = Bot(token=token)
         self.chat_id = chat_id
         self._group_chat_id = group_chat_id
         self._v2_group_id = v2_group_id  # Grupo do Method 2
+        self._admin_chat_id = admin_chat_id or chat_id  # Fallback to main chat
         self._paused = False
         self._breaker = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         self._breaker_v2 = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
@@ -173,6 +174,21 @@ class TelegramNotifier:
 
         logger.error("Failed to send Telegram message after retries")
         return None
+
+    async def send_admin_message(self, text: str, parse_mode: str = ParseMode.HTML) -> int | None:
+        """Send a message to admin private chat only (status, regime, etc)."""
+        text = _sanitize_text(text)
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._admin_chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                disable_web_page_preview=True,
+            )
+            return msg.message_id
+        except TelegramError as e:
+            logger.warning(f"Failed to send admin message: {e}")
+            return None
 
     async def edit_message(self, message_id: int, text: str, parse_mode: str = ParseMode.HTML) -> bool:
         """Edit an existing message with circuit breaker. Returns True on success."""

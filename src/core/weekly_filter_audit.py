@@ -576,14 +576,14 @@ class WeeklyFilterAudit:
 
         # Telegram tem limite de 4096 chars — dividir se necessário
         if len(text) <= 4096:
-            await self.notifier.send_message(text)
+            await self.notifier.send_admin_message(text)
         else:
             # Dividir em partes
             parts = self._split_message(text, 4000)
             for i, part in enumerate(parts):
                 if i > 0:
                     part = f"🔍 <b>AUDITORIA (cont. {i+1})</b>\n\n" + part
-                await self.notifier.send_message(part)
+                await self.notifier.send_admin_message(part)
 
     def _split_message(self, text: str, max_len: int) -> list[str]:
         """Divide mensagem em partes respeitando quebras de linha."""

@@ -147,11 +147,11 @@ class HealthMonitor:
                 if regime_status in ("WARNING", "DEGRADED"):
                     from src.telegram.messages import format_regime_warning
                     msg = format_regime_warning(regime)
-                    await self.notifier.send_message(msg)
+                    await self.notifier.send_admin_message(msg)
                     logger.warning(f"Regime changed: {self._last_regime} → {regime_status}")
                 elif self._last_regime in ("WARNING", "DEGRADED"):
                     # Recovered
-                    await self.notifier.send_message(
+                    await self.notifier.send_admin_message(
                         f"🟢 <b>Regime recuperado</b>\n\n"
                         f"Status: {self._last_regime} → HEALTHY\n"
                         f"O sistema voltou ao normal."
@@ -165,7 +165,7 @@ class HealthMonitor:
         if self._api_failures >= 5:
             last_api_alert = getattr(self, '_last_api_alert', 0.0)
             if now - last_api_alert > 3600:  # max 1 alerta por hora
-                await self.notifier.send_message(
+                await self.notifier.send_admin_message(
                     f"🚨 <b>API sem resposta</b>\n\n"
                     f"A BetsAPI falhou {self._api_failures} vezes consecutivas.\n"
                     f"Último sucesso: {self._format_elapsed(now - self._last_game_processed)} atrás\n"
@@ -181,7 +181,7 @@ class HealthMonitor:
             if idle_minutes > 20:  # 20 min sem processar jogos (jogos a cada ~10 min)
                 last_idle_alert = getattr(self, '_last_idle_alert', 0.0)
                 if now - last_idle_alert > 3600:  # max 1 alerta/hora
-                    await self.notifier.send_message(
+                    await self.notifier.send_admin_message(
                         f"⚠️ <b>Inatividade detectada</b>\n\n"
                         f"Nenhum jogo processado nas últimas {idle_minutes:.0f} minutos.\n"
                         f"Horário: {now_brt.strftime('%H:%M')} BRT\n"
@@ -196,7 +196,7 @@ class HealthMonitor:
         if self._db_operations >= 100:
             error_rate = self._db_errors / self._db_operations
             if error_rate > 0.10:  # >10% errors
-                await self.notifier.send_message(
+                await self.notifier.send_admin_message(
                     f"🚨 <b>Taxa de erro do banco alta</b>\n\n"
                     f"Erros: {self._db_errors}/{self._db_operations} ({error_rate:.1%})\n"
                     f"Verificar conexão com o banco de dados."
@@ -242,7 +242,7 @@ class HealthMonitor:
             }
 
             msg = format_system_status(status_data)
-            await self.notifier.send_message(msg)
+            await self.notifier.send_admin_message(msg)
             logger.info(f"Periodic status sent: uptime={self.uptime_str}, regime={self._last_regime}")
         except Exception as e:
             logger.warning(f"Failed to send periodic status: {e}")

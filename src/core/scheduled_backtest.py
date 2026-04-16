@@ -300,7 +300,7 @@ class ScheduledBacktest:
         )
 
         try:
-            await self.notifier.send_message(msg)
+            await self.notifier.send_admin_message(msg)
             logger.info(f"Backtest report sent to Telegram ({total} pairs)")
         except Exception as e:
             logger.error(f"Failed to send backtest report: {e}")

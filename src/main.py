@@ -84,6 +84,7 @@ async def main() -> None:
         chat_id=settings.telegram_chat_id,
         group_chat_id=settings.telegram_group_id,
         v2_group_id=settings.telegram_group_v2_id,
+        admin_chat_id=settings.telegram_admin_chat_id,
     )
 
     # --- Stats Engine ---

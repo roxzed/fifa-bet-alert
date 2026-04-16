@@ -221,7 +221,7 @@ class AutoRecalibrator:
                     f"Recent: {recent_rate:.0%} vs Historical: {hist_rate:.0%} (delta {delta:+.0%})"
                 )
                 if self.notifier:
-                    await self.notifier.send_message(
+                    await self.notifier.send_admin_message(
                         "\U0001f6d1 <b>Regime DEGRADED</b>\n\n"
                         f"Hit rate recente: {recent_rate:.0%} ({recent_hits}/{len(recent)})\n"
                         f"Hit rate historico: {hist_rate:.0%} ({hist_hits}/{len(historical)})\n"
@@ -239,7 +239,7 @@ class AutoRecalibrator:
                 self._degraded_since = None
                 logger.info(f"REGIME HEALTHY{degraded_duration}")
                 if self.notifier:
-                    await self.notifier.send_message(
+                    await self.notifier.send_admin_message(
                         "\u2705 <b>Regime voltou a HEALTHY</b>\n\n"
                         f"Hit rate recente: {recent_rate:.0%}\n"
                         f"Hit rate historico: {hist_rate:.0%}\n"
@@ -250,7 +250,7 @@ class AutoRecalibrator:
             elif status == "WARNING" and prev_status == "HEALTHY":
                 logger.warning(f"Regime WARNING: recent {recent_rate:.0%} vs hist {hist_rate:.0%}")
                 if self.notifier:
-                    await self.notifier.send_message(
+                    await self.notifier.send_admin_message(
                         "\u26a0\ufe0f <b>Regime WARNING</b>\n\n"
                         f"Hit rate recente: {recent_rate:.0%} ({recent_hits}/{len(recent)})\n"
                         f"Hit rate historico: {hist_rate:.0%}\n"
@@ -344,7 +344,7 @@ class AutoRecalibrator:
             f"<b>Observacoes:</b>\n{changes_str}"
         )
         try:
-            await self.notifier.send_message(msg)
+            await self.notifier.send_admin_message(msg)
         except Exception as e:
             logger.error(f"Failed to send recalibration report: {e}")
 

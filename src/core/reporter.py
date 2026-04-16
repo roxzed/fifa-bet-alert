@@ -151,7 +151,7 @@ class Reporter:
             f"   • ROI flat: {roi_str}\n"
             f"   • Vs semana anterior: {trend} ({prev_rate:.1%})"
         )
-        await self.notifier.send_message(text)
+        await self.notifier.send_admin_message(text)
         logger.info(f"Weekly report sent: {hits}/{total} over2.5 hits")
 
     async def _compute_daily_roi(self, target: date) -> float:
