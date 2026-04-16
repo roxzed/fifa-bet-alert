@@ -220,9 +220,9 @@ async def main() -> None:
         pair_matcher.retry_pending, seconds=300, task_id="retry_pending_pairs"
     )
 
-    # Daily report at 23:55
+    # Daily results at 23:50 (same format as /results command)
     scheduler.add_daily_task(
-        reporter.send_daily_report, hour=23, minute=55, task_id="daily_report"
+        reporter.send_daily_report, hour=23, minute=50, task_id="daily_report"
     )
 
     # Weekly report on Sunday at 23:50

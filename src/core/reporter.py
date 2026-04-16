@@ -24,48 +24,97 @@ class Reporter:
         self.notifier = notifier
 
     async def send_daily_report(self) -> None:
-        """Build and send the daily summary report."""
-        today = date.today()
-        stats = await self.alerts.get_daily_stats(today)
+        """Build and send the daily results in /results format."""
+        from src.config import settings
 
-        total = stats.get("total", 0)
-        if total == 0:
+        try:
+            from zoneinfo import ZoneInfo
+            tz_local = ZoneInfo(settings.timezone)
+        except Exception:
+            tz_local = timezone(timedelta(hours=-3))
+
+        now_local = datetime.now(tz_local)
+        target_date = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        start_utc = target_date.astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc = (target_date + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+
+        date_label = target_date.strftime("%d/%m/%Y")
+        alerts = await self.alerts.get_results_by_date(start_utc, end_utc)
+
+        if not alerts:
             await self.notifier.send_message(
-                f"📋 <b>RELATÓRIO DIÁRIO - {today}</b>\n\nSem alertas hoje."
+                f"📋 <b>RESULTADOS {date_label}</b>\n\nSem alertas hoje."
             )
             return
 
-        over25_hits = stats.get("over25_hits", 0)
-        over35_hits = stats.get("over35_hits", 0)
-        validated = stats.get("validated", 0)
+        lines = []
+        total_profit = 0.0
+        greens = 0
+        total_validated = 0
 
-        # Calcular ROI a partir dos alertas validados do dia
-        roi = await self._compute_daily_roi(today)
+        for a in alerts:
+            sent_utc = a.sent_at
+            if sent_utc:
+                sent_local = sent_utc.replace(tzinfo=timezone.utc).astimezone(tz_local)
+                hora = sent_local.strftime("%H:%M")
+            else:
+                hora = "??:??"
 
-        # Monthly accumulated — usar get_period_stats com dias desde início do mês
-        days_in_month = (today - today.replace(day=1)).days + 1
-        monthly = await self.alerts.get_period_stats(days=days_in_month)
-        monthly_validated = monthly.get("validated", 0)
-        monthly_rate = (monthly.get("over25_hits", 0) / monthly_validated
-                        if monthly_validated > 0 else 0)
+            player = a.losing_player or "?"
+            bl = a.best_line or "over25"
 
-        # Top player do dia — buscar entre alertas validados
-        top_player = await self._get_top_player_today(today)
+            mercado_map = {"over15": "O1.5", "over25": "O2.5", "over35": "O3.5", "over45": "O4.5"}
+            mercado = mercado_map.get(bl, bl)
 
-        report_data = {
-            "date": str(today),
-            "total_alerts": total,
-            "over25_hits": over25_hits,
-            "over35_hits": over35_hits,
-            "roi_flat": roi * 100,
-            "best_result": None,
-            "worst_result": None,
-            "monthly_hit_rate": monthly_rate,
-            "top_player": top_player,
-        }
+            odds = getattr(a, f"{bl}_odds", None) or a.over25_odds
+            odds_str = f"@{odds:.2f}" if odds else "—"
 
-        await self.notifier.send_daily_report(report_data)
-        logger.info(f"Daily report sent: {over25_hits}/{total} over2.5 hits")
+            gols = a.actual_goals
+            if gols is not None:
+                total_validated += 1
+                thresholds = {"over15": 1, "over25": 2, "over35": 3, "over45": 4}
+                hit = gols > thresholds.get(bl, 2)
+
+                resultado = "🟢" if hit else "🔴"
+                if odds:
+                    p = (odds - 1.0) if hit else -1.0
+                    total_profit += p
+                if hit:
+                    greens += 1
+            else:
+                gols = "—"
+                resultado = "⏳"
+
+            lines.append(f"{hora} | {player:<12} | {mercado} | {odds_str:<6} | {gols} | {resultado}")
+
+        header = "Hora  | Jogador      | Linha | Odds   | G | R"
+        sep = "—" * 48
+
+        total = len(alerts)
+        losses = total_validated - greens
+        roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
+        roi_emoji = "📈" if total_profit >= 0 else "📉"
+
+        summary = (
+            f"\n{sep}\n"
+            f"✅ {greens}  ❌ {losses}  |  "
+            f"Net: <b>{total_profit:+.2f}u</b>  |  "
+            f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}"
+        )
+
+        if total > total_validated:
+            summary += f"\n⏳ {total - total_validated} aguardando resultado"
+
+        msg = (
+            f"📋 <b>RESULTADOS {date_label}</b>\n\n"
+            f"<pre>{header}\n{sep}\n"
+            + "\n".join(lines)
+            + f"</pre>{summary}"
+        )
+
+        await self.notifier.send_message(msg)
+        logger.info(f"Daily results sent: {greens}G {losses}R, P/L {total_profit:+.2f}u")
 
     async def send_weekly_report(self) -> None:
         """Build and send the weekly summary report."""
