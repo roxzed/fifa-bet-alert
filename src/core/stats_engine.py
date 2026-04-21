@@ -1172,21 +1172,26 @@ class StatsEngine:
         "Cira": {"block_lines": {"over25", "over35", "over45"}},
         # tohi4: Over1.5=WR 75% P/L+1.24 (bom), Over2.5=WR 20% P/L-3.13 (ruim)
         "tohi4": {"block_lines": {"over25", "over35", "over45"}},
+        # dor1an: 30d over25=39% (33 tips, -9.46u), over35=80% (5 tips, +2.96u ok)
+        # Removido do ELITE e WINNER_BOOST. Bloqueia only over25 (linha principal de perda).
+        "dor1an": {"block_lines": {"over25"}},
     }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
     # V1nn removido: WR=33% em producao (05-14/Abr), movido para blacklist
+    # dor1an removido 2026-04-21: 7d WR=36.4% (22 tips, -7.08u), 30d -6.51u
     PLAYER_ELITE: set[str] = {
-        "Bomb1to", "DaVa", "LaikingDast", "dor1an",
+        "Bomb1to", "DaVa", "LaikingDast",
         "OG", "DangerDim77", "tonexo",
         "Wboy", "RuBIX", "Uncle", "Kray",
     }
 
     # Vencedores que cedem mais ao perdedor no G2 (facilitam O2.5)
+    # dor1an removido 2026-04-21: performance 7d degradada
     WINNER_BOOST: set[str] = {
         "hrk", "V1nn", "gelennzz", "Wboy", "tohi4", "Arcos",
         "Bomb1to", "LaikingDast", "dm1trena", "JKey", "tonexo",
-        "dor1an", "RossFCDK", "sane4ek8", "Asura",
+        "RossFCDK", "sane4ek8", "Asura",
         "GianniKid", "Aveaaaaa", "Nightxx", "Kodak",
     }
 

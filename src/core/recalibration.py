@@ -127,6 +127,12 @@ class AutoRecalibrator:
             # 5b. Auditoria blacklist/elite baseada nos ultimos 20 jogos de volta
             await self._audit_blacklist_elite(report)
 
+            # 5c. Auto-demote ELITE players com performance ruim em alertas (7d)
+            await self._audit_elite_alert_performance(report, alerts)
+
+            # 5d. Monitor de regime por loss_type (hoje vs 7d baseline)
+            await self._audit_loss_type_regime(alerts)
+
             # 6. Performance por hora
             by_hour = defaultdict(lambda: {"total": 0, "hits": 0})
             for a in alerts:
@@ -474,6 +480,140 @@ class AutoRecalibrator:
 
         except Exception as e:
             logger.error(f"Blacklist/elite audit failed: {e}")
+
+    async def _audit_elite_alert_performance(self, report: dict, alerts: list) -> None:
+        """Demote ELITE players whose alert WR is poor in last 7 days.
+
+        Trigger: WR < 40% AND n >= 8 AND sum(profit_flat) < -2u.
+        Action: remove from PLAYER_ELITE and WINNER_BOOST + add conditional block
+        on their worst-performing line.
+        """
+        try:
+            by_player_line = defaultdict(lambda: {"n": 0, "hits": 0, "pl": 0.0})
+            by_player = defaultdict(lambda: {"n": 0, "hits": 0, "pl": 0.0})
+
+            for a in alerts:
+                p = a.losing_player
+                if not p:
+                    continue
+                line = a.best_line or "over25"
+                hit = self._is_hit(a)
+                pl = float(a.profit_flat or 0)
+                by_player[p]["n"] += 1
+                by_player[p]["hits"] += int(hit)
+                by_player[p]["pl"] += pl
+                by_player_line[(p, line)]["n"] += 1
+                by_player_line[(p, line)]["hits"] += int(hit)
+                by_player_line[(p, line)]["pl"] += pl
+
+            demoted = 0
+            for player in list(self.stats.PLAYER_ELITE):
+                s = by_player.get(player)
+                if not s or s["n"] < 8:
+                    continue
+                wr = s["hits"] / s["n"]
+                if wr >= 0.40 or s["pl"] >= -2.0:
+                    continue
+
+                self.stats.PLAYER_ELITE.discard(player)
+                if hasattr(self.stats, "WINNER_BOOST"):
+                    self.stats.WINNER_BOOST.discard(player)
+
+                worst_line = None
+                worst_pl = 0.0
+                for (pl_player, line), ls in by_player_line.items():
+                    if pl_player != player or ls["n"] < 3:
+                        continue
+                    if ls["pl"] < worst_pl:
+                        worst_pl = ls["pl"]
+                        worst_line = line
+
+                if worst_line:
+                    cond = self.stats.PLAYER_CONDITIONAL_BLACKLIST.setdefault(player, {})
+                    blocked = cond.setdefault("block_lines", set())
+                    blocked.add(worst_line)
+
+                report["changes"].append(
+                    f"ELITE auto-demote: {player} (WR={wr:.0%}, n={s['n']}, "
+                    f"P/L={s['pl']:+.2f}u, bloqueio {worst_line or 'n/a'})"
+                )
+                logger.warning(
+                    f"Auto-demote: {player} REMOVIDO de ELITE (WR={wr:.0%}, "
+                    f"n={s['n']}, P/L={s['pl']:+.2f}u), bloqueio em {worst_line}"
+                )
+                demoted += 1
+
+                if self.notifier:
+                    try:
+                        await self.notifier.send_admin_message(
+                            f"\u26a0\ufe0f <b>ELITE demote automatico</b>\n\n"
+                            f"Jogador: <b>{player}</b>\n"
+                            f"WR 7d: {wr:.0%} ({s['hits']}/{s['n']})\n"
+                            f"P/L 7d: {s['pl']:+.2f}u\n"
+                            f"Bloqueio condicional: <b>{worst_line or 'n/a'}</b>\n\n"
+                            f"Removido de PLAYER_ELITE e WINNER_BOOST."
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send elite-demote admin msg: {e}")
+
+            if demoted:
+                logger.info(f"Elite auto-demote: {demoted} jogador(es) removido(s)")
+
+        except Exception as e:
+            logger.error(f"Elite alert performance audit failed: {e}")
+
+    async def _audit_loss_type_regime(self, alerts: list) -> None:
+        """Detect regime shifts per loss_type by comparing today vs 7d baseline.
+
+        For each loss_type with >= 8 alerts today, compute today's WR and compare
+        against the trailing-7-day WR (excluding today). Flag via admin Telegram
+        if deviation >= 20 percentage points.
+        """
+        try:
+            from datetime import date as date_cls
+
+            today = datetime.now(timezone.utc).date()
+            today_by_lt = defaultdict(lambda: {"n": 0, "hits": 0, "pl": 0.0})
+            hist_by_lt = defaultdict(lambda: {"n": 0, "hits": 0, "pl": 0.0})
+
+            for a in alerts:
+                lt = a.loss_type or ""
+                if not lt:
+                    continue
+                a_date = a.sent_at.date() if a.sent_at else None
+                bucket = today_by_lt if a_date == today else hist_by_lt
+                bucket[lt]["n"] += 1
+                bucket[lt]["hits"] += int(self._is_hit(a))
+                bucket[lt]["pl"] += float(a.profit_flat or 0)
+
+            for lt, t in today_by_lt.items():
+                if t["n"] < 8:
+                    continue
+                h = hist_by_lt.get(lt)
+                if not h or h["n"] < 15:
+                    continue
+                today_wr = t["hits"] / t["n"]
+                hist_wr = h["hits"] / h["n"]
+                delta = today_wr - hist_wr
+                if delta <= -0.20:
+                    logger.warning(
+                        f"loss_type regime shift {lt}: hoje {today_wr:.0%} ({t['n']} tips) "
+                        f"vs 7d {hist_wr:.0%} ({h['n']} tips), delta={delta:+.0%}"
+                    )
+                    if self.notifier:
+                        try:
+                            await self.notifier.send_admin_message(
+                                f"\u26a0\ufe0f <b>Regime shift em loss_type</b>\n\n"
+                                f"Categoria: <b>{lt}</b>\n"
+                                f"Hoje: {today_wr:.0%} ({t['hits']}/{t['n']}), "
+                                f"P/L {t['pl']:+.2f}u\n"
+                                f"Baseline 7d: {hist_wr:.0%} ({h['hits']}/{h['n']})\n"
+                                f"Delta: <b>{delta:+.0%} pp</b>"
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to send loss_type regime msg: {e}")
+        except Exception as e:
+            logger.error(f"loss_type regime audit failed: {e}")
 
     @staticmethod
     def _is_hit(alert) -> bool:
