@@ -245,10 +245,9 @@ class StatsEngine:
     DYNAMIC_BLACKLIST_MIN_ALERTS: int = 8
     DYNAMIC_BLACKLIST_MAX_WR: float = 0.30
 
-    # Horários ruins (producao 05-14/Abr: ROI < -10% com 4+ tips)
-    # Dentro desses horarios: HOME+sem tight = WR 50%, outros = lixo
-    BAD_HOURS: set[int] = {0, 1, 9, 14, 16, 18}
-    BAD_HOUR_MIN_EDGE: float = 0.15  # edge minimo para horarios ruins
+    # Filtro bad_hour removido 2026-04-21: overfit na janela 05-14 Abr.
+    # Validacao out-of-sample (3 janelas) mostrou que sem filtro produz P/L
+    # agregado melhor (+7u nos 7d pos-deploy).
 
     # tight AWAY: bloqueio total (WR=39.5%, ROI=-24.9%, 43 tips, -10.71u)
     # tight HOME: permitido (WR=52.9%, ROI=-0.2%, neutro)
@@ -341,6 +340,10 @@ class StatsEngine:
         cond = self.PLAYER_CONDITIONAL_BLACKLIST.get(player)
         if cond is None:
             return False, ""
+
+        # Hard block (SKIP): bloqueia em qualquer linha/lado
+        if cond.get("block_all"):
+            return True, f"{player} bloqueado (SKIP)"
 
         # Check home/away block (G2 side = same as G1 side in Esoccer)
         if loser_was_home_g1 is not None:
@@ -875,16 +878,22 @@ class StatsEngine:
                 )
 
             # ── Filtros por linha (auditoria 2026-04-04) ──────────────
-            # O1.5: só alerta se odds >= 1.65 E perdedor fez 2+ gols em G1
+            # O1.5: só alerta se odds >= 1.65 E perdedor fez 2+ gols em G1.
+            # Para SWAP players: odds minima 1.70 (requisito do backtest da estrategia).
             if line_name == "over15":
-                if odds < 1.65 or loser_goals_g1 < 2:
+                min_odds_o15 = (
+                    self.SWAP_OVER15_MIN_ODDS
+                    if losing_player in self.PLAYER_SWAP_TO_OVER15
+                    else 1.65
+                )
+                if odds < min_odds_o15 or loser_goals_g1 < 2:
                     return LineEvaluation(
                         line=line_name, odds=odds, true_prob=tp,
                         true_prob_conservative=tp,
                         implied_prob=implied_probability(odds),
                         edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
                         should_alert=False,
-                        reason=f"O1.5 filtrado: odds={odds:.2f}<1.65 ou g1_goals={loser_goals_g1}<2",
+                        reason=f"O1.5 filtrado: odds={odds:.2f}<{min_odds_o15} ou g1_goals={loser_goals_g1}<2",
                     )
 
             # O2.5 e O3.5: odds mínima 1.80
@@ -939,11 +948,6 @@ class StatsEngine:
                     should_alert=False,
                     reason="tight AWAY bloqueado (WR=39.5%, ROI=-24.9%)",
                 )
-
-            # Filtro de horário: horários ruins exigem edge mais alto
-            # OU jogador com histórico positivo (WR>=50%, profit>0 em 5+ alertas)
-            if hour in self.BAD_HOURS and not self.is_positive_player(losing_player):
-                effective_min_edge = max(effective_min_edge, self.BAD_HOUR_MIN_EDGE)
 
             alert, reason = should_alert(
                 edge_val=edge_v,
@@ -1154,12 +1158,20 @@ class StatsEngine:
         "Boulevard", "A1ose",
         # Novos (producao 05-14/Abr): WR < 35%, sem nichos positivos consistentes
         "Revange",   # 5 alertas, WR=0%, P/L=-5.00
-        "Kivu17",    # 12 alertas, WR=25%, P/L=-6.34
         "V1nn",      # 12 alertas, WR=33%, P/L=-4.73
     }
 
+    # Jogadores que devem ter a linha trocada para Over 1.5 (swap strategy).
+    # Baseado em backtest 30d: real_pl negativo mas over1.5@>=1.70 positivo.
+    # Em eval_line: over25/35/45 bloqueados; over15 exige odds>=1.70.
+    PLAYER_SWAP_TO_OVER15: set[str] = {
+        "Kivu17", "pikalicaaa", "Jekunam", "RossFCDK",
+    }
+    SWAP_OVER15_MIN_ODDS: float = 1.70
+
     # Jogadores bloqueados condicionalmente (producao 05-14/Abr)
-    # Formato: jogador -> {"block_home": bool, "block_away": bool, "block_lines": set}
+    # Formato: jogador -> {"block_home": bool, "block_away": bool,
+    #                      "block_lines": set, "block_all": bool}
     # Bloqueio se QUALQUER condicao bater (OR)
     PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
         # volvo: HOME=WR 57% P/L+0.69 (OK), AWAY=WR 0% P/L-5.00 (desastroso)
@@ -1175,6 +1187,21 @@ class StatsEngine:
         # dor1an: 30d over25=39% (33 tips, -9.46u), over35=80% (5 tips, +2.96u ok)
         # Removido do ELITE e WINNER_BOOST. Bloqueia only over25 (linha principal de perda).
         "dor1an": {"block_lines": {"over25"}},
+        # SKIP: backtest 30d confirma real_pl muito negativo sem alternativa positiva
+        # em over 1.5. Bloqueio total ate reavaliar.
+        "hotShot":   {"block_all": True},
+        # (Revange, Boulevard, Kavviro, SPACE ja estao em PLAYER_BLACKLIST —
+        # duplicados aqui para garantir o gate, ja que a blacklist estatica nao
+        # bloqueia por si so)
+        "Revange":   {"block_all": True},
+        "Boulevard": {"block_all": True},
+        "Kavviro":   {"block_all": True},
+        "SPACE":     {"block_all": True},
+        # SWAP → bloqueia over25/35/45; over15 passa se odds>=1.70 (ver eval_line)
+        "Kivu17":     {"block_lines": {"over25", "over35", "over45"}},
+        "pikalicaaa": {"block_lines": {"over25", "over35", "over45"}},
+        "Jekunam":    {"block_lines": {"over25", "over35", "over45"}},
+        "RossFCDK":   {"block_lines": {"over25", "over35", "over45"}},
     }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
