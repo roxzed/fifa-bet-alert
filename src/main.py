@@ -47,7 +47,6 @@ async def main() -> None:
         MatchRepository,
         MethodStatsRepository,
         OddsRepository,
-        PlayerDrainWarningRepository,
         PlayerRepository,
         TeamStatsRepository,
     )
@@ -188,14 +187,6 @@ async def main() -> None:
     # --- Reporter ---
     reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier)
 
-    # --- PlayerDrainWatcher (deteccao precoce player-level) ---
-    from src.core.player_drain_watcher import PlayerDrainWatcher
-    drain_watcher = PlayerDrainWatcher(
-        alert_repo=AlertRepository(sf),
-        warning_repo=PlayerDrainWarningRepository(sf),
-        notifier=notifier,
-    )
-
     # --- BotCommands ---
     bot_commands = BotCommands(
         notifier=notifier,
@@ -257,14 +248,6 @@ async def main() -> None:
         hour=23,
         minute=50,
         task_id="weekly_report",
-    )
-
-    # Drain watcher — varre alertas 7d/30d a cada 1h, avisa admin quando
-    # qualquer player cruza threshold de risco (cooldown 12h por severidade)
-    scheduler.add_interval_task(
-        drain_watcher.check_and_warn,
-        seconds=3600,
-        task_id="drain_watcher",
     )
 
     # Cold start progress update every 7 days at 09:00
