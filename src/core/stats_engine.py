@@ -1120,6 +1120,100 @@ class StatsEngine:
         )
 
     # ------------------------------------------------------------------
+    # Watch (pre-alerta T-90s) — prediz candidato com odds-alvo
+    # ------------------------------------------------------------------
+
+    WATCH_MIN_TP: float = 0.60  # decision_prob minima para acionar watch
+
+    async def predict_watch_candidate(
+        self,
+        return_match,
+        game1_match,
+        losing_player: str,
+        opponent_player: str,
+        loser_goals_g1: int,
+        loser_was_home_g1: bool | None = None,
+    ) -> dict | None:
+        """Prediz se um match vai gerar alerta, retorna info do watch ou None.
+
+        Usa evaluate_opportunity com odds-alvo (1.65/1.80) para detectar linhas
+        com decision_prob >= WATCH_MIN_TP que nao foram bloqueadas por filtros
+        estruturais (blacklist, conditional, swap, g1 goals).
+        Retorna o candidato com maior decision_prob.
+        """
+        from datetime import datetime, timezone
+
+        over15_target = (
+            self.SWAP_OVER15_MIN_ODDS
+            if losing_player in self.PLAYER_SWAP_TO_OVER15
+            else 1.65
+        )
+
+        score_home = game1_match.score_home or 0
+        score_away = game1_match.score_away or 0
+        if game1_match.player_home == losing_player:
+            score_winner = score_away
+            score_loser = score_home
+            loser_team = game1_match.team_home
+            opponent_team = game1_match.team_away
+        else:
+            score_winner = score_home
+            score_loser = score_away
+            loser_team = game1_match.team_away
+            opponent_team = game1_match.team_home
+
+        try:
+            evaluation = await self.evaluate_opportunity(
+                losing_player=losing_player,
+                opponent_player=opponent_player,
+                game1_score_winner=score_winner,
+                game1_score_loser=score_loser,
+                over25_odds=1.80,
+                over35_odds=1.80,
+                over15_odds=over15_target,
+                over45_odds=None,
+                ml_odds=None,
+                match_time=return_match.started_at or datetime.now(timezone.utc),
+                loser_team=loser_team,
+                opponent_team=opponent_team,
+                odds_history=[],
+                loser_goals_g1=loser_goals_g1,
+                loser_was_home_g1=loser_was_home_g1,
+            )
+        except Exception as e:
+            logger.warning(f"predict_watch_candidate failed for {losing_player}: {e}")
+            return None
+
+        candidates = []
+        for le, tgt in [
+            (evaluation.line_over15, over15_target),
+            (evaluation.line_over25, 1.80),
+            (evaluation.line_over35, 1.80),
+        ]:
+            if le is None or le.odds is None or le.odds <= 0:
+                continue
+            reason_lower = (le.reason or "").lower()
+            if any(tok in reason_lower for tok in ("blacklist", "filtrado", "bloqueado")):
+                continue
+            if le.true_prob_conservative >= self.WATCH_MIN_TP:
+                candidates.append((le, tgt))
+
+        if not candidates:
+            return None
+
+        best, target = max(candidates, key=lambda x: x[0].true_prob_conservative)
+
+        line_labels = {"over15": "over 1.5", "over25": "over 2.5", "over35": "over 3.5"}
+        return {
+            "line": best.line,
+            "line_label": line_labels.get(best.line, best.line),
+            "target_odds": target,
+            "target_player": losing_player,
+            "predicted_tp": best.true_prob_conservative,
+            "would_alert_at_target": best.should_alert,
+        }
+
+    # ------------------------------------------------------------------
     # Novos layers: G1 goals, streak, total G1, game pattern, blacklist
     # ------------------------------------------------------------------
 

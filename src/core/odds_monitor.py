@@ -103,6 +103,8 @@ class OddsMonitor:
 
     _MAX_MONITOR_SECONDS: int = 45 * 60  # 45 min máximo por partida
     _MAX_CONCURRENT_TASKS: int = 30      # máximo de tasks simultâneas
+    _WATCH_LEAD_SECONDS: int = 90        # enviar watch T-90s antes do kickoff
+    _WATCH_AUTO_DELETE_SECONDS: int = 600  # apagar watch 10 min apos envio
 
     def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15,
                  alert_engine_v2=None) -> None:
@@ -116,6 +118,7 @@ class OddsMonitor:
         self._task_meta: dict[int, dict] = {}  # match_id → {game1_match, loser, ...}
         self._task_started: dict[int, float] = {}  # match_id → monotonic start time
         self._alert_v2_sent: dict[int, bool] = {}  # match_id → True se M2 alerta ja foi enviado
+        self._watch_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task
 
     async def start_monitoring(
         self,
@@ -234,6 +237,14 @@ class OddsMonitor:
         logger.info(
             f"Monitoring {loser} (g1_goals={loser_goals_g1}) for return match {match_id}"
         )
+
+        # Agendar watch (pre-alerta) — fire and forget
+        if match_id not in self._watch_tasks:
+            wtask = asyncio.create_task(
+                self._watch_loop(return_match, game1_match, loser, winner, loser_goals_g1),
+                name=f"watch_{match_id}",
+            )
+            self._watch_tasks[match_id] = wtask
 
     async def _monitor_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
@@ -416,6 +427,80 @@ class OddsMonitor:
             self._task_started.pop(match_id, None)
             self._alert_v2_sent.pop(match_id, None)
 
+    async def _watch_loop(
+        self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
+    ) -> None:
+        """Sleep ate T-90s, prediz candidato e envia watch silencioso ao grupo.
+
+        Watch eh um pre-aviso para o cliente abrir a bet365 e ficar atento.
+        Auto-deleta apos 10 min para nao poluir o grupo.
+        """
+        match_id = return_match.id
+        kickoff = return_match.started_at
+        if kickoff is None:
+            logger.debug(f"Watch {match_id}: sem kickoff, abortando")
+            return
+
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            seconds_until_send = (kickoff - now).total_seconds() - self._WATCH_LEAD_SECONDS
+
+            # Se ja passou T-90s, ainda envia se kickoff nao chegou
+            if seconds_until_send > 0:
+                await asyncio.sleep(seconds_until_send)
+
+            # Verificar se kickoff ja aconteceu (atrasamos demais)
+            now2 = datetime.now(timezone.utc).replace(tzinfo=None)
+            if (kickoff - now2).total_seconds() < 0:
+                logger.info(f"Watch {match_id}: kickoff ja passou, abortando")
+                return
+
+            # Predizer candidato
+            stats = self.alert_engine.stats
+            loser_was_home_g1 = (
+                (game1_match.player_home == loser)
+                if game1_match.player_home else None
+            )
+            candidate = await stats.predict_watch_candidate(
+                return_match=return_match,
+                game1_match=game1_match,
+                losing_player=loser,
+                opponent_player=winner,
+                loser_goals_g1=loser_goals_g1,
+                loser_was_home_g1=loser_was_home_g1,
+            )
+            if candidate is None:
+                logger.debug(f"Watch {match_id}: sem candidato, skip")
+                return
+
+            # Montar payload e enviar
+            from zoneinfo import ZoneInfo
+            kickoff_brt = (
+                kickoff.replace(tzinfo=timezone.utc)
+                .astimezone(ZoneInfo("America/Sao_Paulo"))
+            )
+            watch_data = {
+                "kickoff_str": kickoff_brt.strftime("%H:%M"),
+                "player_home": return_match.player_home,
+                "player_away": return_match.player_away,
+                "line_label": candidate["line_label"],
+                "target_player": candidate["target_player"],
+                "target_odds": candidate["target_odds"],
+            }
+            notifier = self.alert_engine.notifier
+            await notifier.send_watch(
+                watch_data,
+                auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            )
+
+        except asyncio.CancelledError:
+            logger.debug(f"Watch task {match_id} cancelled")
+            raise
+        except Exception as e:
+            logger.warning(f"Watch loop error for match {match_id}: {e}")
+        finally:
+            self._watch_tasks.pop(match_id, None)
+
     async def _fetch_loser_odds(self, return_match, loser: str):
         """Find bet365 FI for the match and return player goals odds for the loser.
 
@@ -517,13 +602,20 @@ class OddsMonitor:
         if task:
             task.cancel()
             logger.debug(f"Stopped monitoring return match {match_id}")
+        wtask = self._watch_tasks.pop(match_id, None)
+        if wtask and not wtask.done():
+            wtask.cancel()
 
     def stop_all(self) -> None:
         """Cancel all monitoring tasks."""
         for task in self._tasks.values():
             task.cancel()
+        for wtask in self._watch_tasks.values():
+            if not wtask.done():
+                wtask.cancel()
         self._tasks.clear()
         self._task_started.clear()
+        self._watch_tasks.clear()
         logger.info("All odds monitors stopped")
 
     @property

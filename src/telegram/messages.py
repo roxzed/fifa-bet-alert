@@ -135,6 +135,25 @@ def format_alert_v2(d: dict) -> str:
     )
 
 
+def format_watch_message(d: dict) -> str:
+    """Format a pre-alert (watch) message — sent T-90s before kickoff.
+
+    Required keys: kickoff_str, player_home, player_away, line_label, target_player, target_odds.
+    """
+    return (
+        f"🔔 <b>AVISO — {_esc(d.get('kickoff_str', '?'))}</b>\n"
+        f"\n"
+        f"Jogo: {_esc(d.get('player_home'))} vs {_esc(d.get('player_away'))}\n"
+        f"Linha: {_esc(d.get('line_label'))} ({_esc(d.get('target_player'))})\n"
+        f"Odd alvo: {d.get('target_odds', 0):.2f} ou maior\n"
+        f"\n"
+        f"❌ ISSO NAO E APOSTA\n"
+        f"✅ Abra a bet365 no jogo. Pode apostar quando:\n"
+        f"   • Sair o ALERTA confirmado, OU\n"
+        f"   • A odd ficar em {d.get('target_odds', 0):.2f}+"
+    )
+
+
 def format_validation(d: dict) -> str:
     """Format post-game validation result."""
     actual_goals = d.get("actual_goals", 0)
