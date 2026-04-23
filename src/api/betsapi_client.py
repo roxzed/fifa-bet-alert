@@ -140,6 +140,17 @@ class BetsAPIClient:
             headers={"Accept": "application/json"},
             follow_redirects=True,
         )
+        # Cache compartilhado para bet365_get_inplay_esoccer:
+        # varios OddsMonitor tasks chamam essa mesma lista, basta 1 HTTP call
+        # a cada _INPLAY_CACHE_TTL segundos (lock serializa requests concorrentes).
+        self._inplay_cache: dict[str, tuple[float, list]] = {}
+        self._inplay_cache_lock = asyncio.Lock()
+
+        # Callback opcional disparado ao receber 429 rate limit.
+        # Main wire: _rate_limit_hook(endpoint, wait_seconds). Throttle interno.
+        self._rate_limit_hook = None
+        self._last_rate_limit_notify: float = 0.0
+        self._RATE_LIMIT_NOTIFY_COOLDOWN: float = 600.0  # 10 min entre avisos
 
     # ------------------------------------------------------------------
     # Context manager
@@ -366,14 +377,31 @@ class BetsAPIClient:
     # Public API - Bet365 specific (player goals markets)
     # ------------------------------------------------------------------
 
+    _INPLAY_CACHE_TTL: float = 8.0  # segundos — economiza req Bet365 quando N tasks monitoram simultaneamente
+
     async def bet365_get_inplay_esoccer(self, league_filter: str = "Battle - 8 mins") -> list[Bet365InplayEvent]:
         """Get live eSoccer events from bet365 inplay API.
 
         Returns list of Bet365InplayEvent with FI identifiers needed
         to fetch player-specific goals odds.
+
+        Usa cache compartilhado (TTL=_INPLAY_CACHE_TTL) por league_filter para
+        evitar chamadas duplicadas quando varios OddsMonitor tasks precisam
+        da mesma lista. Lock serializa tasks concorrentes na miss.
         """
-        raw = await self._request("/bet365/inplay_filter", params={"sport_id": 1})
-        results = raw.get("results") or []
+        now = time.monotonic()
+        cached = self._inplay_cache.get(league_filter)
+        if cached and (now - cached[0]) < self._INPLAY_CACHE_TTL:
+            return cached[1]
+
+        async with self._inplay_cache_lock:
+            # Recheck apos pegar lock: outra task pode ter populado o cache
+            cached = self._inplay_cache.get(league_filter)
+            if cached and (time.monotonic() - cached[0]) < self._INPLAY_CACHE_TTL:
+                return cached[1]
+
+            raw = await self._request("/bet365/inplay_filter", params={"sport_id": 1})
+            results = raw.get("results") or []
 
         events: list[Bet365InplayEvent] = []
         for item in results:
@@ -399,6 +427,7 @@ class BetsAPIClient:
                 score=item.get("ss", "0-0"),
                 league_name=league_name,
             ))
+        self._inplay_cache[league_filter] = (time.monotonic(), events)
         return events
 
     async def bet365_get_player_goals_odds(self, fi: str) -> list[PlayerGoalsOdds]:
@@ -640,6 +669,18 @@ class BetsAPIClient:
                     attempt,
                     _MAX_RETRIES,
                 )
+                # Dispara callback admin (throttled) — fire-and-forget
+                if self._rate_limit_hook is not None:
+                    now_ts = time.monotonic()
+                    if now_ts - self._last_rate_limit_notify > self._RATE_LIMIT_NOTIFY_COOLDOWN:
+                        self._last_rate_limit_notify = now_ts
+                        try:
+                            asyncio.create_task(
+                                self._rate_limit_hook(endpoint, wait),
+                                name="rate_limit_notify",
+                            )
+                        except Exception as hook_err:
+                            logger.debug(f"rate_limit_hook dispatch failed: {hook_err}")
                 last_exception = BetsAPIRateLimitError(
                     retry_after=wait,
                     response_body=response.text,

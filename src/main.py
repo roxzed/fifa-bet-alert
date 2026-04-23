@@ -47,6 +47,7 @@ async def main() -> None:
         MatchRepository,
         MethodStatsRepository,
         OddsRepository,
+        PlayerDrainWarningRepository,
         PlayerRepository,
         TeamStatsRepository,
     )
@@ -86,6 +87,21 @@ async def main() -> None:
         v2_group_id=settings.telegram_group_v2_id,
         admin_chat_id=settings.telegram_admin_chat_id,
     )
+
+    # Avisa o admin quando a BetsAPI responde 429 (rate limit).
+    # Throttle interno de 10min no proprio client.
+    async def _on_rate_limit(endpoint: str, wait_seconds: float) -> None:
+        try:
+            await notifier.send_admin_message(
+                f"⚠️ <b>BetsAPI rate limit atingido</b>\n"
+                f"Endpoint: <code>{endpoint}</code>\n"
+                f"Aguardando {wait_seconds:.0f}s ate reset.\n"
+                f"Sistema faz retry automatico — alertas podem atrasar."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send rate limit notification: {e}")
+
+    api._rate_limit_hook = _on_rate_limit
 
     # --- Stats Engine ---
     from src.core.stats_engine import StatsEngine
@@ -172,6 +188,14 @@ async def main() -> None:
     # --- Reporter ---
     reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier)
 
+    # --- PlayerDrainWatcher (deteccao precoce player-level) ---
+    from src.core.player_drain_watcher import PlayerDrainWatcher
+    drain_watcher = PlayerDrainWatcher(
+        alert_repo=AlertRepository(sf),
+        warning_repo=PlayerDrainWarningRepository(sf),
+        notifier=notifier,
+    )
+
     # --- BotCommands ---
     bot_commands = BotCommands(
         notifier=notifier,
@@ -233,6 +257,14 @@ async def main() -> None:
         hour=23,
         minute=50,
         task_id="weekly_report",
+    )
+
+    # Drain watcher — varre alertas 7d/30d a cada 1h, avisa admin quando
+    # qualquer player cruza threshold de risco (cooldown 12h por severidade)
+    scheduler.add_interval_task(
+        drain_watcher.check_and_warn,
+        seconds=3600,
+        task_id="drain_watcher",
     )
 
     # Cold start progress update every 7 days at 09:00

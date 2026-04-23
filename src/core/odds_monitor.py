@@ -90,7 +90,10 @@ def _adaptive_poll_interval(minutes_to_kickoff: float | None) -> int:
     elif minutes_to_kickoff > 3:
         return 15   # perto → ficar atento
     else:
-        return 10   # urgente → máxima frequência
+        # Valor original: 10s. Reduzido para 4s em 2026-04-23 para cortar latencia
+        # de alerta (10-13s pior caso -> 4-5s). Margem de ~40% sobre limite de
+        # 3600 req/h da Bet365 API no pico tipico. Rollback: mudar de 4 para 10.
+        return 4
 
 
 class OddsMonitor:
