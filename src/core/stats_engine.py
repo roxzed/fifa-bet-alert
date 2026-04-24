@@ -1259,7 +1259,9 @@ class StatsEngine:
     # Baseado em backtest 30d: real_pl negativo mas over1.5@>=1.70 positivo.
     # Em eval_line: over25/35/45 bloqueados; over15 exige odds>=1.70.
     PLAYER_SWAP_TO_OVER15: set[str] = {
-        "Kivu17", "pikalicaaa", "Jekunam", "RossFCDK",
+        "pikalicaaa", "Jekunam", "RossFCDK",
+        # Kivu17 removido 2026-04-23: A/B 8d mostrou ANTIGA O2.5 +3.37u (WR 55.6%, 9 alertas)
+        # vs SWAP O1.5 -1.00u (1 alerta). SWAP estava custando -4.37u no caso dele. Volta ao default.
     }
     SWAP_OVER15_MIN_ODDS: float = 1.70
 
@@ -1292,7 +1294,7 @@ class StatsEngine:
         "Kavviro":   {"block_all": True},
         "SPACE":     {"block_all": True},
         # SWAP → bloqueia over25/35/45; over15 passa se odds>=1.70 (ver eval_line)
-        "Kivu17":     {"block_lines": {"over25", "over35", "over45"}},
+        # Kivu17 removido 2026-04-23: A/B 8d ANTIGA +3.37u (WR 55.6%) vs SWAP -1u. Volta ao default.
         "pikalicaaa": {"block_lines": {"over25", "over35", "over45"}},
         "Jekunam":    {"block_lines": {"over25", "over35", "over45"}},
         "RossFCDK":   {"block_lines": {"over25", "over35", "over45"}},
