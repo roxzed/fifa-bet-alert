@@ -573,6 +573,81 @@ class PairMatcher:
             logger.error(f"Failed to recover pending pairs from DB: {e}")
             return 0
 
+    async def recover_active_monitors(self, match_repo) -> int:
+        """Recupera odds_monitor de G2s que estavam em monitoramento ativo no restart.
+
+        Quando o container reinicia, todos asyncio.Tasks morrem — incluindo
+        odds_monitor de matches JA pareados. recover_pending_from_db so recupera
+        G1 sem pair; este metodo cobre o outro lado.
+
+        Busca G2 (is_return_match=True) com pair_match_id set, started_at em
+        [now - 5min, now + 10min], score_home IS NULL (nao terminou).
+        Re-inicia start_monitoring para cada.
+
+        Racional: a janela de monitoramento util vai de T-3min ate T+4min apos
+        kickoff. [-5, +10] min cobre toda G2 que ainda pode receber alerta.
+        """
+        from sqlalchemy import select, and_
+        from src.db.models import Match
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        window_start = now - timedelta(minutes=10)  # ate 10min apos KO
+        window_end = now + timedelta(minutes=5)     # ate 5min antes KO
+
+        try:
+            async with match_repo._session() as session:
+                stmt = select(Match).where(and_(
+                    Match.is_return_match == True,  # noqa: E712
+                    Match.pair_match_id.is_not(None),
+                    Match.started_at.is_not(None),
+                    Match.started_at >= window_start,
+                    Match.started_at <= window_end,
+                    Match.score_home.is_(None),  # ainda nao terminou
+                ))
+                result = await session.execute(stmt)
+                g2_list = list(result.scalars().all())
+
+                recovered = 0
+                for g2 in g2_list:
+                    # Pular se ja tem monitor ativo
+                    if g2.id in self.odds_monitor._tasks:
+                        continue
+                    # Buscar G1
+                    g1 = await session.get(Match, g2.pair_match_id)
+                    if g1 is None or g1.score_home is None or g1.score_away is None:
+                        continue
+                    if g1.score_home == g1.score_away:
+                        continue  # empate, sem perdedor
+                    # Determinar perdedor/vencedor de G1
+                    if g1.score_home < g1.score_away:
+                        loser = g1.player_home
+                        winner = g1.player_away
+                        loser_goals_g1 = g1.score_home
+                    else:
+                        loser = g1.player_away
+                        winner = g1.player_home
+                        loser_goals_g1 = g1.score_away
+                    # Re-inicia monitor
+                    await self.odds_monitor.start_monitoring(
+                        return_match=g2,
+                        game1_match=g1,
+                        loser=loser,
+                        winner=winner,
+                        loser_goals_g1=loser_goals_g1,
+                    )
+                    recovered += 1
+                    logger.info(
+                        f"Recovered active monitor: match {g2.id} "
+                        f"({loser} as loser, kickoff {g2.started_at})"
+                    )
+
+            if recovered > 0:
+                logger.info(f"Recovered {recovered} active odds monitors after restart")
+            return recovered
+        except Exception as e:
+            logger.error(f"Failed to recover active monitors from DB: {e}")
+            return 0
+
     @property
     def pending_count(self) -> int:
         return len(self._pending)

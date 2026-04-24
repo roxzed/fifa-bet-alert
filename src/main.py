@@ -161,6 +161,13 @@ async def main() -> None:
     if recovered:
         logger.info(f"Startup: {recovered} pares pendentes recuperados do DB")
 
+    # Recuperar odds_monitor de G2 ativos (matches ja pareados em andamento).
+    # Caso Frantsuz 2026-04-23: container reiniciou durante jogo, monitor morreu.
+    # Sem isso, matches pareados antes do restart ficavam permanentemente orfaos.
+    recovered_active = await pair_matcher.recover_active_monitors(MatchRepository(sf))
+    if recovered_active:
+        logger.info(f"Startup: {recovered_active} monitors ativos recuperados")
+
     validator = Validator(
         api, MatchRepository(sf), AlertRepository(sf),
         stats_engine, notifier, session_factory=sf,
