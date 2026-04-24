@@ -342,7 +342,10 @@ class OddsMonitor:
                     logger.info(f"Bet365 odds for {loser} (match {match_id}): {lines_str}")
 
                     # Evaluate and alert PRIMEIRO — DB saves depois (reduz delay)
-                    if not alert_sent and (minutes_left is None or minutes_left >= -5.5):
+                    # Gate timing 2026-04-23: bloqueia alertas T+3 e T+4+ (>3min apos KO).
+                    # Dados 9d pos-deploy 57fced7 mostraram T+3=-8.28u (35 alertas, WR 42.9%)
+                    # e T+4+=-1u. Mudanca: -5.5 -> -3. Rollback: voltar -3 para -5.5.
+                    if not alert_sent and (minutes_left is None or minutes_left >= -3):
                         # Get opening odds (necessário para eval)
                         over25_opening = None
                         history = []
@@ -374,8 +377,9 @@ class OddsMonitor:
                             logger.info(f"Alert sent for return match {match_id}")
 
                     # Method 2: avaliar independentemente (uma vez por partida)
+                    # Mesma mudanca de timing gate (2026-04-23): -5.5 -> -3.
                     if self.alert_engine_v2 and not self._alert_v2_sent.get(match_id):
-                        if minutes_left is None or minutes_left >= -5.5:
+                        if minutes_left is None or minutes_left >= -3:
                             try:
                                 sent_v2 = await self.alert_engine_v2.evaluate_and_alert(
                                     return_match=return_match,
