@@ -627,6 +627,8 @@ class StatsEngine:
         # H2H (with bayesian update)
         h2h_key = f"h2h_{losing_player}_vs_{opponent_player}" if opponent_player else None
         h2h_stat = all_stats.get(h2h_key) if h2h_key else None
+        # Amostra REAL (independente de min_h2h_sample) — usado pro hard gate abaixo
+        n_h2h_actual = h2h_stat.total_samples if h2h_stat else 0
         if h2h_stat and h2h_stat.total_samples >= settings.min_h2h_sample:
             o15_hits_h = getattr(h2h_stat, "over15_hits", 0) or 0
             p_h2h_15 = bayesian_update(3, 4, o15_hits_h, h2h_stat.total_samples)
@@ -637,6 +639,34 @@ class StatsEngine:
         else:
             p_h2h_15, p_h2h_25, p_h2h_35, p_h2h_45 = 0.75, 0.50, 0.35, 0.20
             n_h2h = 0
+
+        # HARD GATE 2026-04-25: bloquear alerta se H2H < 4 amostras.
+        # Pedido apos audit alert#1145 (tohi4 vs Snow): sistema mandou alerta com
+        # n_h2h=0 e p_h2h=50% default — confiou em outras camadas (player+team)
+        # que estavam infladas. Sem H2H real, alerta fica "no escuro".
+        if n_h2h_actual < 4:
+            return OpportunityEvaluation(
+                should_alert=False,
+                reason=f"H2H insuficiente: {n_h2h_actual}<4 amostras (escuro)",
+                best_line="over25",
+                implied_prob=0.0,
+                true_prob=0.0,
+                true_prob_conservative=0.0,
+                confidence_interval=(0.0, 1.0),
+                edge_val=0.0,
+                expected_value_val=0.0,
+                kelly_fraction_val=0.0,
+                star_rating_val=0,
+                p_base=0.0, p_loss_type=0.0, p_player=0.0,
+                p_recent_form=0.0, p_h2h=0.0, p_y_post_win=0.0,
+                p_time_slot=0.0, p_team=0.0, p_market_adj=0.0,
+                player_sample_size=n_player, h2h_sample_size=n_h2h_actual,
+                recent_form_sample=n_form, global_sample_size=n_global,
+                loss_type_sample_size=n_loss, team_sample_size=0,
+                loss_type=loss_type,
+                loss_margin=game1_score_winner - game1_score_loser,
+                player_flag="h2h_insuficiente",
+            )
 
         # Y post-win (with bayesian update)
         ypw_key = f"y_post_win_{opponent_player}" if opponent_player else None
