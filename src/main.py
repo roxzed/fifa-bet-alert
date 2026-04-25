@@ -372,8 +372,8 @@ async def main() -> None:
     )
     scheduler.add_daily_task(
         _daily_blocked_report,
-        hour=12,
-        minute=0,
+        hour=23,
+        minute=55,
         task_id="daily_blocked_report",
     )
 
