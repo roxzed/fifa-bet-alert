@@ -255,6 +255,11 @@ class StatsEngine:
         "Boulevard", "Revange", "SPACE",
         "Cira", "tohi4", "dor1an",
         "pikalicaaa", "Jekunam", "RossFCDK",
+        # 2026-04-25 fase 3: ex-conditional home/away movidos pro auto-block.
+        # Validacao mostrou regras inconsistentes (volvo AWAY era POSITIVO no real,
+        # mas regra dizia para bloquear AWAY — bug + premissa errada). Auto-block
+        # cuida via PL real por linha.
+        "volvo", "Grellz", "nikkitta",
     }
 
     # Players de alto risco — historicamente drenavam, sob auto-block ESTRITO:
@@ -264,6 +269,8 @@ class StatsEngine:
         "Boulevard", "Revange", "SPACE",
         "Cira", "tohi4", "dor1an",
         "pikalicaaa", "Jekunam", "RossFCDK",
+        # Fase 3
+        "volvo", "Grellz", "nikkitta",
     }
 
     # Filtro bad_hour removido 2026-04-21: overfit na janela 05-14 Abr.
@@ -370,11 +377,14 @@ class StatsEngine:
         if cond.get("block_all"):
             return True, f"{player} bloqueado (SKIP)"
 
-        # Check home/away block (G2 side = same as G1 side in Esoccer)
+        # Check home/away block — G2 side é OPOSTO de G1 (times trocam entre ida/volta)
+        # Bug fix 2026-04-25: comentario antigo dizia "same as G1 side", invertido.
+        # Validado com dados reais: 7/8 alertas volvo vazaram porque loser_was_home_g1
+        # estava sendo lido como G2 side. Corrigido: nega a checagem.
         if loser_was_home_g1 is not None:
-            if cond.get("block_home_g2") and loser_was_home_g1:
+            if cond.get("block_home_g2") and not loser_was_home_g1:
                 return True, f"{player} bloqueado HOME em G2"
-            if cond.get("block_away_g2") and not loser_was_home_g1:
+            if cond.get("block_away_g2") and loser_was_home_g1:
                 return True, f"{player} bloqueado AWAY em G2"
 
         # Check line block
@@ -1310,20 +1320,13 @@ class StatsEngine:
     # Formato: jogador -> {"block_home": bool, "block_away": bool,
     #                      "block_lines": set, "block_all": bool}
     # Bloqueio se QUALQUER condicao bater (OR)
-    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
-        # 2026-04-25 fase 2: removidos do conditional para auto-block estrito (-2u):
-        # Boulevard, Revange, SPACE (eram block_all)
-        # Cira, tohi4, dor1an (eram block_lines)
-        # pikalicaaa, Jekunam, RossFCDK (SWAP, eram block_lines)
-        # Vide HIGH_RISK_PLAYERS + DYNAMIC_BLACKLIST_EXEMPT.
-        # Mantidos aqui APENAS regras especiais home/away que nao cabem no auto-block:
-        # volvo: HOME=WR 57% P/L+0.69 (OK), AWAY=WR 0% P/L-5.00 (desastroso)
-        "volvo": {"block_away_g2": True},
-        # Grellz: HOME=WR 0% P/L-4.00 (zero greens), AWAY=WR 62% P/L+0.66 (OK)
-        "Grellz": {"block_home_g2": True},
-        # nikkitta: HOME=WR 25% P/L-4.53 (ruim), Over2.5=WR 0% P/L-4.00 (zero greens)
-        "nikkitta": {"block_home_g2": True, "block_lines": {"over25", "over35", "over45"}},
-    }
+    # 2026-04-25 fase 3: PLAYER_CONDITIONAL_BLACKLIST esvaziada.
+    # Todos os jogadores antes aqui foram movidos pro auto-block per (player, line)
+    # com threshold estrito de -2u. Vide HIGH_RISK_PLAYERS.
+    # Auditoria mostrou que as regras manuais home/away tinham bug (logica invertida)
+    # e premissas erradas (ex: volvo AWAY era positivo, nao desastroso).
+    # Auto-block usa PL real por linha — autocorrige sem necessidade de regra manual.
+    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {}
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
     # V1nn removido: WR=33% em producao (05-14/Abr), movido para blacklist
