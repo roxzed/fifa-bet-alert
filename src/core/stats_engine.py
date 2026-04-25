@@ -2402,20 +2402,31 @@ class StatsEngine:
             )
 
             # Update team stats for G2 (return match)
+            # 2026-04-25: PlayerTeamPreference agora atualiza SO o perdedor de G1
+            # (alert.losing_player). Antes atualizava ambos jogadores do G2, misturando
+            # dados de winners + losers — viesava p_team com avg_goals_with calculado
+            # em "todas as voltas" em vez de "voltas apos perda". Migracao historica
+            # rodada via scripts/migrate_player_team_pref.py
             try:
                 match = await self.matches.get_by_id(getattr(alert, 'match_id', 0))
                 if match and match.is_return_match:
                     h_team, a_team = match.team_home, match.team_away
                     h_goals = match.score_home or 0
                     a_goals = match.score_away or 0
+                    # Stats genericos do time (ambos lados — ok pra time)
                     if h_team:
                         await self.team_stats.update_stats(h_team, goals_scored=h_goals, goals_conceded=a_goals)
-                        await self.team_stats.update_player_team_preference(match.player_home, h_team, h_goals)
                     if a_team:
                         await self.team_stats.update_stats(a_team, goals_scored=a_goals, goals_conceded=h_goals)
-                        await self.team_stats.update_player_team_preference(match.player_away, a_team, a_goals)
                     if h_team and a_team:
                         await self.team_stats.update_matchup_stats(h_team, a_team, h_goals + a_goals)
+                    # PlayerTeamPreference: SO o losing_player do alerta
+                    loser = getattr(alert, 'losing_player', '')
+                    if loser:
+                        if match.player_home == loser and h_team:
+                            await self.team_stats.update_player_team_preference(loser, h_team, h_goals)
+                        elif match.player_away == loser and a_team:
+                            await self.team_stats.update_player_team_preference(loser, a_team, a_goals)
             except Exception as e:
                 logger.debug(f"Team stats G2 update failed (non-critical): {e}")
 
