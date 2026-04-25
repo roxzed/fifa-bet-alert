@@ -581,18 +581,20 @@ class PairMatcher:
         G1 sem pair; este metodo cobre o outro lado.
 
         Busca G2 (is_return_match=True) com pair_match_id set, started_at em
-        [now - 5min, now + 10min], score_home IS NULL (nao terminou).
+        [now - 10min, now + 60min], score_home IS NULL (nao terminou).
         Re-inicia start_monitoring para cada.
 
-        Racional: a janela de monitoramento util vai de T-3min ate T+4min apos
-        kickoff. [-5, +10] min cobre toda G2 que ainda pode receber alerta.
+        Racional: janela ate +60min cobre G2s pareados antes do restart cujo
+        kickoff ainda nao chegou. Bug detectado em 2026-04-25: match 37461
+        (V1nn vs KraftVK, kickoff +15min do restart) ficou fora da janela
+        antiga (+5min) e perdeu todo o ciclo de monitoramento.
         """
         from sqlalchemy import select, and_
         from src.db.models import Match
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        window_start = now - timedelta(minutes=10)  # ate 10min apos KO
-        window_end = now + timedelta(minutes=5)     # ate 5min antes KO
+        window_start = now - timedelta(minutes=10)  # ate 10min apos KO (jogo em curso)
+        window_end = now + timedelta(minutes=60)    # G2 emparelhado ate 1h no futuro
 
         try:
             async with match_repo._session() as session:
