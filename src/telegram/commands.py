@@ -653,6 +653,67 @@ class BotCommands:
             logger.error(f"cmd_monitor error: {e}")
             await update.message.reply_text(f"Erro: {e}")
 
+    async def cmd_blocked(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/blocked - Lista linhas (jogador, over) bloqueadas pelo auto-block.
+
+        Read-only. Mostra state, strikes, PL atual e progresso de unblock.
+        """
+        try:
+            from src.db.database import async_session_factory
+            from src.db.repositories import BlockedLineRepository
+            from src.core.blocked_lines import get_status
+
+            repo = BlockedLineRepository(async_session_factory)
+            statuses = await get_status(repo)
+
+            if not statuses:
+                await update.message.reply_text(
+                    "🟢 Nenhuma linha bloqueada no momento."
+                )
+                return
+
+            line_label = {"over15": "O1.5", "over25": "O2.5",
+                          "over35": "O3.5", "over45": "O4.5"}
+
+            lines = ["🔒 <b>LINHAS BLOQUEADAS</b>", ""]
+            for s in statuses:
+                emoji = "⛔" if s["state"] == "PERMANENT" else "🔇"
+                player = s["player"]
+                line = line_label.get(s["line"], s["line"])
+                pl = s["pl_total"]
+                n = s["n_total"]
+                strikes = s["block_count"]
+
+                if s["state"] == "PERMANENT":
+                    lines.append(
+                        f"{emoji} <b>{player}</b> {line}  "
+                        f"<i>(strike {strikes} — PERMANENTE)</i>"
+                    )
+                    lines.append(f"   PL = {pl:+.2f}u em {n} alertas")
+                else:  # SHADOW
+                    shadow_pl = s["shadow_pl"]
+                    shadow_n = s["shadow_n"]
+                    needed_pl = s["needed_pl"]
+                    needed_n = s["needed_n"]
+                    pl_ok = "✓" if shadow_pl >= needed_pl else "✗"
+                    n_ok = "✓" if shadow_n >= needed_n else "✗"
+                    lines.append(
+                        f"{emoji} <b>{player}</b> {line}  "
+                        f"<i>(strike {strikes})</i>"
+                    )
+                    lines.append(f"   PL total = {pl:+.2f}u em {n} alertas")
+                    lines.append(
+                        f"   shadow = {shadow_pl:+.2f}u {pl_ok} / "
+                        f"{shadow_n} alerts {n_ok}  "
+                        f"(precisa ≥ +{needed_pl:.0f}u E ≥ {needed_n})"
+                    )
+                lines.append("")
+
+            await update.message.reply_html("\n".join(lines))
+        except Exception as e:
+            logger.error(f"cmd_blocked error: {e}")
+            await update.message.reply_text(f"Erro: {e}")
+
     def register_handlers(self, application: Application) -> None:
         """Register all command handlers with the bot application."""
         application.add_handler(CommandHandler("status", self.cmd_status))
@@ -667,4 +728,5 @@ class BotCommands:
         application.add_handler(CommandHandler("players", self.cmd_players))
         application.add_handler(CommandHandler("results", self.cmd_results))
         application.add_handler(CommandHandler("monitor", self.cmd_monitor))
+        application.add_handler(CommandHandler("blocked", self.cmd_blocked))
         logger.info("Telegram command handlers registered")

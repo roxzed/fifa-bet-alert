@@ -290,6 +290,12 @@ class Alert(Base):
     profit_flat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     over15_hit: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
+    # Suppression flag — alerta foi salvo no banco mas NAO foi enviado ao Telegram
+    # porque a (losing_player, best_line) esta bloqueada (ver tabela blocked_lines).
+    suppressed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+
     # Relationships
     match: Mapped["Match"] = relationship(back_populates="alerts")
 
@@ -300,6 +306,7 @@ class Alert(Base):
         Index("ix_alerts_sent_at", "sent_at"),
         Index("ix_alerts_validated_at", "validated_at"),
         Index("ix_alerts_alert_level", "alert_level"),
+        Index("ix_alerts_player_line", "losing_player", "best_line"),
     )
 
     def __repr__(self) -> str:
@@ -603,4 +610,37 @@ class PlayerTeamPreference(Base):
         return (
             f"<PlayerTeamPreference(player={self.player_name!r}, "
             f"team={self.team_name!r}, used={self.times_used})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# BlockedLine — auto-block per (player, line) M1, state machine de 2 strikes.
+# Strike 1: PL_acumulado <= -3u  -> SHADOW (alertas salvos com suppressed=TRUE).
+# Unblock:  shadow_pl >= +1u E shadow_n >= 5  -> ACTIVE (block_count=1).
+# Strike 2: PL_acumulado <= -2u apos unblock  -> PERMANENT (nunca volta).
+# Sem reset de strikes. Ver src/core/blocked_lines.py para a state machine.
+# ---------------------------------------------------------------------------
+class BlockedLine(Base):
+    __tablename__ = "blocked_lines"
+
+    player: Mapped[str] = mapped_column(String, primary_key=True)
+    line: Mapped[str] = mapped_column(String, primary_key=True)  # over15/over25/over35/over45
+    state: Mapped[str] = mapped_column(String, nullable=False, default="ACTIVE")
+    block_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shadow_start_pl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    shadow_start_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_block_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_unblock_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_blocked_lines_state", "state"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<BlockedLine({self.player!r}, {self.line!r}, "
+            f"state={self.state}, strikes={self.block_count})>"
         )

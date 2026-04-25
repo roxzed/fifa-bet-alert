@@ -24,6 +24,7 @@ from loguru import logger
 from src.db.models import (
     Alert,
     AlertV2,
+    BlockedLine,
     League,
     Match,
     MatchTeam,
@@ -1586,3 +1587,92 @@ class AlertV2Repository(_BaseRepository):
             return alert.over15_odds
         else:
             return alert.over25_odds
+
+
+# ---------------------------------------------------------------------------
+# BlockedLineRepository — auto-block per (player, line) M1
+# ---------------------------------------------------------------------------
+class BlockedLineRepository(_BaseRepository):
+    """CRUD para a state machine de bloqueio automatico por (player, line).
+
+    Logica da state machine fica em src/core/blocked_lines.py — esta repo so
+    persiste/le. Estados validos: ACTIVE | SHADOW | PERMANENT.
+    """
+
+    async def get(self, player: str, line: str) -> Optional[BlockedLine]:
+        async with self._session() as session:
+            stmt = (
+                select(BlockedLine)
+                .where(BlockedLine.player == player, BlockedLine.line == line)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def upsert(
+        self,
+        *,
+        player: str,
+        line: str,
+        state: str,
+        block_count: int,
+        shadow_start_pl: Optional[float] = None,
+        shadow_start_at: Optional[datetime] = None,
+        last_block_at: Optional[datetime] = None,
+        last_unblock_at: Optional[datetime] = None,
+    ) -> BlockedLine:
+        async with self._session() as session:
+            stmt = (
+                select(BlockedLine)
+                .where(BlockedLine.player == player, BlockedLine.line == line)
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                bl = BlockedLine(
+                    player=player,
+                    line=line,
+                    state=state,
+                    block_count=block_count,
+                    shadow_start_pl=shadow_start_pl,
+                    shadow_start_at=shadow_start_at,
+                    last_block_at=last_block_at,
+                    last_unblock_at=last_unblock_at,
+                    updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+                session.add(bl)
+                await session.flush()
+                return bl
+            existing.state = state
+            existing.block_count = block_count
+            if shadow_start_pl is not None:
+                existing.shadow_start_pl = shadow_start_pl
+            if shadow_start_at is not None:
+                existing.shadow_start_at = shadow_start_at
+            if last_block_at is not None:
+                existing.last_block_at = last_block_at
+            if last_unblock_at is not None:
+                existing.last_unblock_at = last_unblock_at
+            existing.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session.flush()
+            return existing
+
+    async def list_blocked(self) -> List[BlockedLine]:
+        """Retorna todos com state in (SHADOW, PERMANENT) ordenados por player, line."""
+        async with self._session() as session:
+            stmt = (
+                select(BlockedLine)
+                .where(BlockedLine.state.in_(("SHADOW", "PERMANENT")))
+                .order_by(BlockedLine.player, BlockedLine.line)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def list_all(self) -> List[BlockedLine]:
+        async with self._session() as session:
+            stmt = select(BlockedLine).order_by(BlockedLine.player, BlockedLine.line)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def is_suppressed(self, player: str, line: str) -> bool:
+        """Quick check: a linha desse jogador esta bloqueada?"""
+        bl = await self.get(player, line)
+        return bl is not None and bl.state in ("SHADOW", "PERMANENT")
