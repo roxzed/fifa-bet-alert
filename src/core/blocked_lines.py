@@ -239,7 +239,7 @@ async def _today_pl_per_line(blocked_repo: BlockedLineRepository) -> dict[tuple[
 async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
     """Monta texto HTML para Telegram com:
     - Linhas bloqueadas (sempre)
-    - Movimento do dia por (jogador, linha) — todas que tiveram alerta hoje BRT
+    - Tabela completa de TODAS (jogador, linha) com PL_total + hoje (se houve)
     - Resumo do dia
     """
     from datetime import timedelta
@@ -250,9 +250,10 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
     # Carrega tudo
     all_pl = await _fetch_pl_per_line(blocked_repo)
     today_pl = await _today_pl_per_line(blocked_repo)
-    blocked = await blocked_repo.list_blocked()
+    blocked_list = await blocked_repo.list_blocked()
 
     pl_map = {(r["player"], r["line"]): (r["pl"], r["n"]) for r in all_pl}
+    blocked_pairs = {(bl.player, bl.line): bl for bl in blocked_list}
 
     # Hora BRT
     now_brt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)
@@ -260,13 +261,13 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
 
     parts: list[str] = [header, ""]
 
-    # Secao 1: Bloqueadas
-    if not blocked:
+    # Secao 1: Bloqueadas (destaque)
+    if not blocked_list:
         parts.append("🟢 Nenhuma linha bloqueada.")
     else:
-        parts.append(f"🔒 <b>Bloqueadas ({len(blocked)}):</b>")
+        parts.append(f"🔒 <b>Bloqueadas ({len(blocked_list)}):</b>")
         parts.append("<pre>")
-        for bl in blocked:
+        for bl in blocked_list:
             tot_pl, tot_n = pl_map.get((bl.player, bl.line), (0.0, 0))
             today_p, today_n = today_pl.get((bl.player, bl.line), (0.0, 0))
             label = line_label.get(bl.line, bl.line)
@@ -281,44 +282,54 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
 
     parts.append("")
 
-    # Secao 2: Movimento do dia (over1.5 e over2.5 prioritarias, conforme pedido)
-    if today_pl:
-        # Filtra linhas com alerta hoje
-        rows = []
-        for (player, line), (pl_today, n_today) in today_pl.items():
-            tot_pl, tot_n = pl_map.get((player, line), (0.0, 0))
-            rows.append({
-                "player": player, "line": line,
-                "pl_today": pl_today, "n_today": n_today,
-                "pl_total": tot_pl, "n_total": tot_n,
-            })
-        # Ordena: primeiro positivos descendentes, depois negativos descendentes
-        rows.sort(key=lambda r: -r["pl_today"])
+    # Secao 2: TABELA COMPLETA por (jogador, linha) com pelo menos 1 alerta historico
+    # Ordenada por PL_total descendente (positivos primeiro, drenadores no fim).
+    rows = []
+    for (player, line), (pl_total, n_total) in pl_map.items():
+        if line not in line_label:
+            continue
+        pl_t, n_t = today_pl.get((player, line), (0.0, 0))
+        is_blocked = (player, line) in blocked_pairs
+        rows.append({
+            "player": player, "line": line,
+            "pl_total": pl_total, "n_total": n_total,
+            "pl_today": pl_t, "n_today": n_t,
+            "blocked": is_blocked,
+        })
+    rows.sort(key=lambda r: -r["pl_total"])
 
-        parts.append(f"📈 <b>Movimento hoje ({len(rows)} linhas):</b>")
+    if rows:
+        parts.append(f"📋 <b>Todas as linhas ({len(rows)}):</b>")
         parts.append("<pre>")
-        parts.append(f"{'jogador':<14} {'lin':<5} {'PL_total':>10} {'hoje':>9}")
+        parts.append(f"{'jogador':<13} {'lin':<4} {'PL_total':>11} {'hoje':>9}")
         for r in rows:
             label = line_label.get(r["line"], r["line"])
-            arrow = "↑" if r["pl_today"] > 0 else ("↓" if r["pl_today"] < 0 else "=")
+            if r["n_today"] > 0:
+                arrow = "↑" if r["pl_today"] > 0 else ("↓" if r["pl_today"] < 0 else "=")
+                today_str = f"{r['pl_today']:+5.2f}u{arrow}"
+            else:
+                today_str = "    —    "
+            mark = "🔇" if r["blocked"] else "  "
             parts.append(
-                f"{r['player'][:13]:<14} {label:<5} "
+                f"{mark}{r['player'][:11]:<11} {label:<4} "
                 f"{r['pl_total']:+7.2f}u({r['n_total']:>2}) "
-                f"{r['pl_today']:+5.2f}u{arrow}"
+                f"{today_str}"
             )
         parts.append("</pre>")
 
-        # Secao 3: Resumo do dia
-        sum_today_pl = sum(r["pl_today"] for r in rows)
+        # Resumo do dia
+        sum_today_pl = sum(r["pl_today"] for r in rows if r["n_today"] > 0)
         sum_today_n = sum(r["n_today"] for r in rows)
-        roi = (sum_today_pl / sum_today_n * 100) if sum_today_n else 0.0
-        parts.append("")
-        parts.append(
-            f"🧮 <b>Hoje:</b> {sum_today_n} alertas, "
-            f"{sum_today_pl:+.2f}u, ROI {roi:+.1f}%"
-        )
-    else:
-        parts.append("ℹ️ Nenhum alerta validado hoje ainda.")
+        if sum_today_n:
+            roi = sum_today_pl / sum_today_n * 100
+            parts.append("")
+            parts.append(
+                f"🧮 <b>Hoje:</b> {sum_today_n} alertas, "
+                f"{sum_today_pl:+.2f}u, ROI {roi:+.1f}%"
+            )
+        else:
+            parts.append("")
+            parts.append("ℹ️ Nenhum alerta validado hoje ainda.")
 
     return "\n".join(parts)
 

@@ -336,11 +336,13 @@ async def main() -> None:
         task_id="weekly_backtest",
     )
 
-    # --- Auto-block per (player, line) M1: cron horario ---
-    # Recomputa state machine + envia relatorio de movimento ao admin.
+    # --- Auto-block per (player, line) M1 ---
+    # Recompute state machine roda a cada hora (sem mensagem) para nao
+    # atrasar bloqueio quando algum (player, line) cruza -3u.
+    # O relatorio admin so vai uma vez por dia, ao meio-dia BRT.
     from src.core.blocked_lines import recompute_all_states, build_hourly_report
 
-    async def _hourly_blocked_lines() -> None:
+    async def _hourly_blocked_recompute() -> None:
         try:
             transitions = await recompute_all_states(blocked_repo)
             n_changes = sum(
@@ -348,19 +350,31 @@ async def main() -> None:
             )
             if n_changes:
                 logger.info(
-                    f"Auto-block cron: {transitions.get('blocked_strike1', [])=}, "
-                    f"{transitions.get('blocked_strike2', [])=}, "
-                    f"{transitions.get('unblocked', [])=}"
+                    f"Auto-block cron: strike1={transitions.get('blocked_strike1', [])}, "
+                    f"strike2={transitions.get('blocked_strike2', [])}, "
+                    f"unblocked={transitions.get('unblocked', [])}"
                 )
+        except Exception as e:
+            logger.error(f"hourly_blocked_recompute failed: {e}")
+
+    async def _daily_blocked_report() -> None:
+        try:
+            await recompute_all_states(blocked_repo)  # garante state atualizado
             text = await build_hourly_report(blocked_repo)
             await notifier.send_admin_message(text)
         except Exception as e:
-            logger.error(f"hourly_blocked_lines failed: {e}")
+            logger.error(f"daily_blocked_report failed: {e}")
 
     scheduler.add_interval_task(
-        _hourly_blocked_lines,
+        _hourly_blocked_recompute,
         seconds=3600,
-        task_id="hourly_blocked_lines",
+        task_id="hourly_blocked_recompute",
+    )
+    scheduler.add_daily_task(
+        _daily_blocked_report,
+        hour=12,
+        minute=0,
+        task_id="daily_blocked_report",
     )
 
     scheduler.start()
