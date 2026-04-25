@@ -41,6 +41,7 @@ from src.db.repositories import BlockedLineRepository
 # Constantes da regra
 CUTOFF_UTC = datetime(2026, 4, 15, 1, 7, 0)
 STRIKE1_BLOCK_PL = -3.0
+STRIKE1_BLOCK_PL_HIGH_RISK = -2.0  # players historicamente drenadores (HIGH_RISK_PLAYERS)
 STRIKE1_UNBLOCK_PL = +1.0
 STRIKE1_UNBLOCK_MIN_N = 5
 STRIKE2_BLOCK_PL = -2.0
@@ -140,17 +141,27 @@ async def recompute_all_states(
         last_block_at = None
         last_unblock_at = None
 
+        # Threshold estrito (-2u) para HIGH_RISK_PLAYERS, default (-3u) para outros
+        from src.core.stats_engine import StatsEngine
+        is_high_risk = player in StatsEngine.HIGH_RISK_PLAYERS
+        strike1_threshold = (
+            STRIKE1_BLOCK_PL_HIGH_RISK if is_high_risk else STRIKE1_BLOCK_PL
+        )
+
         if state == "ACTIVE":
-            if block_count == 0 and pl_total <= STRIKE1_BLOCK_PL:
+            if block_count == 0 and pl_total <= strike1_threshold:
                 new_state = "SHADOW"
                 new_block_count = 1
                 new_shadow_start_pl = pl_total
                 new_shadow_start_at = now
                 last_block_at = now
-                transitions["blocked_strike1"].append(f"{player}/{line} PL={pl_total:+.2f}u")
+                tag = " [HIGH-RISK]" if is_high_risk else ""
+                transitions["blocked_strike1"].append(
+                    f"{player}/{line} PL={pl_total:+.2f}u{tag}"
+                )
                 logger.warning(
-                    f"BLOCK strike1 {player}/{line}: PL={pl_total:+.2f}u <= "
-                    f"{STRIKE1_BLOCK_PL} -> SHADOW"
+                    f"BLOCK strike1{tag} {player}/{line}: PL={pl_total:+.2f}u <= "
+                    f"{strike1_threshold} -> SHADOW"
                 )
             elif block_count == 1 and pl_total <= STRIKE2_BLOCK_PL:
                 new_state = "PERMANENT"

@@ -249,7 +249,22 @@ class StatsEngine:
     # Decidido 2026-04-25: hotShot e Kavviro saem do conditional+dynamic para serem
     # avaliados pelo auto-block (mais cirurgico, separa por linha). Se tomarem -3u
     # numa linha especifica, auto-block bloqueia automaticamente.
-    DYNAMIC_BLACKLIST_EXEMPT: set[str] = {"hotShot", "Kavviro"}
+    DYNAMIC_BLACKLIST_EXEMPT: set[str] = {
+        "hotShot", "Kavviro",
+        # 2026-04-25 fase 2: ex-conditional + SWAP movidos para auto-block estrito
+        "Boulevard", "Revange", "SPACE",
+        "Cira", "tohi4", "dor1an",
+        "pikalicaaa", "Jekunam", "RossFCDK",
+    }
+
+    # Players de alto risco — historicamente drenavam, sob auto-block ESTRITO:
+    # entry SHADOW em PL <= -2u (em vez do default -3u). Recovery e strike 2
+    # mantem default. Decidido 2026-04-25 com Plinio.
+    HIGH_RISK_PLAYERS: set[str] = {
+        "Boulevard", "Revange", "SPACE",
+        "Cira", "tohi4", "dor1an",
+        "pikalicaaa", "Jekunam", "RossFCDK",
+    }
 
     # Filtro bad_hour removido 2026-04-21: overfit na janela 05-14 Abr.
     # Validacao out-of-sample (3 janelas) mostrou que sem filtro produz P/L
@@ -1296,33 +1311,18 @@ class StatsEngine:
     #                      "block_lines": set, "block_all": bool}
     # Bloqueio se QUALQUER condicao bater (OR)
     PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
+        # 2026-04-25 fase 2: removidos do conditional para auto-block estrito (-2u):
+        # Boulevard, Revange, SPACE (eram block_all)
+        # Cira, tohi4, dor1an (eram block_lines)
+        # pikalicaaa, Jekunam, RossFCDK (SWAP, eram block_lines)
+        # Vide HIGH_RISK_PLAYERS + DYNAMIC_BLACKLIST_EXEMPT.
+        # Mantidos aqui APENAS regras especiais home/away que nao cabem no auto-block:
         # volvo: HOME=WR 57% P/L+0.69 (OK), AWAY=WR 0% P/L-5.00 (desastroso)
         "volvo": {"block_away_g2": True},
         # Grellz: HOME=WR 0% P/L-4.00 (zero greens), AWAY=WR 62% P/L+0.66 (OK)
         "Grellz": {"block_home_g2": True},
         # nikkitta: HOME=WR 25% P/L-4.53 (ruim), Over2.5=WR 0% P/L-4.00 (zero greens)
         "nikkitta": {"block_home_g2": True, "block_lines": {"over25", "over35", "over45"}},
-        # Cira: Over1.5=WR 75% P/L+1.12 (bom), Over2.5=WR 25% P/L-3.98 (ruim)
-        "Cira": {"block_lines": {"over25", "over35", "over45"}},
-        # tohi4: Over1.5=WR 75% P/L+1.24 (bom), Over2.5=WR 20% P/L-3.13 (ruim)
-        "tohi4": {"block_lines": {"over25", "over35", "over45"}},
-        # dor1an: 30d over25=39% (33 tips, -9.46u), over35=80% (5 tips, +2.96u ok)
-        # Removido do ELITE e WINNER_BOOST. Bloqueia only over25 (linha principal de perda).
-        "dor1an": {"block_lines": {"over25"}},
-        # 2026-04-25: hotShot e Kavviro removidos do conditional + dynamic exempt
-        # para serem avaliados pelo auto-block per (player, line). Se tomarem -3u
-        # numa linha especifica, auto-block bloqueia automaticamente.
-        # (Revange, Boulevard, SPACE ja estao em PLAYER_BLACKLIST —
-        # duplicados aqui para garantir o gate, ja que a blacklist estatica nao
-        # bloqueia por si so)
-        "Revange":   {"block_all": True},
-        "Boulevard": {"block_all": True},
-        "SPACE":     {"block_all": True},
-        # SWAP → bloqueia over25/35/45; over15 passa se odds>=1.70 (ver eval_line)
-        # Kivu17 removido 2026-04-23: A/B 8d ANTIGA +3.37u (WR 55.6%) vs SWAP -1u. Volta ao default.
-        "pikalicaaa": {"block_lines": {"over25", "over35", "over45"}},
-        "Jekunam":    {"block_lines": {"over25", "over35", "over45"}},
-        "RossFCDK":   {"block_lines": {"over25", "over35", "over45"}},
     }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
