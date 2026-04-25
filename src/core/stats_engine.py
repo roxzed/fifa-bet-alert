@@ -245,6 +245,12 @@ class StatsEngine:
     DYNAMIC_BLACKLIST_MIN_ALERTS: int = 8
     DYNAMIC_BLACKLIST_MAX_WR: float = 0.30
 
+    # Jogadores isentos da blacklist dinamica — gerenciados pelo auto-block per (player, line).
+    # Decidido 2026-04-25: hotShot e Kavviro saem do conditional+dynamic para serem
+    # avaliados pelo auto-block (mais cirurgico, separa por linha). Se tomarem -3u
+    # numa linha especifica, auto-block bloqueia automaticamente.
+    DYNAMIC_BLACKLIST_EXEMPT: set[str] = {"hotShot", "Kavviro"}
+
     # Filtro bad_hour removido 2026-04-21: overfit na janela 05-14 Abr.
     # Validacao out-of-sample (3 janelas) mostrou que sem filtro produz P/L
     # agregado melhor (+7u nos 7d pos-deploy).
@@ -296,7 +302,11 @@ class StatsEngine:
             for p in perf:
                 total = p["total"]
                 hr = p["hit_rate"]
-                if total >= self.DYNAMIC_BLACKLIST_MIN_ALERTS and hr < self.DYNAMIC_BLACKLIST_MAX_WR:
+                if p["player"] in self.DYNAMIC_BLACKLIST_EXEMPT:
+                    logger.debug(
+                        f"Dynamic blacklist EXEMPT: {p['player']} gerenciado pelo auto-block"
+                    )
+                elif total >= self.DYNAMIC_BLACKLIST_MIN_ALERTS and hr < self.DYNAMIC_BLACKLIST_MAX_WR:
                     blacklisted.add(p["player"])
                     logger.info(
                         f"Blacklist dinâmica: {p['player']} bloqueado "
@@ -1268,6 +1278,7 @@ class StatsEngine:
         # Novos (producao 05-14/Abr): WR < 35%, sem nichos positivos consistentes
         "Revange",   # 5 alertas, WR=0%, P/L=-5.00
         "V1nn",      # 12 alertas, WR=33%, P/L=-4.73
+        "Stormi",    # Adicionado 2026-04-24: saiu dynamic blacklist e voltou a dar RED
     }
 
     # Jogadores que devem ter a linha trocada para Over 1.5 (swap strategy).
@@ -1298,15 +1309,14 @@ class StatsEngine:
         # dor1an: 30d over25=39% (33 tips, -9.46u), over35=80% (5 tips, +2.96u ok)
         # Removido do ELITE e WINNER_BOOST. Bloqueia only over25 (linha principal de perda).
         "dor1an": {"block_lines": {"over25"}},
-        # SKIP: backtest 30d confirma real_pl muito negativo sem alternativa positiva
-        # em over 1.5. Bloqueio total ate reavaliar.
-        "hotShot":   {"block_all": True},
-        # (Revange, Boulevard, Kavviro, SPACE ja estao em PLAYER_BLACKLIST —
+        # 2026-04-25: hotShot e Kavviro removidos do conditional + dynamic exempt
+        # para serem avaliados pelo auto-block per (player, line). Se tomarem -3u
+        # numa linha especifica, auto-block bloqueia automaticamente.
+        # (Revange, Boulevard, SPACE ja estao em PLAYER_BLACKLIST —
         # duplicados aqui para garantir o gate, ja que a blacklist estatica nao
         # bloqueia por si so)
         "Revange":   {"block_all": True},
         "Boulevard": {"block_all": True},
-        "Kavviro":   {"block_all": True},
         "SPACE":     {"block_all": True},
         # SWAP → bloqueia over25/35/45; over15 passa se odds>=1.70 (ver eval_line)
         # Kivu17 removido 2026-04-23: A/B 8d ANTIGA +3.37u (WR 55.6%) vs SWAP -1u. Volta ao default.
