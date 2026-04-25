@@ -342,10 +342,8 @@ class OddsMonitor:
                     logger.info(f"Bet365 odds for {loser} (match {match_id}): {lines_str}")
 
                     # Evaluate and alert PRIMEIRO — DB saves depois (reduz delay)
-                    # Gate timing 2026-04-23: bloqueia alertas T+3 e T+4+ (>3min apos KO).
-                    # Dados 9d pos-deploy 57fced7 mostraram T+3=-8.28u (35 alertas, WR 42.9%)
-                    # e T+4+=-1u. Mudanca: -5.5 -> -3. Rollback: voltar -3 para -5.5.
-                    if not alert_sent and (minutes_left is None or minutes_left >= -3):
+                    # Sem gate temporal: alerta dispara sempre que filtros estatisticos passarem
+                    if not alert_sent:
                         # Get opening odds (necessário para eval)
                         over25_opening = None
                         history = []
@@ -377,28 +375,27 @@ class OddsMonitor:
                             logger.info(f"Alert sent for return match {match_id}")
 
                     # Method 2: avaliar independentemente (uma vez por partida)
-                    # Mesma mudanca de timing gate (2026-04-23): -5.5 -> -3.
+                    # Sem gate temporal: alerta dispara sempre que filtros estatisticos passarem
                     if self.alert_engine_v2 and not self._alert_v2_sent.get(match_id):
-                        if minutes_left is None or minutes_left >= -3:
-                            try:
-                                sent_v2 = await self.alert_engine_v2.evaluate_and_alert(
-                                    return_match=return_match,
-                                    game1_match=game1_match,
-                                    loser=loser,
-                                    winner=winner,
-                                    over25_odds=over25_odds or 0.0,
-                                    over35_odds=over35_odds,
-                                    over45_odds=over45_odds,
-                                    over15_odds=over15_odds,
-                                    minutes_to_kickoff=int(minutes_left) if minutes_left is not None else 0,
-                                    loser_goals_g1=loser_goals_g1,
-                                    bet365_url=bet365_url or "",
-                                )
-                                if sent_v2:
-                                    self._alert_v2_sent[match_id] = True
-                                    logger.info(f"M2 alert sent for return match {match_id}")
-                            except Exception as e_v2:
-                                logger.warning(f"M2 alert engine error for match {match_id}: {e_v2}")
+                        try:
+                            sent_v2 = await self.alert_engine_v2.evaluate_and_alert(
+                                return_match=return_match,
+                                game1_match=game1_match,
+                                loser=loser,
+                                winner=winner,
+                                over25_odds=over25_odds or 0.0,
+                                over35_odds=over35_odds,
+                                over45_odds=over45_odds,
+                                over15_odds=over15_odds,
+                                minutes_to_kickoff=int(minutes_left) if minutes_left is not None else 0,
+                                loser_goals_g1=loser_goals_g1,
+                                bet365_url=bet365_url or "",
+                            )
+                            if sent_v2:
+                                self._alert_v2_sent[match_id] = True
+                                logger.info(f"M2 alert sent for return match {match_id}")
+                        except Exception as e_v2:
+                            logger.warning(f"M2 alert engine error for match {match_id}: {e_v2}")
 
                     # DB saves DEPOIS da avaliação (não bloqueia o alerta)
                     for label, odds_val in [("over_1.5", over15_odds), ("over_2.5", over25_odds),
