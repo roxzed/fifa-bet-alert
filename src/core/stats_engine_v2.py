@@ -1,12 +1,18 @@
 """Stats Engine V2: avalia oportunidades usando H2H puro (sem edge/EV).
 
-Cascata de camadas:
-  C1a: 4-element (loser, opp, loser_team, opp_team) >=6 games, last 20, prob >=69%
+Cascata de camadas (apos auditoria 25/04/2026 com Plinio):
+  C1a: DESATIVADA — 3 alertas reais 0% WR (-3u). Sample insuficiente E direcao ruim.
   C1b: Cross-confirmation — 4elem >=3 (>=65%) AND 3elem (loser, opp, loser_team) >=5 (>=69%)
-  C2:  H2H geral (loser, opp) min 10 games, last 20, prob >=85%
+  C2:  H2H geral (loser, opp) min 15 games (era 10), last 20, prob >=85%
+       Aumentado para 15 apos auditoria mostrar drains -11.71u em 61 alertas
+       quando sample H2H estava entre 6-14 jogos.
 
-Linha prioritaria: O4.5 → O3.5 → O2.5 → O1.5 (mais agressiva primeiro).
-Odds minima: 1.60.
+Linhas elegiveis: over25, over15 (era over45/35/25/15).
+over35: 9 alertas reais -1.12u ROI -12%. Removido.
+over45: nunca disparou.
+
+Odds minima: 1.65.
+Bloqueios por (player, line) hardcoded — drainers detectados em auditoria.
 Respeita blacklist do M1 (jogadores com O2.5 consistentemente ruim).
 """
 
@@ -18,14 +24,30 @@ from typing import Sequence
 from loguru import logger
 
 
+# Linhas restritas a over25/over15 (apos auditoria 25/04: over35 era drenador,
+# over45 nunca disparou). Linha mais alta tentada primeiro.
 LINES_ORDER = [
-    ("over45", 4),
-    ("over35", 3),
     ("over25", 2),
     ("over15", 1),
 ]
 
 MIN_ODDS = 1.65
+
+MIN_GAMES_C2 = 15  # era 10. Auditoria 25/04: 6-14 jogos = -11.71u em 61 alertas.
+
+# Bloqueio por (player, line) M2 — auditoria 25/04 identificou drains agudos.
+# Stormi over15: -5.94u em 10 (20% WR). Jekunam over15: -4.22u em 11 (36%).
+# nekishka over15: -4.00u em 4 (0%). nikkitta over25: -2.29u em 4 (25%).
+# Simaponika over15: -2.26u em 61 (56%) — n grande sample, sinal real.
+# A1ose: 3 alertas total 0% WR -3u.
+BLOCKED_LINES_V2: dict[str, set[str]] = {
+    "Stormi":     {"over15"},
+    "Jekunam":    {"over15"},
+    "nekishka":   {"over15"},
+    "nikkitta":   {"over25"},
+    "Simaponika": {"over15"},
+    "A1ose":      {"over15", "over25", "over35", "over45"},  # todos
+}
 
 
 @dataclass
@@ -82,11 +104,12 @@ class StatsEngineV2:
         if not h2h_data:
             return EvaluationV2(should_alert=False, reason="Sem historico H2H")
 
-        # C1a: 4-element exact match
-        result = self._try_c1a(h2h_data, loser_team, opp_team, odds_dict)
-        if result:
-            return result
+        # Filtrar odds_dict pelas linhas bloqueadas pra esse player (auditoria 25/04)
+        blocked_lines = BLOCKED_LINES_V2.get(loser, set())
+        if blocked_lines:
+            odds_dict = {k: v for k, v in odds_dict.items() if k not in blocked_lines}
 
+        # C1a DESATIVADA (auditoria 25/04: 3 alertas 0% WR, sample insuficiente)
         # C1b: cross-confirmation 4elem + 3elem
         result = self._try_c1b(h2h_data, loser_team, opp_team, odds_dict)
         if result:
@@ -191,8 +214,8 @@ class StatsEngineV2:
         rows: Sequence,
         odds_dict: dict[str, float | None],
     ) -> EvaluationV2 | None:
-        """C2: H2H geral (loser, opp). Min 10 jogos, last 20, prob >= 85%."""
-        if len(rows) < 10:
+        """C2: H2H geral (loser, opp). Min 15 jogos (era 10), last 20, prob >= 85%."""
+        if len(rows) < MIN_GAMES_C2:
             return None
 
         goals = [r[0] for r in rows]
