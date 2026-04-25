@@ -13,10 +13,11 @@ class AlertEngine:
     evaluates with StatsEngine, and sends alerts via Telegram.
     """
 
-    def __init__(self, stats_engine, alert_repo, notifier) -> None:
+    def __init__(self, stats_engine, alert_repo, notifier, blocked_repo=None) -> None:
         self.stats = stats_engine
         self.alerts = alert_repo
         self.notifier = notifier
+        self.blocked = blocked_repo  # auto-block per (player, line) — opcional
         self._recalibrator = None  # injetado apos construcao
 
     def set_recalibrator(self, recalibrator) -> None:
@@ -247,8 +248,27 @@ class AlertEngine:
 
         message_id = None
 
-        # 1) Enviar alerta OVER GOLS (se houver linhas com edge)
-        if over_lines:
+        # Checa auto-block (jogador, linha) — se em SHADOW/PERMANENT, suprime envio
+        # mas mantem alerta no DB para shadow PL tracking.
+        suppressed = False
+        if over_lines and self.blocked is not None:
+            try:
+                suppressed = await self.blocked.is_suppressed(loser, best_line)
+            except Exception as e:
+                logger.warning(f"is_suppressed check failed for {loser}/{best_line}: {e}")
+                suppressed = False
+            if suppressed:
+                try:
+                    await self.alerts.mark_suppressed(alert.id)
+                except Exception as e:
+                    logger.warning(f"mark_suppressed failed for alert {alert.id}: {e}")
+                logger.bind(category="alert").info(
+                    f"OVER alert SUPPRESSED (auto-block): {loser} {best_line} "
+                    f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
+                )
+
+        # 1) Enviar alerta OVER GOLS (se houver linhas com edge E nao suprimido)
+        if over_lines and not suppressed:
             over_data = {**base_data}
             over_data["best_line"] = best_over["line"]
             over_data["alert_label"] = f"{alert_label} gols {loser}" if best_line != "ml" else f"Over gols {loser}"

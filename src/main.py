@@ -43,6 +43,7 @@ async def main() -> None:
     from src.db.repositories import (
         AlertRepository,
         AlertV2Repository,
+        BlockedLineRepository,
         LeagueRepository,
         MatchRepository,
         MethodStatsRepository,
@@ -124,7 +125,10 @@ async def main() -> None:
     from src.core.validator import Validator
     from src.core.validator_v2 import ValidatorV2
 
-    alert_engine = AlertEngine(stats_engine, AlertRepository(sf), notifier)
+    blocked_repo = BlockedLineRepository(sf)
+    alert_engine = AlertEngine(
+        stats_engine, AlertRepository(sf), notifier, blocked_repo=blocked_repo
+    )
 
     # Method 2
     stats_engine_v2 = StatsEngineV2(
@@ -330,6 +334,33 @@ async def main() -> None:
         hour=8,
         minute=0,
         task_id="weekly_backtest",
+    )
+
+    # --- Auto-block per (player, line) M1: cron horario ---
+    # Recomputa state machine + envia relatorio de movimento ao admin.
+    from src.core.blocked_lines import recompute_all_states, build_hourly_report
+
+    async def _hourly_blocked_lines() -> None:
+        try:
+            transitions = await recompute_all_states(blocked_repo)
+            n_changes = sum(
+                len(v) for k, v in transitions.items() if k != "no_change"
+            )
+            if n_changes:
+                logger.info(
+                    f"Auto-block cron: {transitions.get('blocked_strike1', [])=}, "
+                    f"{transitions.get('blocked_strike2', [])=}, "
+                    f"{transitions.get('unblocked', [])=}"
+                )
+            text = await build_hourly_report(blocked_repo)
+            await notifier.send_admin_message(text)
+        except Exception as e:
+            logger.error(f"hourly_blocked_lines failed: {e}")
+
+    scheduler.add_interval_task(
+        _hourly_blocked_lines,
+        seconds=3600,
+        task_id="hourly_blocked_lines",
     )
 
     scheduler.start()

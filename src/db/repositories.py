@@ -727,6 +727,20 @@ class AlertRepository(_BaseRepository):
             )
             await session.execute(stmt)
 
+    async def mark_suppressed(self, alert_id: int) -> None:
+        """Marca alerta como suppressed=TRUE (nao foi enviado ao Telegram).
+
+        Usado pelo auto-block: o alerta ainda e salvo + validado pra computar
+        shadow PL, mas nao vai para o grupo.
+        """
+        async with self._session() as session:
+            stmt = (
+                update(Alert)
+                .where(Alert.id == alert_id)
+                .values(suppressed=True)
+            )
+            await session.execute(stmt)
+
     async def get_all_validated_for_export(self) -> Sequence[Alert]:
         """Return all validated alerts for spreadsheet export, oldest first."""
         async with self._session() as session:

@@ -211,6 +211,118 @@ async def should_suppress(
     return await blocked_repo.is_suppressed(player, line)
 
 
+async def _today_pl_per_line(blocked_repo: BlockedLineRepository) -> dict[tuple[str, str], tuple[float, int]]:
+    """Retorna {(player, line): (pl_today, n_today)} para alertas hoje BRT."""
+    # Hoje BRT 00:00 = ontem 03:00 UTC (BRT = UTC-3)
+    # Usamos AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo' pra matchar /results
+    from sqlalchemy import text
+    stmt = text("""
+        SELECT losing_player AS player, best_line AS line,
+               COALESCE(SUM(profit_flat), 0.0) AS pl,
+               COUNT(*) AS n
+        FROM alerts
+        WHERE (sent_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date
+              = (NOW() AT TIME ZONE 'America/Sao_Paulo')::date
+          AND profit_flat IS NOT NULL
+          AND best_line IS NOT NULL
+        GROUP BY losing_player, best_line
+    """)
+    result = await blocked_repo.execute_query(stmt)
+    out = {}
+    for r in result.all():
+        if r.line not in LINES_TRACKED:
+            continue
+        out[(r.player, r.line)] = (float(r.pl or 0.0), int(r.n or 0))
+    return out
+
+
+async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
+    """Monta texto HTML para Telegram com:
+    - Linhas bloqueadas (sempre)
+    - Movimento do dia por (jogador, linha) — todas que tiveram alerta hoje BRT
+    - Resumo do dia
+    """
+    from datetime import timedelta
+
+    line_label = {"over15": "O1.5", "over25": "O2.5",
+                  "over35": "O3.5", "over45": "O4.5"}
+
+    # Carrega tudo
+    all_pl = await _fetch_pl_per_line(blocked_repo)
+    today_pl = await _today_pl_per_line(blocked_repo)
+    blocked = await blocked_repo.list_blocked()
+
+    pl_map = {(r["player"], r["line"]): (r["pl"], r["n"]) for r in all_pl}
+
+    # Hora BRT
+    now_brt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)
+    header = f"📊 <b>BLOCKED LINES — {now_brt.strftime('%d/%m %H:%M')} BRT</b>"
+
+    parts: list[str] = [header, ""]
+
+    # Secao 1: Bloqueadas
+    if not blocked:
+        parts.append("🟢 Nenhuma linha bloqueada.")
+    else:
+        parts.append(f"🔒 <b>Bloqueadas ({len(blocked)}):</b>")
+        parts.append("<pre>")
+        for bl in blocked:
+            tot_pl, tot_n = pl_map.get((bl.player, bl.line), (0.0, 0))
+            today_p, today_n = today_pl.get((bl.player, bl.line), (0.0, 0))
+            label = line_label.get(bl.line, bl.line)
+            tag = "⛔PERM" if bl.state == "PERMANENT" else "🔇SHAD"
+            arrow = "↑" if today_p > 0 else ("↓" if today_p < 0 else "=")
+            parts.append(
+                f"{tag} {bl.player[:12]:<12} {label:<5} "
+                f"PL={tot_pl:+6.2f}u({tot_n:>2}) "
+                f"hoje={today_p:+5.2f}u({today_n}){arrow}"
+            )
+        parts.append("</pre>")
+
+    parts.append("")
+
+    # Secao 2: Movimento do dia (over1.5 e over2.5 prioritarias, conforme pedido)
+    if today_pl:
+        # Filtra linhas com alerta hoje
+        rows = []
+        for (player, line), (pl_today, n_today) in today_pl.items():
+            tot_pl, tot_n = pl_map.get((player, line), (0.0, 0))
+            rows.append({
+                "player": player, "line": line,
+                "pl_today": pl_today, "n_today": n_today,
+                "pl_total": tot_pl, "n_total": tot_n,
+            })
+        # Ordena: primeiro positivos descendentes, depois negativos descendentes
+        rows.sort(key=lambda r: -r["pl_today"])
+
+        parts.append(f"📈 <b>Movimento hoje ({len(rows)} linhas):</b>")
+        parts.append("<pre>")
+        parts.append(f"{'jogador':<14} {'lin':<5} {'PL_total':>10} {'hoje':>9}")
+        for r in rows:
+            label = line_label.get(r["line"], r["line"])
+            arrow = "↑" if r["pl_today"] > 0 else ("↓" if r["pl_today"] < 0 else "=")
+            parts.append(
+                f"{r['player'][:13]:<14} {label:<5} "
+                f"{r['pl_total']:+7.2f}u({r['n_total']:>2}) "
+                f"{r['pl_today']:+5.2f}u{arrow}"
+            )
+        parts.append("</pre>")
+
+        # Secao 3: Resumo do dia
+        sum_today_pl = sum(r["pl_today"] for r in rows)
+        sum_today_n = sum(r["n_today"] for r in rows)
+        roi = (sum_today_pl / sum_today_n * 100) if sum_today_n else 0.0
+        parts.append("")
+        parts.append(
+            f"🧮 <b>Hoje:</b> {sum_today_n} alertas, "
+            f"{sum_today_pl:+.2f}u, ROI {roi:+.1f}%"
+        )
+    else:
+        parts.append("ℹ️ Nenhum alerta validado hoje ainda.")
+
+    return "\n".join(parts)
+
+
 async def get_status(
     blocked_repo: BlockedLineRepository,
 ) -> list[dict]:
