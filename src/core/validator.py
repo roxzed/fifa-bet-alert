@@ -388,21 +388,27 @@ class Validator:
                 logger.warning(f"Could not edit alert message {alert.telegram_message_id}: {e}")
 
         if not edited:
-            emoji = "\u2705" if hit else "\u274c"
-            odds_str = f"{odds_used:.2f}" if odds_used else "?.??"
-            profit_str = f"{profit_flat:+.2f}" if profit_flat is not None else "+0.00"
-            result_text = (
-                f"{emoji} <b>RESULTADO {'GREEN' if hit else 'RED'}</b>\n\n"
-                f"\U0001f464 {alert.losing_player}\n"
-                f"\U0001f3af {line_label} @{odds_str}\n"
-                f"\u26bd {score_line}\n"
-                f"\U0001f4b0 P&L: <b>{profit_str}u</b>"
-            )
+            # Fallback (2026-04-25): usar mesmo formato do alerta original + linha
+            # de resultado, em vez de mensagem simplificada que confundia visualmente.
+            # Cenario: telegram_message_id ficou None (bug raro do send timeout) OU
+            # edicao falhou. Nesse caso enviamos mensagem nova mas com look-and-feel
+            # identico ao que seria a edicao.
             try:
-                await self.notifier.send_message(result_text)
-                logger.info(f"Standalone result sent for alert {alert.id}")
+                from src.telegram.messages import format_alert
+                original_data = self._rebuild_alert_data(alert, return_match)
+                original_text = format_alert(original_data)
+                if hit:
+                    result_line = f"\n\n\u2705 GREEN \u2014 {score_line}"
+                else:
+                    result_line = f"\n\n\u274c RED \u2014 {score_line}"
+                full_text = original_text + result_line
+                await self.notifier.send_message(full_text)
+                logger.info(
+                    f"Fallback result sent (formato original) for alert {alert.id}: "
+                    f"{'GREEN' if hit else 'RED'} {score_line}"
+                )
             except Exception as e:
-                logger.warning(f"Could not send standalone result for alert {alert.id}: {e}")
+                logger.warning(f"Could not send fallback result for alert {alert.id}: {e}")
 
     async def _check_drawdown(self) -> None:
         """Notifica sobre drawdown severo (5+ losses seguidas ou -5u). Nao pausa automaticamente."""

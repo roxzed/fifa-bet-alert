@@ -293,6 +293,25 @@ class AlertEngine:
                 logger.bind(category="alert").info(
                     f"OVER alert sent (msg_id={message_id}): {loser} {best_over['label']} @{best_over['odds']:.2f}"
                 )
+            else:
+                # Bug raro 2026-04-25 (alert#1143): send_alert retorna None mas
+                # mensagem chega no Telegram (race timeout). DB fica sem msg_id,
+                # validator depois cai em fallback. Logar ERROR pra Railway capturar.
+                logger.bind(category="alert").error(
+                    f"ALERT NOT DELIVERED (msg_id=None): alert#{alert.id} {loser} "
+                    f"{best_over['label']} @{best_over['odds']:.2f} — "
+                    f"send_alert retornou None, telegram_message_id ficara NULL"
+                )
+                # Tambem avisar admin direto pra reagir rapido
+                try:
+                    await self.notifier.send_admin_message(
+                        f"⚠️ <b>ALERTA NAO ENTREGUE</b>\n"
+                        f"alert#{alert.id} {loser} {best_over['label']} @{best_over['odds']:.2f}\n"
+                        f"send_alert retornou None — verifique se mensagem chegou no grupo. "
+                        f"Validator usara fallback."
+                    )
+                except Exception as adm_err:
+                    logger.warning(f"Could not notify admin: {adm_err}")
 
         # 2) Enviar alerta ML SEPARADO (se houver edge)
         if ml_line:
@@ -316,6 +335,11 @@ class AlertEngine:
                         await self.alerts.update_telegram_message_id(alert.id, ml_msg_id)
                     except Exception as e:
                         logger.warning(f"Could not save ML message_id for alert {alert.id}: {e}")
+            else:
+                logger.bind(category="alert").error(
+                    f"ML ALERT NOT DELIVERED (msg_id=None): alert#{alert.id} {loser} "
+                    f"ML @{ml_line['odds']:.2f} — send_alert retornou None"
+                )
 
         # Retorna True se alerta foi criado no DB (independente do Telegram)
         # Isso evita que OddsMonitor crie duplicatas quando alertas estao pausados
