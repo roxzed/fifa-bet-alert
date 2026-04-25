@@ -273,6 +273,16 @@ class StatsEngine:
         "volvo", "Grellz", "nikkitta",
     }
 
+    # H2H Whitelist — matchups (player, opponent, line) que sobrescrevem bloqueio
+    # do auto-block. Se player estiver em SHADOW/PERMANENT mas a tupla bater aqui,
+    # alerta SAI mesmo assim. Decidido 2026-04-25 com Plinio.
+    # Criterio: sample minimo n>=4 com WR>=60% E PL>=+1u em histórico desde 14/04.
+    H2H_WHITELIST: set[tuple[str, str, str]] = {
+        # nekishka geral O2.5 esta -1.39u (n=16 WR 50%), mas vs Grellz e +1.43u
+        # (n=4 WR 75%). Override ativa se nekishka entrar em SHADOW no futuro.
+        ("nekishka", "Grellz", "over25"),
+    }
+
     # Filtro bad_hour removido 2026-04-21: overfit na janela 05-14 Abr.
     # Validacao out-of-sample (3 janelas) mostrou que sem filtro produz P/L
     # agregado melhor (+7u nos 7d pos-deploy).

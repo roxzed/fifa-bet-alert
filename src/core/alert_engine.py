@@ -257,6 +257,15 @@ class AlertEngine:
             except Exception as e:
                 logger.warning(f"is_suppressed check failed for {loser}/{best_line}: {e}")
                 suppressed = False
+            # H2H Whitelist override: se matchup especifico esta no whitelist,
+            # libera mesmo se auto-block bloqueou (matchups com historico positivo
+            # em jogadores globalmente negativos).
+            if suppressed and (loser, winner, best_line) in self.stats.H2H_WHITELIST:
+                logger.info(
+                    f"H2H WHITELIST override: {loser} vs {winner} {best_line} "
+                    f"— libera apesar do auto-block"
+                )
+                suppressed = False
             if suppressed:
                 try:
                     await self.alerts.mark_suppressed(alert.id)
