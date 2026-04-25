@@ -272,9 +272,9 @@ class OddsMonitor:
                 now = datetime.now(timezone.utc).replace(tzinfo=None)
                 kickoff = return_match.started_at
 
-                # Stop 4 min after kickoff
-                if kickoff and (now - kickoff).total_seconds() > 240:
-                    logger.info(f"Match {match_id}: 4min past kickoff, stopping monitor")
+                # Stop 8 min after kickoff (cobre o jogo inteiro de 8min)
+                if kickoff and (now - kickoff).total_seconds() > 480:
+                    logger.info(f"Match {match_id}: 8min past kickoff, stopping monitor")
                     break
 
                 # Calculate minutes to/from kickoff
