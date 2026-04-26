@@ -272,10 +272,18 @@ class OddsMonitor:
                 now = datetime.now(timezone.utc).replace(tzinfo=None)
                 kickoff = return_match.started_at
 
-                # Stop 8 min after kickoff (cobre o jogo inteiro de 8min)
-                if kickoff and (now - kickoff).total_seconds() > 480:
-                    logger.info(f"Match {match_id}: 8min past kickoff, stopping monitor")
-                    break
+                # Para apenas quando game_watcher marca o jogo como ended.
+                # Tempo virtual de 8min vira ~13-14min reais (pausas de gol/falta/replay).
+                # Salvaguarda final: _MAX_MONITOR_SECONDS=45min acima.
+                if kickoff and (now - kickoff).total_seconds() > 60:
+                    repo = self.match_repo or self.alert_engine.stats.matches
+                    try:
+                        current = await repo.get_by_id(match_id)
+                        if current and (current.status == "ended" or current.ended_at is not None):
+                            logger.info(f"Match {match_id}: game ended, stopping monitor")
+                            break
+                    except Exception as e:
+                        logger.debug(f"Match {match_id}: ended-check failed: {e}")
 
                 # Calculate minutes to/from kickoff
                 minutes_left = None
