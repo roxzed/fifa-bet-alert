@@ -724,7 +724,7 @@ class StatsEngine:
         # Pedido apos audit alert#1146 (nekishka vs Frantsuz): forma geral nao
         # captou mudanca de regime no matchup especifico (3 GREENs antigos vs
         # 3 REDs recentes). Quando temos 4+ matches H2H recentes, usa eles.
-        if recent_h2h_form["n"] >= 2:
+        if recent_h2h_form["n"] >= 3:
             p_form_15 = recent_h2h_form["o15_rate"]
             p_form_25 = recent_h2h_form["o25_rate"]
             p_form_35 = recent_h2h_form["o35_rate"]
