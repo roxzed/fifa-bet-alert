@@ -709,6 +709,7 @@ class StatsEngine:
             (is_new_player, new_player_matches),
             regime,
             cold_done,
+            recent_h2h_form,
         ) = await asyncio.gather(
             self.get_team_probability(loser_team, opponent_team, losing_player),
             self.get_streak_factor(losing_player),
@@ -717,7 +718,24 @@ class StatsEngine:
             self.check_new_player(losing_player),
             self.check_regime(),
             self.is_cold_start_complete(),
+            self.get_recent_h2h_form(losing_player, opponent_player, n=5),
         )
+        # ── 2026-04-25: substituir p_recent_form geral por H2H-especifico ──
+        # Pedido apos audit alert#1146 (nekishka vs Frantsuz): forma geral nao
+        # captou mudanca de regime no matchup especifico (3 GREENs antigos vs
+        # 3 REDs recentes). Quando temos 4+ matches H2H recentes, usa eles.
+        if recent_h2h_form["n"] >= 4:
+            p_form_15 = recent_h2h_form["o15_rate"]
+            p_form_25 = recent_h2h_form["o25_rate"]
+            p_form_35 = recent_h2h_form["o35_rate"]
+            p_form_45 = recent_h2h_form["o45_rate"]
+            n_form = recent_h2h_form["n"]
+            logger.debug(
+                f"recent_form OVERRIDE: usando H2H {losing_player} vs "
+                f"{opponent_player} (n={n_form}, o15={p_form_15:.0%}, o25={p_form_25:.0%})"
+            )
+        # Senao mantem o p_form_15/25/35/45 que veio do recent_form geral
+
         # Scale team rate proportionally for other lines using global base ratios
         if p_base_25 > 0:
             p_team_15 = p_team_25 * (p_base_15 / p_base_25)
@@ -1679,6 +1697,102 @@ class StatsEngine:
         except Exception as e:
             logger.warning(f"Erro ao buscar combo player+team: {e}")
             return (1.0, 0)
+
+    async def get_recent_h2h_form(
+        self,
+        losing_player: str,
+        opponent_player: str | None,
+        n: int = 5,
+    ) -> dict:
+        """Forma recente especificamente em H2H contra esse oponente.
+
+        Busca os ultimos N matches de G2 onde:
+        - losing_player enfrentou opponent_player
+        - losing_player era o perdedor de G1 (do par)
+        - G2 tem score validado
+
+        Retorna hit rates pro losing_player em G2 desses matches.
+        Pedido pelo Plinio em 2026-04-25 apos audit alert#1146 (nekishka vs Frantsuz)
+        onde p_recent_form geral nao captou mudanca de regime no matchup.
+        """
+        if not opponent_player:
+            return {"n": 0, "o15_rate": 0.0, "o25_rate": 0.0, "o35_rate": 0.0,
+                    "o45_rate": 0.0, "avg_goals": 0.0}
+        try:
+            from sqlalchemy import select, or_, and_, desc
+            from src.db.models import Match as MatchModel
+
+            stmt = (
+                select(MatchModel)
+                .where(
+                    MatchModel.is_return_match == True,  # noqa: E712
+                    MatchModel.score_home.is_not(None),
+                    or_(
+                        and_(
+                            MatchModel.player_home == losing_player,
+                            MatchModel.player_away == opponent_player,
+                        ),
+                        and_(
+                            MatchModel.player_home == opponent_player,
+                            MatchModel.player_away == losing_player,
+                        ),
+                    ),
+                )
+                .order_by(desc(MatchModel.started_at))
+                .limit(n * 3)  # buffer pra filtrar quem perdeu G1
+            )
+            result = await self.matches.execute_query(stmt)
+            g2_candidates = result.scalars().all()
+        except Exception as exc:
+            logger.warning(
+                f"Erro recent_h2h_form {losing_player} vs {opponent_player}: {exc}"
+            )
+            return {"n": 0, "o15_rate": 0.0, "o25_rate": 0.0, "o35_rate": 0.0,
+                    "o45_rate": 0.0, "avg_goals": 0.0}
+
+        # Pra cada G2, verificar se losing_player era loser do G1 pareado
+        qualifying_goals: list[int] = []
+        for g2 in g2_candidates:
+            if not g2.pair_match_id:
+                continue
+            try:
+                g1 = await self.matches.get_by_id(g2.pair_match_id)
+            except Exception:
+                continue
+            if not g1 or g1.score_home is None or g1.score_away is None:
+                continue
+            if g1.score_home == g1.score_away:
+                continue
+            if g1.score_home > g1.score_away:
+                loser_g1 = g1.player_away
+            else:
+                loser_g1 = g1.player_home
+            if loser_g1 != losing_player:
+                continue
+            if g2.player_home == losing_player:
+                goals = g2.score_home
+            elif g2.player_away == losing_player:
+                goals = g2.score_away
+            else:
+                continue
+            if goals is None:
+                continue
+            qualifying_goals.append(goals)
+            if len(qualifying_goals) >= n:
+                break
+
+        n_actual = len(qualifying_goals)
+        if n_actual == 0:
+            return {"n": 0, "o15_rate": 0.0, "o25_rate": 0.0, "o35_rate": 0.0,
+                    "o45_rate": 0.0, "avg_goals": 0.0}
+        return {
+            "n": n_actual,
+            "o15_rate": sum(1 for g in qualifying_goals if g >= 2) / n_actual,
+            "o25_rate": sum(1 for g in qualifying_goals if g >= 3) / n_actual,
+            "o35_rate": sum(1 for g in qualifying_goals if g >= 4) / n_actual,
+            "o45_rate": sum(1 for g in qualifying_goals if g >= 5) / n_actual,
+            "avg_goals": sum(qualifying_goals) / n_actual,
+        }
 
     async def get_streak_factor(self, losing_player: str) -> tuple[int, float]:
         """Calcula fator baseado no streak de derrotas consecutivas."""
