@@ -11,7 +11,8 @@ Regras (decididas com Plinio em 2026-04-25):
      validados normalmente, mas NAO sao enviados ao grupo Telegram.
 
 3. Unblock (SHADOW -> ACTIVE):
-   - shadow_pl >= +1.0u E shadow_n >= 5
+   - shadow_pl >= +1.0u E shadow_n >= 3
+     (decidido com owner em 2026-04-26 — antes era n>=5)
    - shadow_pl = PL_total - shadow_start_pl (recuperacao desde bloqueio)
    - shadow_n = qty alertas validados em SHADOW
    - block_count fica em 1 (nao reseta).
@@ -46,7 +47,7 @@ CUTOFF_UTC = datetime(2026, 4, 15, 1, 7, 0)
 STRIKE1_BLOCK_PL = -1.0
 STRIKE1_BLOCK_PL_HIGH_RISK = -1.0  # mantido por compat — agora igual ao default
 STRIKE1_UNBLOCK_PL = +1.0
-STRIKE1_UNBLOCK_MIN_N = 5
+STRIKE1_UNBLOCK_MIN_N = 3  # 2026-04-26: owner trocou de 5 para 3 (recovery mais facil)
 STRIKE2_BLOCK_PL = -2.0
 LINES_TRACKED = ("over15", "over25", "over35", "over45")
 
