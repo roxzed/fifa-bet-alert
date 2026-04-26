@@ -268,7 +268,7 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
 
     # Hora BRT
     now_brt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)
-    header = f"📊 <b>BLOCKED LINES — {now_brt.strftime('%d/%m %H:%M')} BRT</b>"
+    header = f"📊 <b>RELATORIO DE ACOMPANHAMENTO — {now_brt.strftime('%d/%m %H:%M')} BRT</b>"
 
     parts: list[str] = [header, ""]
 
