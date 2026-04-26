@@ -9,8 +9,22 @@ Monitora jogos da liga **Esoccer Battle - 8 mins play** (league ID `22614`, v2 A
 e alerta via Telegram APENAS quando há edge matemático comprovado (probabilidade real > implícita).
 
 **Hipótese core:** O jogador que perde o jogo 1 tende a marcar mais gols na volta (55-60 min depois).
-**Mercado alvo:** Over 2.5/3.5/4.5 gols do *jogador específico* (não gols totais).
+**Mercado alvo:** Over 1.5/2.5/3.5/4.5 gols do *jogador específico* (não gols totais).
 **Gate de alerta:** `Edge >= 5%` E `EV >= 3%` E `true_prob >= 68%`.
+
+## 🎯 Missão permanente do projeto
+
+**Achar oportunidades onde o jogador que perdeu o G1 consegue fazer a linha de gols (1.5, 2.5, 3.5...) no G2 de volta.**
+
+Toda decisão sobre filtros, gates, regras, blacklists, ajustes de probabilidade, etc., deve ser avaliada por uma única pergunta:
+> "Isso ajuda a achar mais GREENs em G2 após perda de G1, mantendo estabilidade?"
+
+Princípios operacionais:
+- **Lapidar com dados reais** — sem especulação, sem chute, só amostra concreta
+- **Estabilidade > picos isolados de lucro** — variância controlada vence drawdown
+- **Manter os melhores jogadores estáveis** ativos (Wboy, mko1919, OG, etc) e cortar drainers consistentes
+- **Mudanças cirúrgicas** — efeito cumulativo de pequenas melhorias constrói a vantagem de longo prazo
+- **Cada filtro novo precisa de prova** — amostra mínima, evidência clara de drain ou boost
 
 ## Regra de Análise — SEMPRE H2H Individual do Perdedor de G1
 
