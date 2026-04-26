@@ -432,7 +432,7 @@ async def main() -> None:
                     f"TASK CRASH [{name}] (restart {restart_count}/{max_restarts}): {e}"
                 )
                 try:
-                    await notifier.send_message(
+                    await notifier.send_admin_message(
                         f"[SISTEMA] Task <b>{name}</b> crashou e sera reiniciada "
                         f"({restart_count}/{max_restarts}).\n\nErro: {str(e)[:200]}"
                     )
@@ -443,7 +443,7 @@ async def main() -> None:
         if restart_count >= max_restarts:
             logger.critical(f"TASK [{name}] excedeu {max_restarts} restarts — desistindo")
             try:
-                await notifier.send_message(
+                await notifier.send_admin_message(
                     f"[CRITICO] Task <b>{name}</b> morreu apos {max_restarts} tentativas. "
                     f"Sistema pode estar comprometido. Reinicie manualmente."
                 )

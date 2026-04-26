@@ -309,19 +309,19 @@ class TelegramNotifier:
         return await self.send_message(format_daily_report(report_data))
 
     async def send_cold_start_progress(self, progress_data: dict) -> int | None:
-        """Send cold start collection progress update."""
+        """Send cold start collection progress update — APENAS admin DM."""
         from src.telegram.messages import format_cold_start_progress
-        return await self.send_message(format_cold_start_progress(progress_data))
+        return await self.send_admin_message(format_cold_start_progress(progress_data))
 
     async def send_regime_warning(self, regime_data: dict) -> int | None:
-        """Send regime degradation warning."""
+        """Send regime degradation warning — APENAS admin DM."""
         from src.telegram.messages import format_regime_warning
-        return await self.send_message(format_regime_warning(regime_data))
+        return await self.send_admin_message(format_regime_warning(regime_data))
 
     async def send_system_status(self, status_data: dict) -> int | None:
-        """Send system health status."""
+        """Send system health status — APENAS admin DM."""
         from src.telegram.messages import format_system_status
-        return await self.send_message(format_system_status(status_data))
+        return await self.send_admin_message(format_system_status(status_data))
 
     # --- Method 2 (M2) group methods ---
 
