@@ -367,7 +367,7 @@ async def main() -> None:
 
     scheduler.add_interval_task(
         _hourly_blocked_recompute,
-        seconds=3600,
+        seconds=1800,  # 2026-04-26: trocado de 3600s para 1800s (30min) por pedido do owner
         task_id="hourly_blocked_recompute",
     )
     scheduler.add_daily_task(
