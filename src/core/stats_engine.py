@@ -1386,7 +1386,13 @@ class StatsEngine:
     # Auditoria mostrou que as regras manuais home/away tinham bug (logica invertida)
     # e premissas erradas (ex: volvo AWAY era positivo, nao desastroso).
     # Auto-block usa PL real por linha — autocorrige sem necessidade de regra manual.
-    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {}
+    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
+        # 2026-04-26: bloqueios por linha solicitados pelo owner
+        "LaikingDast": {"block_lines": {"over15"}},
+        "nekishka":    {"block_lines": {"over25"}},
+        "Bomb1to":     {"block_lines": {"over35"}},
+        "nikkitta":    {"block_lines": {"over25"}},
+    }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
     # V1nn removido: WR=33% em producao (05-14/Abr), movido para blacklist
