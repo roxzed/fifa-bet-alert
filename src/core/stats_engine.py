@@ -1392,6 +1392,7 @@ class StatsEngine:
         "nekishka":    {"block_lines": {"over25"}},
         "Bomb1to":     {"block_lines": {"over35"}},
         "nikkitta":    {"block_lines": {"over25"}},
+        "labotryas":   {"block_lines": {"over25"}},
     }
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
