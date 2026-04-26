@@ -34,6 +34,42 @@ def _sanitize_text(text: str) -> str:
         return text.encode("utf-8", errors="replace").decode("utf-8")
 
 
+def _split_for_telegram(text: str, max_len: int = 4000) -> list[str]:
+    """Quebra text em chunks <= max_len, fechando/reabrindo <pre>...</pre>.
+
+    Telegram limita 4096 chars por mensagem. Para HTML com <pre>, precisamos
+    fechar a tag no fim de cada chunk e reabrir no proximo, senao Telegram
+    rejeita o markup.
+    """
+    if len(text) <= max_len:
+        return [text]
+    chunks: list[str] = []
+    cur = ""
+    in_pre = False
+    for line in text.split("\n"):
+        candidate = (cur + "\n" + line) if cur else line
+        if len(candidate) > max_len:
+            if cur:
+                if in_pre:
+                    chunks.append(cur + "\n</pre>")
+                    cur = "<pre>\n" + line
+                else:
+                    chunks.append(cur)
+                    cur = line
+            else:
+                chunks.append(line[:max_len])
+                cur = line[max_len:]
+        else:
+            cur = candidate
+        if "<pre>" in line:
+            in_pre = True
+        if "</pre>" in line:
+            in_pre = False
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 class _CircuitBreaker:
     """Simple circuit breaker for Telegram API calls.
 
@@ -182,6 +218,9 @@ class TelegramNotifier:
 
         NO-OP se TELEGRAM_ADMIN_CHAT_ID nao estiver configurado — mensagens
         de status/admin NUNCA podem cair no grupo dos apostadores.
+
+        Mensagens > 4000 chars sao quebradas automaticamente em chunks
+        respeitando tags <pre>. Retorna o message_id do primeiro chunk.
         """
         if not self._admin_chat_id:
             logger.warning(
@@ -190,17 +229,21 @@ class TelegramNotifier:
             )
             return None
         text = _sanitize_text(text)
-        try:
-            msg = await self.bot.send_message(
-                chat_id=self._admin_chat_id,
-                text=text,
-                parse_mode=parse_mode,
-                disable_web_page_preview=True,
-            )
-            return msg.message_id
-        except TelegramError as e:
-            logger.warning(f"Failed to send admin message: {e}")
-            return None
+        chunks = _split_for_telegram(text, max_len=4000)
+        first_id: int | None = None
+        for chunk in chunks:
+            try:
+                msg = await self.bot.send_message(
+                    chat_id=self._admin_chat_id,
+                    text=chunk,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=True,
+                )
+                if first_id is None:
+                    first_id = msg.message_id
+            except TelegramError as e:
+                logger.warning(f"Failed to send admin message chunk: {e}")
+        return first_id
 
     async def edit_message(self, message_id: int, text: str, parse_mode: str = ParseMode.HTML) -> bool:
         """Edit an existing message with circuit breaker. Returns True on success."""
