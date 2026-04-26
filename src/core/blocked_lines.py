@@ -282,7 +282,7 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
             tot_pl, tot_n = pl_map.get((bl.player, bl.line), (0.0, 0))
             today_p, today_n = today_pl.get((bl.player, bl.line), (0.0, 0))
             label = line_label.get(bl.line, bl.line)
-            tag = "⛔PERM" if bl.state == "PERMANENT" else "🔇SHAD"
+            tag = "PERM" if bl.state == "PERMANENT" else "SHAD"
             arrow = "↑" if today_p > 0 else ("↓" if today_p < 0 else "=")
             parts.append(
                 f"{tag} {bl.player[:12]:<12} {label:<5} "
@@ -320,7 +320,7 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
                 today_str = f"{r['pl_today']:+5.2f}u{arrow}"
             else:
                 today_str = "    —    "
-            mark = "🔇" if r["blocked"] else "  "
+            mark = "B " if r["blocked"] else "  "
             parts.append(
                 f"{mark}{r['player'][:11]:<11} {label:<4} "
                 f"{r['pl_total']:+7.2f}u({r['n_total']:>2}) "
