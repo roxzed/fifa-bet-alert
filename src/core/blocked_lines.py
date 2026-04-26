@@ -295,17 +295,36 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
 
     # Secao 2: TABELA COMPLETA por (jogador, linha) com pelo menos 1 alerta historico
     # Ordenada por PL_total descendente (positivos primeiro, drenadores no fim).
+    # Importa as listas estaticas pra marcar bloqueio de TODAS as fontes
+    # (auto-block DB + PLAYER_BLACKLIST + PLAYER_CONDITIONAL_BLACKLIST + SWAP).
+    from src.core.stats_engine import StatsEngine
+    static_full_blacklist = StatsEngine.PLAYER_BLACKLIST
+    static_conditional = StatsEngine.PLAYER_CONDITIONAL_BLACKLIST
+    static_swap_to_o15 = StatsEngine.PLAYER_SWAP_TO_OVER15
+
+    def _is_blocked(player: str, line: str) -> bool:
+        if (player, line) in blocked_pairs:
+            return True
+        if player in static_full_blacklist:
+            return True
+        cond = static_conditional.get(player, {})
+        if line in cond.get("block_lines", set()):
+            return True
+        # SWAP: bloqueia tudo exceto over15
+        if player in static_swap_to_o15 and line != "over15":
+            return True
+        return False
+
     rows = []
     for (player, line), (pl_total, n_total) in pl_map.items():
         if line not in line_label:
             continue
         pl_t, n_t = today_pl.get((player, line), (0.0, 0))
-        is_blocked = (player, line) in blocked_pairs
         rows.append({
             "player": player, "line": line,
             "pl_total": pl_total, "n_total": n_total,
             "pl_today": pl_t, "n_today": n_t,
-            "blocked": is_blocked,
+            "blocked": _is_blocked(player, line),
         })
     rows.sort(key=lambda r: -r["pl_total"])
 
