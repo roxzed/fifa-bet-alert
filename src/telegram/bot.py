@@ -118,7 +118,9 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self._group_chat_id = group_chat_id
         self._v2_group_id = v2_group_id  # Grupo do Method 2
-        self._admin_chat_id = admin_chat_id or chat_id  # Fallback to main chat
+        # Sem fallback: se admin_chat_id vazio, send_admin_message NO-OP.
+        # Mensagens admin/status NUNCA podem cair no grupo dos apostadores.
+        self._admin_chat_id = admin_chat_id
         self._paused = False
         self._breaker = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         self._breaker_v2 = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
@@ -176,7 +178,17 @@ class TelegramNotifier:
         return None
 
     async def send_admin_message(self, text: str, parse_mode: str = ParseMode.HTML) -> int | None:
-        """Send a message to admin private chat only (status, regime, etc)."""
+        """Send a message to admin private chat only (status, regime, etc).
+
+        NO-OP se TELEGRAM_ADMIN_CHAT_ID nao estiver configurado — mensagens
+        de status/admin NUNCA podem cair no grupo dos apostadores.
+        """
+        if not self._admin_chat_id:
+            logger.warning(
+                f"send_admin_message NO-OP: TELEGRAM_ADMIN_CHAT_ID vazio "
+                f"(mensagem descartada: {text[:80]!r})"
+            )
+            return None
         text = _sanitize_text(text)
         try:
             msg = await self.bot.send_message(
