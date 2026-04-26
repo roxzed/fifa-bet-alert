@@ -370,6 +370,16 @@ class Validator:
     async def _send_result_notification(self, alert, return_match, hit, score_line,
                                         line_label, odds_used, profit_flat) -> None:
         """Edit original Telegram message or send standalone result."""
+        # 2026-04-26 fix: alertas suprimidos (auto-block SHADOW/PERMANENT) NAO podem
+        # ter resultado enviado pro grupo — o alerta original NUNCA foi enviado, entao
+        # o fallback estava postando como mensagem nova com formato M1 (vazamento).
+        if getattr(alert, "suppressed", False):
+            logger.info(
+                f"Validator skip notification: alert#{alert.id} {alert.losing_player} "
+                f"{alert.best_line} esta suppressed (auto-block) — sem mensagem no grupo"
+            )
+            return
+
         edited = False
         if alert.telegram_message_id:
             try:
