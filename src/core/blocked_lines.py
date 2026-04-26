@@ -284,9 +284,10 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
             label = line_label.get(bl.line, bl.line)
             tag = "PERM" if bl.state == "PERMANENT" else "SHAD"
             arrow = "↑" if today_p > 0 else ("↓" if today_p < 0 else "=")
+            roi = (tot_pl / tot_n * 100.0) if tot_n > 0 else 0.0
             parts.append(
                 f"{tag} {bl.player[:12]:<12} {label:<5} "
-                f"PL={tot_pl:+6.2f}u({tot_n:>2}) "
+                f"PL={tot_pl:+6.2f}u({tot_n:>2}) ROI={roi:+6.1f}% "
                 f"hoje={today_p:+5.2f}u({today_n}){arrow}"
             )
         parts.append("</pre>")
@@ -331,7 +332,9 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
     if rows:
         parts.append(f"📋 <b>Todas as linhas ({len(rows)}):</b>")
         parts.append("<pre>")
-        parts.append(f"{'jogador':<13} {'lin':<4} {'PL_total':>11} {'hoje':>9}")
+        parts.append(
+            f"{'jogador':<13} {'lin':<4} {'PL_total':>11} {'ROI':>7} {'hoje':>9}"
+        )
         for r in rows:
             label = line_label.get(r["line"], r["line"])
             if r["n_today"] > 0:
@@ -340,9 +343,11 @@ async def build_hourly_report(blocked_repo: BlockedLineRepository) -> str:
             else:
                 today_str = "    —    "
             mark = "B " if r["blocked"] else "  "
+            roi = (r["pl_total"] / r["n_total"] * 100.0) if r["n_total"] > 0 else 0.0
             parts.append(
                 f"{mark}{r['player'][:11]:<11} {label:<4} "
                 f"{r['pl_total']:+7.2f}u({r['n_total']:>2}) "
+                f"{roi:+6.1f}% "
                 f"{today_str}"
             )
         parts.append("</pre>")
