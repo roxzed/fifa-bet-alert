@@ -644,7 +644,7 @@ class StatsEngine:
         # Pedido apos audit alert#1145 (tohi4 vs Snow): sistema mandou alerta com
         # n_h2h=0 e p_h2h=50% default — confiou em outras camadas (player+team)
         # que estavam infladas. Sem H2H real, alerta fica "no escuro".
-        if n_h2h_actual < 4:
+        if n_h2h_actual < 2:
             return OpportunityEvaluation(
                 should_alert=False,
                 reason=f"H2H insuficiente: {n_h2h_actual}<4 amostras (escuro)",
@@ -718,13 +718,13 @@ class StatsEngine:
             self.check_new_player(losing_player),
             self.check_regime(),
             self.is_cold_start_complete(),
-            self.get_recent_h2h_form(losing_player, opponent_player, n=5),
+            self.get_recent_h2h_form(losing_player, opponent_player, n=7),
         )
         # ── 2026-04-25: substituir p_recent_form geral por H2H-especifico ──
         # Pedido apos audit alert#1146 (nekishka vs Frantsuz): forma geral nao
         # captou mudanca de regime no matchup especifico (3 GREENs antigos vs
         # 3 REDs recentes). Quando temos 4+ matches H2H recentes, usa eles.
-        if recent_h2h_form["n"] >= 4:
+        if recent_h2h_form["n"] >= 2:
             p_form_15 = recent_h2h_form["o15_rate"]
             p_form_25 = recent_h2h_form["o25_rate"]
             p_form_35 = recent_h2h_form["o35_rate"]
