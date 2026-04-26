@@ -1388,7 +1388,7 @@ class StatsEngine:
     # Auto-block usa PL real por linha — autocorrige sem necessidade de regra manual.
     PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
         # 2026-04-26: bloqueios por linha solicitados pelo owner
-        "LaikingDast": {"block_lines": {"over15"}},
+        "LaikingDast": {"block_lines": {"over15", "over25"}},
         "nekishka":    {"block_lines": {"over25"}},
         "Bomb1to":     {"block_lines": {"over35"}},
         "nikkitta":    {"block_lines": {"over25"}},
