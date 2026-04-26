@@ -5,7 +5,8 @@ Regras (decididas com Plinio em 2026-04-25):
 1. Cada (player, line) tem estado independente: ACTIVE | SHADOW | PERMANENT.
 
 2. Strike 1 (ACTIVE -> SHADOW):
-   - trigger: PL acumulado da linha desde 2026-04-15 01:07 UTC <= -3.0u
+   - trigger: PL acumulado da linha desde 2026-04-15 01:07 UTC <= -1.0u
+     (decidido com owner em 2026-04-26 — antes era -3u; -2u pra HIGH_RISK)
    - efeito: alertas continuam sendo salvos no banco (com suppressed=TRUE),
      validados normalmente, mas NAO sao enviados ao grupo Telegram.
 
@@ -39,9 +40,11 @@ from src.db.models import Alert, BlockedLine
 from src.db.repositories import BlockedLineRepository
 
 # Constantes da regra
+# 2026-04-26: owner trocou threshold de SHADOW de -3u/-2u (HIGH_RISK) para
+# -1u uniforme. Qualquer (player, line) com PL <= -1u entra em SHADOW.
 CUTOFF_UTC = datetime(2026, 4, 15, 1, 7, 0)
-STRIKE1_BLOCK_PL = -3.0
-STRIKE1_BLOCK_PL_HIGH_RISK = -2.0  # players historicamente drenadores (HIGH_RISK_PLAYERS)
+STRIKE1_BLOCK_PL = -1.0
+STRIKE1_BLOCK_PL_HIGH_RISK = -1.0  # mantido por compat — agora igual ao default
 STRIKE1_UNBLOCK_PL = +1.0
 STRIKE1_UNBLOCK_MIN_N = 5
 STRIKE2_BLOCK_PL = -2.0
