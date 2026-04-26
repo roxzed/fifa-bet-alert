@@ -714,6 +714,43 @@ class BotCommands:
             logger.error(f"cmd_blocked error: {e}")
             await update.message.reply_text(f"Erro: {e}")
 
+    async def cmd_relatorio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/relatorio - Envia o relatorio de acompanhamento atualizado pro admin DM.
+
+        Mesmo conteudo da automacao das 23:55 BRT, sob demanda. Apenas o admin
+        pode invocar — outros usuarios recebem aviso silencioso.
+        """
+        from src.config import settings
+        from src.db.database import async_session_factory
+        from src.db.repositories import BlockedLineRepository
+        from src.core.blocked_lines import recompute_all_states, build_hourly_report
+
+        admin_id = settings.telegram_admin_chat_id
+        invoker_chat = str(update.effective_chat.id) if update.effective_chat else ""
+
+        if not admin_id or invoker_chat != str(admin_id):
+            # Sem auth: ignora silenciosamente (nao expoe dados privados a outros)
+            logger.info(
+                f"/relatorio invocado por chat {invoker_chat} (nao admin) — ignorando"
+            )
+            return
+
+        try:
+            await update.message.reply_text("Gerando relatorio...")
+            repo = BlockedLineRepository(async_session_factory)
+            await recompute_all_states(repo)
+            text = await build_hourly_report(repo)
+            msg_id = await self.notifier.send_admin_message(text)
+            if msg_id:
+                logger.info(f"/relatorio enviado ao admin (msg_id={msg_id})")
+            else:
+                await update.message.reply_text(
+                    "Falha ao enviar (TELEGRAM_ADMIN_CHAT_ID nao configurado?)"
+                )
+        except Exception as e:
+            logger.error(f"cmd_relatorio error: {e}")
+            await update.message.reply_text(f"Erro: {e}")
+
     def register_handlers(self, application: Application) -> None:
         """Register all command handlers with the bot application."""
         application.add_handler(CommandHandler("status", self.cmd_status))
@@ -729,4 +766,5 @@ class BotCommands:
         application.add_handler(CommandHandler("results", self.cmd_results))
         application.add_handler(CommandHandler("monitor", self.cmd_monitor))
         application.add_handler(CommandHandler("blocked", self.cmd_blocked))
+        application.add_handler(CommandHandler("relatorio", self.cmd_relatorio))
         logger.info("Telegram command handlers registered")
