@@ -1362,15 +1362,12 @@ class StatsEngine:
         "dor1an",    # 2026-04-26: drain consistente
     }
 
-    # Jogadores que devem ter a linha trocada para Over 1.5 (swap strategy).
-    # Baseado em backtest 30d: real_pl negativo mas over1.5@>=1.70 positivo.
-    # Em eval_line: over25/35/45 bloqueados; over15 exige odds>=1.70.
-    PLAYER_SWAP_TO_OVER15: set[str] = {
-        "pikalicaaa", "Jekunam", "RossFCDK",
-        # Kivu17 removido 2026-04-23: A/B 8d mostrou ANTIGA O2.5 +3.37u (WR 55.6%, 9 alertas)
-        # vs SWAP O1.5 -1.00u (1 alerta). SWAP estava custando -4.37u no caso dele. Volta ao default.
-    }
-    SWAP_OVER15_MIN_ODDS: float = 1.70
+    # Protocolo SWAP_TO_OVER15 removido em 2026-04-26 por pedido do owner.
+    # Os 3 players que estavam aqui (pikalicaaa, Jekunam, RossFCDK) agora sao
+    # avaliados como qualquer player nas 4 linhas. Auto-block per-line cuida
+    # automaticamente se alguma linha drenar.
+    PLAYER_SWAP_TO_OVER15: set[str] = set()
+    SWAP_OVER15_MIN_ODDS: float = 1.65  # alinhado com default O1.5 (mantido por compat)
 
     # Jogadores bloqueados condicionalmente (producao 05-14/Abr)
     # Formato: jogador -> {"block_home": bool, "block_away": bool,
