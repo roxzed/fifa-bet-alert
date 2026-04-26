@@ -259,6 +259,9 @@ class OddsMonitor:
         """
         match_id = return_match.id
         alert_sent = False
+        # 2026-04-26: track se ja criamos um suppressed alert pra esse match,
+        # pra nao duplicar entradas de shadow tracking a cada poll.
+        suppressed_recorded = False
         _monitor_started = time.monotonic()
 
         _consecutive_errors = 0
@@ -362,7 +365,7 @@ class OddsMonitor:
                         except Exception:
                             pass
 
-                        sent = await self.alert_engine.evaluate_and_alert(
+                        sent, was_suppressed = await self.alert_engine.evaluate_and_alert(
                             return_match=return_match,
                             game1_match=game1_match,
                             loser=loser,
@@ -377,10 +380,23 @@ class OddsMonitor:
                             odds_history=history,
                             loser_goals_g1=loser_goals_g1,
                             bet365_url=bet365_url or "",
+                            suppressed_already_recorded=suppressed_recorded,
                         )
                         if sent:
                             alert_sent = True
                             logger.info(f"Alert sent for return match {match_id}")
+                        elif was_suppressed:
+                            # 2026-04-26 fix: alerta suprimido (auto-block) NAO trava
+                            # o monitor — ele continua avaliando proximas polls. Mas
+                            # marcamos suppressed_recorded pra alert_engine nao criar
+                            # novo DB row em cada poll subsequente (shadow tracking
+                            # ja foi computado na 1a vez).
+                            if not suppressed_recorded:
+                                suppressed_recorded = True
+                                logger.info(
+                                    f"Match {match_id}: alerta suprimido registrado, "
+                                    f"monitor continua avaliando outras linhas"
+                                )
 
                     # Method 2: avaliar independentemente (uma vez por partida)
                     # Sem gate temporal: alerta dispara sempre que filtros estatisticos passarem

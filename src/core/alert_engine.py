@@ -40,13 +40,22 @@ class AlertEngine:
         odds_history: list | None = None,
         loser_goals_g1: int = 0,
         bet365_url: str = "",
-    ) -> bool:
+        suppressed_already_recorded: bool = False,
+    ) -> tuple[bool, bool]:
         """
         Full evaluation pipeline:
         1. Get all context (teams, score)
         2. Run stats engine evaluation
         3. If should_alert, save to DB and send Telegram
-        Returns True if alert was sent.
+
+        Returns:
+            (sent_to_vip, was_suppressed)
+            - (True, False)  alerta enviado pro VIP
+            - (False, True)  alerta avaliou positivo mas foi suprimido (auto-block)
+            - (False, False) nada — sem alerta ou send falhou
+        suppressed_already_recorded: se True E linha eh suprimida, NAO cria nova
+        entrada no DB (evita duplicata por poll). Caller deve setar para True
+        apos a 1a vez que recebe (False, True) pra esse match.
         """
         score_home = game1_match.score_home or 0
         score_away = game1_match.score_away or 0
@@ -87,7 +96,7 @@ class AlertEngine:
 
         if not evaluation.should_alert:
             logger.info(f"No alert for {loser}: {evaluation.reason}")
-            return False
+            return (False, False)
 
         # Separar linhas Over e ML
         over_lines = []
@@ -118,11 +127,56 @@ class AlertEngine:
 
         if not over_lines and not ml_line:
             logger.info(f"No alert for {loser}: no lines with edge")
-            return False
+            return (False, False)
 
-        # Best over line para o DB
-        best_over = max(over_lines, key=lambda l: l["ev"]) if over_lines else None
+        # 2026-04-26 fix: checar auto-block ANTES de escolher best_over.
+        # Antes: pegava max(EV) dos over_lines, e se essa linha estivesse em
+        # SHADOW, suprimia o alerta. Mas isso bloqueava OUTRAS linhas que NAO
+        # estavam suprimidas (loser pode ter over_2.5 SHADOW mas over_1.5 ACTIVE).
+        # Agora: filtra over_lines pra remover linhas suprimidas e escolhe o best
+        # entre os ACTIVE. Se TODAS as linhas estao suprimidas, registra suppressed
+        # alert (1x por match, controlado pelo caller via suppressed_already_recorded).
+        suppressed_lines: set[str] = set()
+        if over_lines and self.blocked is not None:
+            for ol in over_lines:
+                ln = ol["line"]
+                try:
+                    is_supp = await self.blocked.is_suppressed(loser, ln)
+                except Exception as e:
+                    logger.warning(f"is_suppressed check failed for {loser}/{ln}: {e}")
+                    is_supp = False
+                # H2H Whitelist override: matchup especifico libera apesar do shadow
+                if is_supp and (loser, winner, ln) in self.stats.H2H_WHITELIST:
+                    logger.info(
+                        f"H2H WHITELIST override: {loser} vs {winner} {ln} — libera"
+                    )
+                    is_supp = False
+                if is_supp:
+                    suppressed_lines.add(ln)
+
+        non_suppressed_over = [ol for ol in over_lines if ol["line"] not in suppressed_lines]
+
+        # Best over: prioriza linhas NAO suprimidas. Se todas suprimidas, cai
+        # pro max(EV) original (pra registrar shadow tracking).
+        if non_suppressed_over:
+            best_over = max(non_suppressed_over, key=lambda l: l["ev"])
+            all_over_suppressed = False
+        elif over_lines:
+            best_over = max(over_lines, key=lambda l: l["ev"])
+            all_over_suppressed = True
+        else:
+            best_over = None
+            all_over_suppressed = False
         best_line = best_over["line"] if best_over else "ml"
+
+        # Se vai suprimir E ja temos um suppressed alert pra esse match, abortar
+        # antes do create — evita duplicar entries de shadow tracking por poll.
+        if all_over_suppressed and best_line != "ml" and suppressed_already_recorded:
+            logger.bind(category="alert").debug(
+                f"Skip duplicate suppressed create: {loser} {best_line} "
+                f"(match ja tem suppressed alert)"
+            )
+            return (False, True)
 
         if best_line == "over45":
             alert_odds = over45_odds
@@ -248,32 +302,18 @@ class AlertEngine:
 
         message_id = None
 
-        # Checa auto-block (jogador, linha) — se em SHADOW/PERMANENT, suprime envio
-        # mas mantem alerta no DB para shadow PL tracking.
-        suppressed = False
-        if over_lines and self.blocked is not None:
+        # 2026-04-26 fix: suppression ja foi checada antes do create.
+        # all_over_suppressed=True significa: todas as linhas dispararam alerta
+        # mas TODAS estao em SHADOW/PERMANENT — alerta foi salvo so pra shadow tracking.
+        suppressed = all_over_suppressed and best_line != "ml"
+        if suppressed:
             try:
-                suppressed = await self.blocked.is_suppressed(loser, best_line)
+                await self.alerts.mark_suppressed(alert.id)
             except Exception as e:
-                logger.warning(f"is_suppressed check failed for {loser}/{best_line}: {e}")
-                suppressed = False
-            # H2H Whitelist override: se matchup especifico esta no whitelist,
-            # libera mesmo se auto-block bloqueou (matchups com historico positivo
-            # em jogadores globalmente negativos).
-            if suppressed and (loser, winner, best_line) in self.stats.H2H_WHITELIST:
-                logger.info(
-                    f"H2H WHITELIST override: {loser} vs {winner} {best_line} "
-                    f"— libera apesar do auto-block"
-                )
-                suppressed = False
-            if suppressed:
-                try:
-                    await self.alerts.mark_suppressed(alert.id)
-                except Exception as e:
-                    logger.warning(f"mark_suppressed failed for alert {alert.id}: {e}")
-                logger.bind(category="alert").info(
-                    f"OVER alert SUPPRESSED (auto-block): {loser} {best_line} "
-                    f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
+                logger.warning(f"mark_suppressed failed for alert {alert.id}: {e}")
+            logger.bind(category="alert").info(
+                f"OVER alert SUPPRESSED (auto-block): {loser} {best_line} "
+                f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
                 )
 
         # 1) Enviar alerta OVER GOLS (se houver linhas com edge E nao suprimido)
@@ -341,9 +381,13 @@ class AlertEngine:
                     f"ML @{ml_line['odds']:.2f} — send_alert retornou None"
                 )
 
-        # Retorna True se alerta foi criado no DB (independente do Telegram)
-        # Isso evita que OddsMonitor crie duplicatas quando alertas estao pausados
-        return True
+        # 2026-04-26: retorno (sent_to_vip, was_suppressed).
+        # - sent: message_id != None (alerta de fato chegou no grupo VIP)
+        # - was_suppressed: alerta foi marcado suppressed (auto-block)
+        # OddsMonitor usa pra decidir se trava futuras avaliacoes (sent=True)
+        # ou continua tentando outras linhas (sent=False mas was_suppressed=True).
+        sent_to_vip = message_id is not None
+        return (sent_to_vip, suppressed)
 
     @staticmethod
     def _level_from_stars(stars: int) -> str:
