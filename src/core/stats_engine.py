@@ -1352,18 +1352,14 @@ class StatsEngine:
         "goleada_open": 1.19,         # 3+g perdedor, margem>=3 (O2.5=61.2%)
     }
 
-    # Jogadores com WR consistentemente ruim em alertas reais
-    # Atualizado 2026-04-14 com dados de producao (05-14/Abr, 385 alertas)
+    # Jogadores em full ban permanente (todas as linhas).
+    # 2026-04-26: owner reduziu para apenas dor1an + Stormi. Os 10 que estavam
+    # aqui antes (A1ose, Boulevard, Kavviro, Kot, R0ge, Revange, SPACE, V1nn,
+    # hit, maksdh) saem pro auto-block per-line — state machine vai colocar em
+    # SHADOW automaticamente baseado no PL real de cada linha.
     PLAYER_BLACKLIST: set[str] = {
-        "Kavviro", "SPACE", "R0ge",
-        "maksdh", "Kot",
-        "Boulevard", "A1ose",
-        # Novos (producao 05-14/Abr): WR < 35%, sem nichos positivos consistentes
-        "Revange",   # 5 alertas, WR=0%, P/L=-5.00
-        "V1nn",      # 12 alertas, WR=33%, P/L=-4.73
-        "Stormi",    # Adicionado 2026-04-24: saiu dynamic blacklist e voltou a dar RED
-        "dor1an",    # Adicionado 2026-04-26: drain consistente, blacklist permanente por pedido do owner
-        "hit",       # Adicionado 2026-04-26: blacklist permanente por pedido do owner
+        "Stormi",    # 2026-04-24: saiu dynamic blacklist e voltou a dar RED
+        "dor1an",    # 2026-04-26: drain consistente
     }
 
     # Jogadores que devem ter a linha trocada para Over 1.5 (swap strategy).
