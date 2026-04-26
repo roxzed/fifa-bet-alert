@@ -1362,6 +1362,7 @@ class StatsEngine:
         "Revange",   # 5 alertas, WR=0%, P/L=-5.00
         "V1nn",      # 12 alertas, WR=33%, P/L=-4.73
         "Stormi",    # Adicionado 2026-04-24: saiu dynamic blacklist e voltou a dar RED
+        "dor1an",    # Adicionado 2026-04-26: drain consistente, blacklist permanente por pedido do owner
     }
 
     # Jogadores que devem ter a linha trocada para Over 1.5 (swap strategy).
