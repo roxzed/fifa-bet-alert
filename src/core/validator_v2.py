@@ -199,6 +199,17 @@ class ValidatorV2:
 
     async def _send_result_notification(self, alert, return_match, hit, score_line,
                                         line_label, odds, profit_flat) -> None:
+        # 2026-04-26 fix: alertas v2 suprimidos (auto-block SHADOW/PERMANENT) NAO
+        # podem ter resultado enviado pro grupo M2 — mensagem original nunca foi
+        # enviada. Mesmo bug do M1 corrigido em validator.py.
+        if getattr(alert, "suppressed", False):
+            logger.info(
+                f"M2 validator skip notification: alert#{alert.id} "
+                f"{alert.losing_player} {alert.best_line} esta suppressed "
+                f"(auto-block) — sem mensagem no grupo"
+            )
+            return
+
         edited = False
         if alert.telegram_message_id:
             try:

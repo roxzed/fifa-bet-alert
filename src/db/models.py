@@ -556,6 +556,9 @@ class AlertV2(Base):
     # Telegram
     telegram_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # 2026-04-26: SHADOW protocol em M2 — alertas suprimidos pelo auto-block
+    # ficam salvos com suppressed=TRUE pra shadow tracking, mas nao vao pro Telegram.
+    suppressed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     # Resultado pos-jogo
     actual_goals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -642,5 +645,35 @@ class BlockedLine(Base):
     def __repr__(self) -> str:
         return (
             f"<BlockedLine({self.player!r}, {self.line!r}, "
+            f"state={self.state}, strikes={self.block_count})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# BlockedLineV2 — auto-block per (player, line) M2 (2026-04-26).
+# Replica do BlockedLine pro Method 2.
+# ---------------------------------------------------------------------------
+class BlockedLineV2(Base):
+    __tablename__ = "blocked_lines_v2"
+
+    player: Mapped[str] = mapped_column(String, primary_key=True)
+    line: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[str] = mapped_column(String, nullable=False, default="ACTIVE")
+    block_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shadow_start_pl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    shadow_start_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_block_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_unblock_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_blocked_lines_v2_state", "state"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<BlockedLineV2({self.player!r}, {self.line!r}, "
             f"state={self.state}, strikes={self.block_count})>"
         )

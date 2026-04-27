@@ -25,6 +25,7 @@ from src.db.models import (
     Alert,
     AlertV2,
     BlockedLine,
+    BlockedLineV2,
     League,
     Match,
     MatchTeam,
@@ -1374,6 +1375,16 @@ class AlertV2Repository(_BaseRepository):
             await session.flush()
             return alert
 
+    async def mark_suppressed(self, alert_id: int) -> None:
+        """Marca alerta v2 como suppressed=TRUE (auto-block SHADOW)."""
+        async with self._session() as session:
+            stmt = (
+                update(AlertV2)
+                .where(AlertV2.id == alert_id)
+                .values(suppressed=True)
+            )
+            await session.execute(stmt)
+
     async def validate(
         self,
         alert_id: int,
@@ -1688,5 +1699,90 @@ class BlockedLineRepository(_BaseRepository):
 
     async def is_suppressed(self, player: str, line: str) -> bool:
         """Quick check: a linha desse jogador esta bloqueada?"""
+        bl = await self.get(player, line)
+        return bl is not None and bl.state in ("SHADOW", "PERMANENT")
+
+
+# ---------------------------------------------------------------------------
+# BlockedLineV2Repository — auto-block per (player, line) M2.
+# 2026-04-26: clone do BlockedLineRepository pro Method 2.
+# ---------------------------------------------------------------------------
+class BlockedLineV2Repository(_BaseRepository):
+    """CRUD para a state machine de bloqueio automatico v2 (Method 2)."""
+
+    async def get(self, player: str, line: str) -> Optional[BlockedLineV2]:
+        async with self._session() as session:
+            stmt = (
+                select(BlockedLineV2)
+                .where(BlockedLineV2.player == player, BlockedLineV2.line == line)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def upsert(
+        self,
+        *,
+        player: str,
+        line: str,
+        state: str,
+        block_count: int,
+        shadow_start_pl: Optional[float] = None,
+        shadow_start_at: Optional[datetime] = None,
+        last_block_at: Optional[datetime] = None,
+        last_unblock_at: Optional[datetime] = None,
+    ) -> BlockedLineV2:
+        async with self._session() as session:
+            stmt = (
+                select(BlockedLineV2)
+                .where(BlockedLineV2.player == player, BlockedLineV2.line == line)
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is None:
+                bl = BlockedLineV2(
+                    player=player,
+                    line=line,
+                    state=state,
+                    block_count=block_count,
+                    shadow_start_pl=shadow_start_pl,
+                    shadow_start_at=shadow_start_at,
+                    last_block_at=last_block_at,
+                    last_unblock_at=last_unblock_at,
+                    updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+                session.add(bl)
+                await session.flush()
+                return bl
+            existing.state = state
+            existing.block_count = block_count
+            if shadow_start_pl is not None:
+                existing.shadow_start_pl = shadow_start_pl
+            if shadow_start_at is not None:
+                existing.shadow_start_at = shadow_start_at
+            if last_block_at is not None:
+                existing.last_block_at = last_block_at
+            if last_unblock_at is not None:
+                existing.last_unblock_at = last_unblock_at
+            existing.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session.flush()
+            return existing
+
+    async def list_blocked(self) -> List[BlockedLineV2]:
+        """Retorna todos com state in (SHADOW, PERMANENT)."""
+        async with self._session() as session:
+            stmt = (
+                select(BlockedLineV2)
+                .where(BlockedLineV2.state.in_(("SHADOW", "PERMANENT")))
+                .order_by(BlockedLineV2.player, BlockedLineV2.line)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def list_all(self) -> List[BlockedLineV2]:
+        async with self._session() as session:
+            stmt = select(BlockedLineV2).order_by(BlockedLineV2.player, BlockedLineV2.line)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def is_suppressed(self, player: str, line: str) -> bool:
         bl = await self.get(player, line)
         return bl is not None and bl.state in ("SHADOW", "PERMANENT")

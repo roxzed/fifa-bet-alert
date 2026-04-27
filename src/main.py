@@ -86,6 +86,7 @@ async def main() -> None:
         group_chat_id=settings.telegram_group_id,
         v2_group_id=settings.telegram_group_v2_id,
         admin_chat_id=settings.telegram_admin_chat_id,
+        free_group_id=settings.telegram_free_group_id,
     )
 
     # Avisa o admin quando a BetsAPI responde 429 (rate limit).
@@ -131,6 +132,8 @@ async def main() -> None:
     )
 
     # Method 2
+    from src.db.repositories import BlockedLineV2Repository
+    blocked_repo_v2 = BlockedLineV2Repository(sf)
     stats_engine_v2 = StatsEngineV2(
         match_repo=MatchRepository(sf),
         blacklist=stats_engine.PLAYER_BLACKLIST,
@@ -138,7 +141,10 @@ async def main() -> None:
     alert_v2_repo = AlertV2Repository(sf)
     alert_engine_v2 = None
     if settings.telegram_group_v2_id:
-        alert_engine_v2 = AlertEngineV2(stats_engine_v2, alert_v2_repo, notifier)
+        alert_engine_v2 = AlertEngineV2(
+            stats_engine_v2, alert_v2_repo, notifier,
+            blocked_repo_v2=blocked_repo_v2,
+        )
         logger.info(f"Method 2 enabled (group: {settings.telegram_group_v2_id})")
     else:
         logger.info("Method 2 disabled (TELEGRAM_GROUP_V2_ID not set)")
@@ -375,6 +381,50 @@ async def main() -> None:
         hour=23,
         minute=55,
         task_id="daily_blocked_report",
+    )
+
+    # --- Auto-block per (player, line) M2 ---
+    # 2026-04-26: replica do M1 protocolo SHADOW pro Method 2.
+    # Mesmas thresholds (-1u block / +1u + n>=3 recovery / -2u permanent).
+    # Reports sao SEPARADOS dos do M1, vao pro DM admin.
+    from src.core.blocked_lines_v2 import (
+        recompute_all_states as recompute_v2,
+        build_hourly_report as report_v2,
+    )
+
+    async def _hourly_blocked_recompute_v2() -> None:
+        try:
+            transitions = await recompute_v2(blocked_repo_v2)
+            n_changes = sum(
+                len(v) for k, v in transitions.items() if k != "no_change"
+            )
+            if n_changes:
+                logger.info(
+                    f"M2 auto-block cron: strike1={transitions.get('blocked_strike1', [])}, "
+                    f"strike2={transitions.get('blocked_strike2', [])}, "
+                    f"unblocked={transitions.get('unblocked', [])}"
+                )
+        except Exception as e:
+            logger.error(f"hourly_blocked_recompute_v2 failed: {e}")
+
+    async def _daily_blocked_report_v2() -> None:
+        try:
+            await recompute_v2(blocked_repo_v2)
+            text = await report_v2(blocked_repo_v2)
+            await notifier.send_admin_message(text)
+        except Exception as e:
+            logger.error(f"daily_blocked_report_v2 failed: {e}")
+
+    scheduler.add_interval_task(
+        _hourly_blocked_recompute_v2,
+        seconds=1800,  # 30min, igual M1
+        task_id="hourly_blocked_recompute_v2",
+    )
+    scheduler.add_daily_task(
+        _daily_blocked_report_v2,
+        hour=23,
+        minute=55,
+        task_id="daily_blocked_report_v2",
     )
 
     scheduler.start()

@@ -13,10 +13,14 @@ class AlertEngineV2:
     e envia alerta para o grupo Telegram do Method 2.
     """
 
-    def __init__(self, stats_engine_v2, alert_v2_repo, notifier_v2) -> None:
+    def __init__(
+        self, stats_engine_v2, alert_v2_repo, notifier_v2, blocked_repo_v2=None
+    ) -> None:
         self.stats = stats_engine_v2
         self.alerts = alert_v2_repo
         self.notifier = notifier_v2
+        # 2026-04-26: SHADOW protocol M2 — auto-block per (player, line)
+        self.blocked = blocked_repo_v2
 
     async def evaluate_and_alert(
         self,
@@ -143,6 +147,32 @@ class AlertEngineV2:
             "over45_odds": over45_odds,
             "bet365_url": bet365_url,
         }
+
+        # 2026-04-26: SHADOW protocol M2 — checa auto-block antes de enviar
+        suppressed = False
+        if self.blocked is not None and evaluation.best_line:
+            try:
+                suppressed = await self.blocked.is_suppressed(
+                    loser, evaluation.best_line
+                )
+            except Exception as e:
+                logger.warning(
+                    f"M2 is_suppressed check failed for {loser}/{evaluation.best_line}: {e}"
+                )
+                suppressed = False
+
+        if suppressed:
+            try:
+                await self.alerts.mark_suppressed(alert.id)
+            except Exception as e:
+                logger.warning(
+                    f"M2 mark_suppressed failed for alert {alert.id}: {e}"
+                )
+            logger.bind(category="alert_v2").info(
+                f"M2 alert SUPPRESSED (auto-block): {loser} {evaluation.best_line} "
+                f"@{alert_odds:.2f} — alerta v2 salvo no DB com suppressed=TRUE"
+            )
+            return True  # alerta no DB pra shadow tracking
 
         # Send to M2 Telegram group
         message_id = await self.notifier.send_alert_v2(alert_data)
