@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     telegram_admin_chat_id: str = ""  # Private chat for status/regime msgs
     telegram_group_id: str = ""
     telegram_group_v2_id: str = ""  # Grupo do Method 2
+    telegram_free_group_id: str = ""  # Reservado pro lancamento VIP (vazio = inativo)
 
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"
