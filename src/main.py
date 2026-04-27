@@ -86,7 +86,6 @@ async def main() -> None:
         group_chat_id=settings.telegram_group_id,
         v2_group_id=settings.telegram_group_v2_id,
         admin_chat_id=settings.telegram_admin_chat_id,
-        free_group_id=settings.telegram_free_group_id,
     )
 
     # Avisa o admin quando a BetsAPI responde 429 (rate limit).
