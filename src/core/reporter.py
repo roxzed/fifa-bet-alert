@@ -36,6 +36,16 @@ class Reporter:
         now_local = datetime.now(tz_local)
         target_date = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
 
+        # Skip pontual: pular envio em datas especificas (pedido do owner).
+        # 2026-04-26: nao enviar /results hoje.
+        SKIP_DATES = {"2026-04-26"}
+        if target_date.strftime("%Y-%m-%d") in SKIP_DATES:
+            logger.info(
+                f"send_daily_report SKIP: data {target_date.strftime('%Y-%m-%d')} "
+                f"esta em SKIP_DATES — nao enviando ao grupo"
+            )
+            return
+
         start_utc = target_date.astimezone(timezone.utc).replace(tzinfo=None)
         end_utc = (target_date + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
 
