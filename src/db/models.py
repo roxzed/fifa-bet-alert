@@ -274,6 +274,8 @@ class Alert(Base):
 
     # Telegram message ID (para editar apos resultado)
     telegram_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Telegram message_id da copia enviada pro grupo FREE (NULL = nao foi pro FREE)
+    free_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Resultado pos-jogo
     actual_goals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

@@ -149,17 +149,22 @@ class TelegramNotifier:
     """
 
     def __init__(self, token: str, chat_id: str, group_chat_id: str = "",
-                 v2_group_id: str = "", admin_chat_id: str = "") -> None:
+                 v2_group_id: str = "", admin_chat_id: str = "",
+                 free_group_id: str = "") -> None:
         self.bot = Bot(token=token)
         self.chat_id = chat_id
         self._group_chat_id = group_chat_id
         self._v2_group_id = v2_group_id  # Grupo do Method 2
+        # Grupo FREE: subset filtrado dos alertas (cap diario + threshold).
+        # Vazio = FREE inativo, send_alert_free NO-OP.
+        self._free_group_id = free_group_id
         # Sem fallback: se admin_chat_id vazio, send_admin_message NO-OP.
         # Mensagens admin/status NUNCA podem cair no grupo dos apostadores.
         self._admin_chat_id = admin_chat_id
         self._paused = False
         self._breaker = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         self._breaker_v2 = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self._breaker_free = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         # Mapeia chat_message_id -> group_message_id para editar resultado no grupo
         self._group_msg_map: dict[int, int] = {}
 
@@ -365,6 +370,73 @@ class TelegramNotifier:
         """Send system health status — APENAS admin DM."""
         from src.telegram.messages import format_system_status
         return await self.send_admin_message(format_system_status(status_data))
+
+    # --- FREE group methods (subset filtrado de alertas pra grupo aberto) ---
+
+    async def send_alert_free(self, alert_data: dict) -> int | None:
+        """Envia alerta pro grupo FREE com formato identico ao do VIP.
+
+        NO-OP se _free_group_id vazio. Retorna message_id (pra editar no
+        validator) ou None em falha.
+        """
+        if not self._free_group_id:
+            return None
+        if self._paused:
+            logger.debug("Alerts paused, skipping send_alert_free")
+            return None
+        if not self._breaker_free.allow_request():
+            logger.warning(
+                f"FREE circuit breaker OPEN — skipping send_alert_free "
+                f"(retry in {self._breaker_free.seconds_until_retry:.0f}s)"
+            )
+            return None
+        from src.telegram.messages import format_alert
+        text = _sanitize_text(format_alert(alert_data))
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._free_group_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_free.record_success()
+            logger.bind(category="alert_free").info(
+                f"FREE alert sent (msg_id={msg.message_id}): "
+                f"{alert_data.get('losing_player')} {alert_data.get('alert_label')} "
+                f"@{alert_data.get('alert_odds')}"
+            )
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_free.record_failure()
+            logger.error(f"Failed to send FREE alert: {e}")
+            return None
+
+    async def edit_alert_free_result(self, message_id: int, original_data: dict,
+                                     hit: bool, score_line: str) -> bool:
+        """Edita a mensagem original no grupo FREE pra mostrar GREEN/RED."""
+        if not self._free_group_id:
+            return False
+        from src.telegram.messages import format_alert
+        original_text = format_alert(original_data)
+        if hit:
+            result_line = f"\n\n✅ GREEN — {score_line}"
+        else:
+            result_line = f"\n\n❌ RED — {score_line}"
+        full_text = _sanitize_text(original_text + result_line)
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self._free_group_id,
+                message_id=message_id,
+                text=full_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_free.record_success()
+            return True
+        except TelegramError as e:
+            self._breaker_free.record_failure()
+            logger.warning(f"Failed to edit FREE message {message_id}: {e}")
+            return False
 
     # --- Method 2 (M2) group methods ---
 

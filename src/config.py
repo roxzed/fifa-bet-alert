@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     telegram_admin_chat_id: str = ""  # Private chat for status/regime msgs
     telegram_group_id: str = ""
     telegram_group_v2_id: str = ""  # Grupo do Method 2
-    telegram_free_group_id: str = ""  # Reservado pro lancamento VIP (vazio = inativo)
+    telegram_free_group_id: str = ""  # Grupo FREE (vazio = FREE inativo, so VIP recebe)
+    free_min_true_prob: float = 0.80  # tp_conservative minimo pra alerta ir pro FREE
+    free_max_per_day: int = 2         # cap diario BRT de alertas no FREE
 
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"

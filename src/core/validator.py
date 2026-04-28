@@ -420,6 +420,28 @@ class Validator:
             except Exception as e:
                 logger.warning(f"Could not send fallback result for alert {alert.id}: {e}")
 
+        # --- FREE group: editar a copia se foi enviada ---
+        # Independente do resultado da edicao no VIP, se alert.free_message_id
+        # existe a copia foi pro FREE e tem que receber GREEN/RED tambem.
+        free_msg_id = getattr(alert, "free_message_id", None)
+        if free_msg_id:
+            try:
+                await self.notifier.edit_alert_free_result(
+                    message_id=free_msg_id,
+                    original_data=self._rebuild_alert_data(alert, return_match),
+                    hit=hit,
+                    score_line=score_line,
+                )
+                logger.info(
+                    f"FREE msg {free_msg_id} edited: "
+                    f"{'GREEN' if hit else 'RED'} {score_line}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Could not edit FREE message {free_msg_id} for alert "
+                    f"{alert.id}: {e}"
+                )
+
     async def _check_drawdown(self) -> None:
         """Notifica sobre drawdown severo (5+ losses seguidas ou -5u). Nao pausa automaticamente."""
         streak = await self.alerts.get_recent_streak(20)

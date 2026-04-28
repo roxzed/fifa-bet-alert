@@ -333,6 +333,45 @@ class AlertEngine:
                 logger.bind(category="alert").info(
                     f"OVER alert sent (msg_id={message_id}): {loser} {best_over['label']} @{best_over['odds']:.2f}"
                 )
+
+                # --- FREE group: subset filtrado pos VIP confirmado ---
+                # Gate: tp_conservative >= free_min_true_prob E cap diario BRT.
+                # ML NUNCA vai pro FREE (memory: ML eh raro, intencional).
+                # Suppressed nem chega aqui (esta dentro do `if not suppressed`).
+                # Falha em count_free_alerts_today_brt = nao envia (fail-safe).
+                from src.config import settings
+                tp_cons = evaluation.true_prob_conservative or 0.0
+                if tp_cons >= settings.free_min_true_prob:
+                    try:
+                        free_count = await self.alerts.count_free_alerts_today_brt()
+                    except Exception as e:
+                        logger.warning(
+                            f"count_free_alerts_today_brt failed for alert {alert.id}: {e} "
+                            f"— FREE skip (fail-safe)"
+                        )
+                        free_count = settings.free_max_per_day  # bloqueia envio
+                    if free_count < settings.free_max_per_day:
+                        free_msg_id = await self.notifier.send_alert_free(over_data)
+                        if free_msg_id:
+                            try:
+                                await self.alerts.update_free_message_id(
+                                    alert.id, free_msg_id
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not save free_message_id for alert "
+                                    f"{alert.id}: {e}"
+                                )
+                            logger.bind(category="alert").info(
+                                f"FREE alert dispatched (#{free_count + 1}/"
+                                f"{settings.free_max_per_day}): {loser} "
+                                f"{best_over['label']} tp_cons={tp_cons:.2f}"
+                            )
+                    else:
+                        logger.bind(category="alert").debug(
+                            f"FREE cap atingido ({free_count}/"
+                            f"{settings.free_max_per_day}) — skip {loser} {best_line}"
+                        )
             else:
                 # Bug raro 2026-04-25 (alert#1143): send_alert retorna None mas
                 # mensagem chega no Telegram (race timeout). DB fica sem msg_id,

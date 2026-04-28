@@ -742,6 +742,37 @@ class AlertRepository(_BaseRepository):
             )
             await session.execute(stmt)
 
+    async def update_free_message_id(self, alert_id: int, message_id: int) -> None:
+        """Salva o message_id da copia enviada pro grupo FREE.
+
+        Validator usa esse id pra editar a mensagem do FREE com GREEN/RED.
+        """
+        async with self._session() as session:
+            stmt = (
+                update(Alert)
+                .where(Alert.id == alert_id)
+                .values(free_message_id=message_id)
+            )
+            await session.execute(stmt)
+
+    async def count_free_alerts_today_brt(self) -> int:
+        """Conta alertas enviados ao grupo FREE hoje (data BRT).
+
+        Usado pelo cap diario do FREE. Conta so alertas com free_message_id
+        NOT NULL (envio confirmado), nao apenas elegiveis. BRT = America/Sao_Paulo,
+        mesmo padrao do /results e blocked_lines.
+        """
+        from sqlalchemy import text
+        async with self._session() as session:
+            stmt = text(
+                "SELECT COUNT(*) FROM alerts "
+                "WHERE free_message_id IS NOT NULL "
+                "AND (sent_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date "
+                "    = (NOW() AT TIME ZONE 'America/Sao_Paulo')::date"
+            )
+            result = await session.execute(stmt)
+            return int(result.scalar() or 0)
+
     async def get_all_validated_for_export(self) -> Sequence[Alert]:
         """Return all validated alerts for spreadsheet export, oldest first."""
         async with self._session() as session:
