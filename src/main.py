@@ -373,7 +373,9 @@ async def main() -> None:
 
     scheduler.add_interval_task(
         _hourly_blocked_recompute,
-        seconds=1800,  # 2026-04-26: trocado de 3600s para 1800s (30min) por pedido do owner
+        seconds=300,  # 2026-04-28: trocado de 1800s -> 300s (5min) com SHADOW v2.
+        # Cliffs (LINE/PLAYER) precisam reagir rapido pra capturar dia ruim em
+        # andamento. recompute_all_states e idempotente e leve (~1-2s).
         task_id="hourly_blocked_recompute",
     )
     scheduler.add_daily_task(
