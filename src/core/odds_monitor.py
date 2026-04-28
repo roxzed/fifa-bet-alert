@@ -90,10 +90,13 @@ def _adaptive_poll_interval(minutes_to_kickoff: float | None) -> int:
     elif minutes_to_kickoff > 3:
         return 15   # perto → ficar atento
     else:
-        # Valor original: 10s. Reduzido para 4s em 2026-04-23 para cortar latencia
-        # de alerta (10-13s pior caso -> 4-5s). Margem de ~40% sobre limite de
-        # 3600 req/h da Bet365 API no pico tipico. Rollback: mudar de 4 para 10.
-        return 4
+        # Historico:
+        # - 10s (original)
+        # - 4s (2026-04-23) — cortar latencia 10-13s -> 4-5s
+        # - 2s (2026-04-28) — owner aprovou em 2026-04-26, aplicado hoje.
+        #   Margem ~50% sobre limite 3600 req/h da Bet365.
+        # Rollback: mudar para 4 ou 10.
+        return 2
 
 
 class OddsMonitor:
@@ -500,6 +503,31 @@ class OddsMonitor:
             if candidate is None:
                 logger.debug(f"Watch {match_id}: sem candidato, skip")
                 return
+
+            # 2026-04-28 fix: skip watch se a (target_player, line) esta em
+            # SHADOW/PERMANENT. Sem isso o watcher promete um alerta que nunca
+            # vai chegar (o alert_engine vai suprimir). H2H_WHITELIST override
+            # mantido pra casos liberados manualmente.
+            blocked_repo = getattr(self.alert_engine, "blocked", None)
+            candidate_line = candidate.get("line")
+            if blocked_repo is not None and candidate_line:
+                try:
+                    is_supp = await blocked_repo.is_suppressed(loser, candidate_line)
+                except Exception as e:
+                    logger.warning(
+                        f"Watch {match_id}: is_suppressed falhou ({e}), prosseguindo"
+                    )
+                    is_supp = False
+                if is_supp:
+                    h2h_wl = getattr(self.alert_engine.stats, "H2H_WHITELIST", set())
+                    if (loser, winner, candidate_line) in h2h_wl:
+                        is_supp = False
+                if is_supp:
+                    logger.info(
+                        f"Watch {match_id}: skip — {loser}/{candidate_line} "
+                        f"esta suprimida (auto-block); pre-alerta nao seria honrado"
+                    )
+                    return
 
             # Montar payload e enviar
             from zoneinfo import ZoneInfo
