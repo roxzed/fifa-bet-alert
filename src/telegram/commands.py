@@ -38,6 +38,15 @@ class BotCommands:
         chat_id = str(update.effective_chat.id) if update.effective_chat else ""
         return chat_id == str(v2_id)
 
+    def _is_free_group(self, update: Update) -> bool:
+        """Retorna True se o comando foi enviado no grupo FREE."""
+        from src.config import settings
+        free_id = settings.telegram_free_group_id
+        if not free_id:
+            return False
+        chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+        return chat_id == str(free_id)
+
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/status - System uptime, monitoring info, regime status."""
         try:
@@ -439,7 +448,10 @@ class BotCommands:
             end_utc = (target_date + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
 
             date_label = target_date.strftime("%d/%m/%Y")
-            if self._is_v2_group(update) and self.alerts_v2:
+            is_v2 = self._is_v2_group(update) and self.alerts_v2
+            is_free = self._is_free_group(update)
+
+            if is_v2:
                 alerts = await self.alerts_v2.get_results_by_date(start_utc, end_utc)
             else:
                 alerts = await self.alerts.get_results_by_date(start_utc, end_utc)
@@ -448,10 +460,34 @@ class BotCommands:
                 await update.message.reply_text(f"Nenhum alerta em {date_label}.")
                 return
 
+            # Filtrar suprimidos (auto-block) — eles NUNCA foram pra grupo nenhum
+            # e nao devem aparecer no /results pra nao confundir.
+            if not is_v2:
+                alerts = [a for a in alerts if not getattr(a, "suppressed", False)]
+                if not alerts:
+                    await update.message.reply_text(f"Nenhum alerta em {date_label}.")
+                    return
+
+            # Se /results foi chamado no grupo FREE, mostra so os que foram pro FREE.
+            if is_free:
+                alerts = [a for a in alerts if getattr(a, "free_message_id", None)]
+                if not alerts:
+                    await update.message.reply_text(
+                        f"Nenhum alerta FREE em {date_label}."
+                    )
+                    return
+
             lines = []
+            # Stats VIP (todos os alertas que foram pro grupo)
             total_profit = 0.0
             greens = 0
             total_validated = 0
+            # Stats FREE (subset com free_message_id) — calculado em paralelo
+            # so quando NAO estamos no grupo FREE (no FREE eh redundante).
+            free_profit = 0.0
+            free_greens = 0
+            free_validated = 0
+            free_total = 0
 
             for a in alerts:
                 # Hora local
@@ -494,6 +530,11 @@ class BotCommands:
                     odds = a.over25_odds
                 odds_str = f"@{odds:.2f}" if odds else "—"
 
+                # Marca FREE
+                is_free_alert = bool(getattr(a, "free_message_id", None))
+                if is_free_alert and not is_free:
+                    free_total += 1
+
                 # Resultado
                 gols = a.actual_goals
                 if gols is not None:
@@ -516,35 +557,77 @@ class BotCommands:
                     if odds:
                         p = (odds - 1.0) if hit else -1.0
                         total_profit += p
+                        if is_free_alert and not is_free:
+                            free_profit += p
                     if hit:
                         greens += 1
+                        if is_free_alert and not is_free:
+                            free_greens += 1
+                    if is_free_alert and not is_free:
+                        free_validated += 1
                 else:
                     gols = "—"
                     resultado = "⏳"
 
-                lines.append(f"{hora} | {player:<12} | {mercado} | {odds_str:<6} | {gols} | {resultado}")
+                # Tag FREE so quando estamos no VIP/admin (no FREE seria redundante)
+                free_tag = " 🆓" if (is_free_alert and not is_free) else ""
+                lines.append(
+                    f"{hora} | {player:<12} | {mercado} | {odds_str:<6} | {gols} | {resultado}{free_tag}"
+                )
 
             # Header
             header = "Hora  | Jogador      | Linha | Odds   | G | R"
             sep = "—" * 48
 
-            # ROI
+            # ROI VIP (=universo selecionado)
             total = len(alerts)
             losses = total_validated - greens
             roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
             roi_emoji = "📈" if total_profit >= 0 else "📉"
 
-            summary = (
-                f"\n{sep}\n"
-                f"✅ {greens}  ❌ {losses}  |  "
-                f"Net: <b>{total_profit:+.2f}u</b>  |  "
-                f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}"
-            )
+            if is_free:
+                # No grupo FREE, soh um sumario (proprio universo)
+                label_pl = "FREE"
+                summary = (
+                    f"\n{sep}\n"
+                    f"<b>{label_pl}:</b> ✅ {greens}  ❌ {losses}  |  "
+                    f"Net: <b>{total_profit:+.2f}u</b>  |  "
+                    f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}"
+                )
+                if total > total_validated:
+                    summary += f"\n⏳ {total - total_validated} aguardando resultado"
+            elif is_v2:
+                summary = (
+                    f"\n{sep}\n"
+                    f"✅ {greens}  ❌ {losses}  |  "
+                    f"Net: <b>{total_profit:+.2f}u</b>  |  "
+                    f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}"
+                )
+                if total > total_validated:
+                    summary += f"\n⏳ {total - total_validated} aguardando resultado"
+            else:
+                # No VIP/admin DM, mostra VIP + FREE separados
+                free_losses = free_validated - free_greens
+                free_roi = (free_profit / free_validated * 100) if free_validated > 0 else 0
+                free_emoji = "📈" if free_profit >= 0 else "📉"
+                summary = (
+                    f"\n{sep}\n"
+                    f"<b>VIP:</b>  ✅ {greens}  ❌ {losses}  |  "
+                    f"Net: <b>{total_profit:+.2f}u</b>  |  "
+                    f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}\n"
+                    f"<b>FREE:</b> ✅ {free_greens}  ❌ {free_losses}  |  "
+                    f"Net: <b>{free_profit:+.2f}u</b>  |  "
+                    f"ROI: <b>{free_roi:+.1f}%</b> {free_emoji}  ({free_total}/{total} alertas)"
+                )
+                if total > total_validated:
+                    summary += f"\n⏳ {total - total_validated} aguardando resultado"
 
-            if total > total_validated:
-                summary += f"\n⏳ {total - total_validated} aguardando resultado"
-
-            prefix = "M2 " if self._is_v2_group(update) and self.alerts_v2 else ""
+            if is_free:
+                prefix = "FREE "
+            elif is_v2:
+                prefix = "M2 "
+            else:
+                prefix = ""
             msg = (
                 f"📋 <b>{prefix}RESULTADOS {date_label}</b>\n\n"
                 f"<pre>{header}\n{sep}\n"
