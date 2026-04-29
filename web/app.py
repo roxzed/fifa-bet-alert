@@ -47,7 +47,7 @@ async def lifespan(application):
     yield
 
 
-app = FastAPI(title="Lenda_BOT Dashboard", lifespan=lifespan)
+app = FastAPI(title="LENDA BOT Dashboard", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
@@ -167,6 +167,191 @@ def _fetch_data() -> list[dict]:
     except Exception as e:
         print(f"[DB ERROR] {e}")
         return []
+
+
+# ---------------------------------------------------------------------------
+# H2H granular fetch (admin only, NOT exposed in /api/data)
+# ---------------------------------------------------------------------------
+H2H_QUERY = """
+SELECT a.id, a.losing_player AS player, a.best_line AS line,
+       CASE WHEN m.player_home = a.losing_player
+            THEN m.player_away ELSE m.player_home END AS opp,
+       a.profit_flat AS prof, a.suppressed,
+       a.over15_odds, a.over25_odds, a.over35_odds, a.over45_odds,
+       a.true_prob, a.edge, a.star_rating, a.sent_at
+FROM alerts a
+JOIN matches m ON a.match_id = m.id
+WHERE a.sent_at >= '2026-04-15 01:07:00'
+  AND a.profit_flat IS NOT NULL
+  AND a.best_line IS NOT NULL
+ORDER BY a.sent_at ASC
+"""
+
+BLOCKED_QUERY = """
+SELECT player, line, opponent, state, block_count,
+       shadow_start_pl, shadow_start_at,
+       last_block_at, last_unblock_at
+FROM blocked_lines
+"""
+
+
+def _fetch_h2h_data() -> dict:
+    """Pega TODOS alertas + estado blocked_lines pra admin H2H view."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+            user=DB_USER, password=DB_PASS, sslmode="require",
+        )
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(H2H_QUERY)
+        alerts = [dict(r) for r in cur.fetchall()]
+        cur.execute(BLOCKED_QUERY)
+        blocked = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return {"alerts": alerts, "blocked": blocked}
+    except Exception as e:
+        print(f"[DB H2H ERROR] {e}")
+        return {"alerts": [], "blocked": []}
+
+
+def _build_h2h_view(data: dict) -> dict:
+    """Estrutura: player -> opp -> line -> {sent, supp, all stats}."""
+    alerts = data["alerts"]
+    blocked = data["blocked"]
+    LINES = ("over15", "over25", "over35", "over45")
+
+    # Index blocked por (player, line, opp)
+    blocked_idx = {}
+    for b in blocked:
+        blocked_idx[(b["player"], b["line"], b["opponent"])] = b
+
+    # Estrutura
+    structure = defaultdict(lambda: defaultdict(
+        lambda: defaultdict(lambda: {"sent": [], "supp": []})
+    ))
+    for a in alerts:
+        if a["line"] not in LINES:
+            continue
+        bucket = "supp" if a["suppressed"] else "sent"
+        structure[a["player"]][a["opp"] or "?"][a["line"]][bucket].append(a)
+
+    # Agregar stats por player/matchup/line
+    def stats(items):
+        n = len(items)
+        pl = sum(float(x["prof"]) for x in items)
+        hits = sum(1 for x in items if float(x["prof"]) > 0)
+        return {
+            "n": n, "pl": pl, "hits": hits,
+            "wr": (hits / n * 100) if n else 0,
+            "roi": (pl / n * 100) if n else 0,
+        }
+
+    players = []
+    LINE_LABEL = {"over15": "Over 1.5", "over25": "Over 2.5",
+                  "over35": "Over 3.5", "over45": "Over 4.5"}
+
+    for player, opps_data in structure.items():
+        # Stats player nas 3 visoes
+        all_a = []; sent_a = []; supp_a = []
+        for opp, lines_data in opps_data.items():
+            for line, buckets in lines_data.items():
+                all_a.extend(buckets["sent"] + buckets["supp"])
+                sent_a.extend(buckets["sent"])
+                supp_a.extend(buckets["supp"])
+
+        # Por linha
+        lines_player = []
+        for line in LINES:
+            sent_l = []; supp_l = []
+            for opp, lines_data in opps_data.items():
+                if line in lines_data:
+                    sent_l.extend(lines_data[line]["sent"])
+                    supp_l.extend(lines_data[line]["supp"])
+            all_l = sent_l + supp_l
+            if not all_l:
+                continue
+            lines_player.append({
+                "line": line, "label": LINE_LABEL[line],
+                "sent": stats(sent_l),
+                "supp": stats(supp_l),
+                "all": stats(all_l),
+            })
+
+        # Por matchup (opp), com breakdown por linha
+        opps = []
+        for opp, lines_data in opps_data.items():
+            sent_o = []; supp_o = []
+            line_breakdown = []
+            for line in LINES:
+                if line in lines_data:
+                    buckets = lines_data[line]
+                    sent_o.extend(buckets["sent"])
+                    supp_o.extend(buckets["supp"])
+                    all_b = buckets["sent"] + buckets["supp"]
+                    if all_b:
+                        block_state = blocked_idx.get(
+                            (player, line, opp)
+                        )
+                        line_breakdown.append({
+                            "line": line, "label": LINE_LABEL[line],
+                            "sent": stats(buckets["sent"]),
+                            "supp": stats(buckets["supp"]),
+                            "all": stats(all_b),
+                            "blocked": block_state["state"] if block_state else "ACTIVE",
+                            "block_count": block_state["block_count"] if block_state else 0,
+                        })
+            opps.append({
+                "opp": opp,
+                "sent": stats(sent_o),
+                "supp": stats(supp_o),
+                "all": stats(sent_o + supp_o),
+                "lines": line_breakdown,
+            })
+        opps.sort(key=lambda x: x["all"]["pl"], reverse=True)
+
+        players.append({
+            "player": player,
+            "sent": stats(sent_a),
+            "supp": stats(supp_a),
+            "all": stats(all_a),
+            "lines": lines_player,
+            "opps": opps,
+        })
+
+    players.sort(key=lambda x: x["all"]["pl"], reverse=True)
+
+    # Cells bloqueados (visao top)
+    blocked_cells = []
+    for b in blocked:
+        if b["state"] in ("SHADOW", "PERMANENT"):
+            key = (b["player"], b["line"], b["opponent"])
+            sent_cell = []; supp_cell = []
+            opps_d = structure.get(b["player"], {}).get(b["opponent"], {})
+            buckets = opps_d.get(b["line"])
+            if buckets:
+                sent_cell = buckets["sent"]
+                supp_cell = buckets["supp"]
+            blocked_cells.append({
+                "player": b["player"],
+                "line": b["line"],
+                "opponent": b["opponent"],
+                "state": b["state"],
+                "block_count": b["block_count"],
+                "shadow_start_pl": float(b["shadow_start_pl"]) if b["shadow_start_pl"] is not None else None,
+                "shadow_start_at": b["shadow_start_at"].isoformat() if b["shadow_start_at"] else None,
+                "all": stats(sent_cell + supp_cell),
+                "sent": stats(sent_cell),
+                "supp": stats(supp_cell),
+            })
+    blocked_cells.sort(key=lambda x: (x["state"] != "PERMANENT", x["player"]))
+
+    return {
+        "players": players,
+        "blocked_cells": blocked_cells,
+        "total_alerts": len(alerts),
+        "total_sent": sum(1 for a in alerts if not a["suppressed"]),
+        "total_supp": sum(1 for a in alerts if a["suppressed"]),
+    }
 
 
 def _refresh_loop():
@@ -393,6 +578,28 @@ async def resultados(request: Request, de: str | None = None, ate: str | None = 
     data["filter_from"] = de or ""
     data["filter_to"] = ate or ""
     tpl = templates.env.get_template("resultados.html")
+    return HTMLResponse(tpl.render(**data))
+
+
+@app.get("/h2hrelatorio", response_class=HTMLResponse)
+async def h2hrelatorio(request: Request, token: str | None = None):
+    """Admin-only H2H view com breakdown completo (player x opp x linha).
+
+    Protegido por ADMIN_TOKEN env var. Sem token correto = 401.
+    URL: /h2hrelatorio?token=XXX
+    """
+    expected = os.getenv("ADMIN_TOKEN", "")
+    if not expected or token != expected:
+        return HTMLResponse(
+            "<h1>Acesso negado</h1><p>Token invalido ou ausente.</p>",
+            status_code=401
+        )
+
+    raw = _fetch_h2h_data()
+    data = _build_h2h_view(raw)
+    data["updated"] = _get_updated()
+    data["token"] = token
+    tpl = templates.env.get_template("admin_h2h.html")
     return HTMLResponse(tpl.render(**data))
 
 

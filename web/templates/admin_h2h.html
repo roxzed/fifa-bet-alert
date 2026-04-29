@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin H2H — LENDA BOT</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f7; color: #1d1d1f; margin: 0; padding: 16px;
+  }
+  h1 { color: #0D47A1; margin: 0 0 8px; }
+  .meta { color: #666; font-size: 13px; margin-bottom: 16px; }
+  .summary {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: white; border-radius: 8px; padding: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .card .label { font-size: 11px; color: #666; text-transform: uppercase; }
+  .card .value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  .filter-bar {
+    display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;
+    align-items: center;
+  }
+  .filter-bar input {
+    padding: 6px 10px; border: 1px solid #d0d0d0; border-radius: 6px;
+    font-size: 13px; min-width: 200px;
+  }
+  .filter-bar label { font-size: 13px; color: #444; }
+  .filter-bar button {
+    padding: 6px 12px; border: 1px solid #d0d0d0; border-radius: 6px;
+    background: white; cursor: pointer; font-size: 12px;
+  }
+  .filter-bar button.active {
+    background: #0D47A1; color: white; border-color: #0D47A1;
+  }
+  details { background: white; border-radius: 6px; margin-bottom: 6px; overflow: hidden; }
+  details > summary {
+    padding: 10px 14px; cursor: pointer; user-select: none;
+    list-style: none; display: flex; align-items: center; gap: 12px;
+    font-size: 14px;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: "▶"; font-size: 9px; color: #888; transition: transform 0.15s;
+    display: inline-block;
+  }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details details > summary { padding-left: 28px; font-size: 13px; }
+  details details details > summary { padding-left: 44px; font-size: 12px; }
+  .player-name { font-weight: 600; min-width: 130px; }
+  .tier {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600;
+  }
+  .tier-S { background: #1B5E20; color: white; }
+  .tier-A { background: #43A047; color: white; }
+  .tier-B { background: #FBC02D; color: #333; }
+  .tier-D { background: #D32F2F; color: white; }
+  .tier-Q { background: #BDBDBD; color: white; }
+  .stat { font-size: 12px; padding: 2px 6px; border-radius: 4px; }
+  .stat-pos { background: #E8F5E9; color: #1B5E20; }
+  .stat-neg { background: #FFEBEE; color: #C62828; }
+  .stat-neutral { background: #F5F5F5; color: #555; }
+  .blocked-tag {
+    background: #D32F2F; color: white; padding: 2px 8px;
+    border-radius: 4px; font-size: 10px; font-weight: 600; margin-left: 8px;
+  }
+  .blocked-tag.permanent { background: #6A1B9A; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  th { background: #37474F; color: white; padding: 6px 8px; text-align: left; }
+  th.env { background: #1565C0; }
+  th.sup { background: #E65100; }
+  th.tot { background: #2E7D32; }
+  td { padding: 5px 8px; border-bottom: 1px solid #eee; }
+  td.player-cell { font-weight: 600; }
+  .visao-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+    padding: 12px 16px;
+  }
+  .visao {
+    background: #fafafa; border-radius: 6px; padding: 10px;
+    border-left: 4px solid #ccc;
+  }
+  .visao.env { border-left-color: #1565C0; background: #E3F2FD; }
+  .visao.sup { border-left-color: #E65100; background: #FFF3E0; }
+  .visao.tot { border-left-color: #2E7D32; background: #E8F5E9; }
+  .visao h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; color: #666; }
+  .visao .num { font-size: 18px; font-weight: 600; }
+  .visao .small { font-size: 11px; color: #666; }
+  .blocked-section {
+    background: #FFEBEE; border-left: 4px solid #C62828;
+    padding: 14px; border-radius: 8px; margin-bottom: 16px;
+  }
+  .blocked-section h2 { margin: 0 0 10px; color: #C62828; font-size: 16px; }
+  .blocked-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
+  }
+  .blocked-card {
+    background: white; padding: 10px; border-radius: 6px;
+    border-left: 3px solid #D32F2F; font-size: 12px;
+  }
+  .blocked-card .header { font-weight: 600; margin-bottom: 6px; }
+  .matchup-line {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 4px 0; font-size: 12px;
+  }
+  .matchup-line .k { font-weight: 500; color: #666; }
+  .num-pos { color: #1B5E20; font-weight: 600; }
+  .num-neg { color: #C62828; font-weight: 600; }
+  .num-neutral { color: #555; font-weight: 500; }
+</style>
+</head>
+<body>
+
+<h1>Admin H2H — Relatorio Completo</h1>
+<div class="meta">
+  Atualizado: {{ updated }} BRT &nbsp;|&nbsp;
+  Total alertas: {{ total_alerts }} &nbsp;|&nbsp;
+  Enviados: {{ total_sent }} &nbsp;|&nbsp;
+  Suprimidos: {{ total_supp }}
+</div>
+
+<div class="summary">
+  <div class="card">
+    <div class="label">Players analisados</div>
+    <div class="value">{{ players|length }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Cells bloqueados</div>
+    <div class="value">{{ blocked_cells|length }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Total de alertas (env)</div>
+    <div class="value">{{ total_sent }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Total de alertas (sup)</div>
+    <div class="value">{{ total_supp }}</div>
+  </div>
+</div>
+
+{% if blocked_cells %}
+<div class="blocked-section">
+  <h2>Cells bloqueados ({{ blocked_cells|length }})</h2>
+  <div class="blocked-grid">
+    {% for c in blocked_cells %}
+    <div class="blocked-card" {% if c.state == 'PERMANENT' %}style="border-left-color: #6A1B9A"{% endif %}>
+      <div class="header">
+        {{ c.player }} {{ c.line|replace('over', 'O').replace('15','1.5').replace('25','2.5').replace('35','3.5').replace('45','4.5') }}
+        vs {{ c.opponent }}
+        <span class="blocked-tag {% if c.state == 'PERMANENT' %}permanent{% endif %}">{{ c.state }}</span>
+      </div>
+      <div class="matchup-line">
+        <span class="k">total:</span>
+        <span class="{% if c.all.pl >= 0 %}num-pos{% else %}num-neg{% endif %}">
+          {{ "%+.2f"|format(c.all.pl) }}u (n={{ c.all.n }})
+        </span>
+      </div>
+      <div class="matchup-line">
+        <span class="k">env/sup:</span>
+        <span class="{% if c.sent.pl >= 0 %}num-pos{% else %}num-neg{% endif %}">
+          {{ "%+.2f"|format(c.sent.pl) }}u({{ c.sent.n }})
+        </span>
+        /
+        <span class="{% if c.supp.pl >= 0 %}num-pos{% else %}num-neg{% endif %}">
+          {{ "%+.2f"|format(c.supp.pl) }}u({{ c.supp.n }})
+        </span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="filter-bar">
+  <input type="text" id="filter" placeholder="Filtrar player..." oninput="filterPlayers()">
+  <label>Mostrar:</label>
+  <button class="active" onclick="setFilter('all', this)">Todos</button>
+  <button onclick="setFilter('S', this)">Tier S</button>
+  <button onclick="setFilter('A', this)">Tier A</button>
+  <button onclick="setFilter('B', this)">Tier B</button>
+  <button onclick="setFilter('D', this)">Tier D</button>
+</div>
+
+{% macro fmt_pl(v) -%}
+{% if v >= 0 %}<span class="num-pos">{{ "%+.2f"|format(v) }}u</span>
+{% else %}<span class="num-neg">{{ "%+.2f"|format(v) }}u</span>{% endif %}
+{%- endmacro %}
+
+{% macro fmt_roi(v) -%}
+{% if v >= 0 %}<span class="num-pos">{{ "%+.1f"|format(v) }}%</span>
+{% else %}<span class="num-neg">{{ "%+.1f"|format(v) }}%</span>{% endif %}
+{%- endmacro %}
+
+{% for p in players %}
+{% set tier = ('Q' if p.all.n < 5 else 'S' if p.all.roi >= 20 else 'A' if p.all.roi >= 5 else 'B' if p.all.roi >= 0 else 'D') %}
+<details class="player-row" data-tier="{{ tier }}" data-name="{{ p.player|lower }}">
+  <summary>
+    <span class="player-name">{{ p.player }}</span>
+    <span class="tier tier-{{ tier }}">{{ tier }}</span>
+    <span class="stat stat-neutral">n={{ p.all.n }}</span>
+    <span class="stat {% if p.all.pl >= 0 %}stat-pos{% else %}stat-neg{% endif %}">
+      tot {{ fmt_pl(p.all.pl) }} ({{ fmt_roi(p.all.roi) }})
+    </span>
+    <span class="stat stat-neutral" title="enviados / suprimidos">
+      env {{ fmt_pl(p.sent.pl) }}({{p.sent.n}}) / sup {{ fmt_pl(p.supp.pl) }}({{p.supp.n}})
+    </span>
+  </summary>
+
+  <div class="visao-grid">
+    <div class="visao env">
+      <h4>Enviados (cliente viu)</h4>
+      <div class="num">{{ fmt_pl(p.sent.pl) }}</div>
+      <div class="small">n={{ p.sent.n }} · WR {{ "%.1f"|format(p.sent.wr) }}% · ROI {{ fmt_roi(p.sent.roi) }}</div>
+    </div>
+    <div class="visao sup">
+      <h4>Suprimidos (auto-block)</h4>
+      <div class="num">{{ fmt_pl(p.supp.pl) }}</div>
+      <div class="small">n={{ p.supp.n }} · WR {{ "%.1f"|format(p.supp.wr) }}% · ROI {{ fmt_roi(p.supp.roi) }}</div>
+    </div>
+    <div class="visao tot">
+      <h4>Total (sistema)</h4>
+      <div class="num">{{ fmt_pl(p.all.pl) }}</div>
+      <div class="small">n={{ p.all.n }} · WR {{ "%.1f"|format(p.all.wr) }}% · ROI {{ fmt_roi(p.all.roi) }}</div>
+    </div>
+  </div>
+
+  <h4 style="margin: 8px 16px;">P/L por linha</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>Linha</th>
+        <th class="env">n</th><th class="env">PL env</th><th class="env">ROI env</th>
+        <th class="sup">n</th><th class="sup">PL sup</th><th class="sup">ROI sup</th>
+        <th class="tot">n</th><th class="tot">PL tot</th><th class="tot">ROI tot</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in p.lines %}
+      <tr>
+        <td><strong>{{ l.label }}</strong></td>
+        <td>{{ l.sent.n }}</td><td>{{ fmt_pl(l.sent.pl) }}</td><td>{{ fmt_roi(l.sent.roi) }}</td>
+        <td>{{ l.supp.n }}</td><td>{{ fmt_pl(l.supp.pl) }}</td><td>{{ fmt_roi(l.supp.roi) }}</td>
+        <td>{{ l.all.n }}</td><td>{{ fmt_pl(l.all.pl) }}</td><td>{{ fmt_roi(l.all.roi) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h4 style="margin: 8px 16px;">Matchups H2H (vs cada oponente)</h4>
+  {% for o in p.opps %}
+  <details style="margin: 0 16px 6px;">
+    <summary>
+      <strong>vs {{ o.opp }}</strong>
+      <span class="stat stat-neutral">n={{ o.all.n }}</span>
+      <span class="stat {% if o.all.pl >= 0 %}stat-pos{% else %}stat-neg{% endif %}">
+        tot {{ fmt_pl(o.all.pl) }} ({{ fmt_roi(o.all.roi) }})
+      </span>
+      <span class="stat stat-neutral">
+        env {{ fmt_pl(o.sent.pl) }}({{o.sent.n}}) / sup {{ fmt_pl(o.supp.pl) }}({{o.supp.n}})
+      </span>
+    </summary>
+    <table>
+      <thead>
+        <tr>
+          <th>Linha</th>
+          <th class="env">n</th><th class="env">PL env</th>
+          <th class="sup">n</th><th class="sup">PL sup</th>
+          <th class="tot">n</th><th class="tot">PL tot</th><th class="tot">ROI tot</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in o.lines %}
+        <tr>
+          <td><strong>{{ l.label }}</strong></td>
+          <td>{{ l.sent.n }}</td><td>{{ fmt_pl(l.sent.pl) }}</td>
+          <td>{{ l.supp.n }}</td><td>{{ fmt_pl(l.supp.pl) }}</td>
+          <td>{{ l.all.n }}</td><td>{{ fmt_pl(l.all.pl) }}</td><td>{{ fmt_roi(l.all.roi) }}</td>
+          <td>
+            {% if l.blocked == 'SHADOW' %}
+              <span class="blocked-tag">SHADOW</span>
+            {% elif l.blocked == 'PERMANENT' %}
+              <span class="blocked-tag permanent">PERMANENT</span>
+            {% else %}
+              <span style="color: #1B5E20; font-size: 11px;">ACTIVE</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endfor %}
+</details>
+{% endfor %}
+
+<script>
+let activeFilter = 'all';
+function setFilter(tier, btn) {
+  activeFilter = tier;
+  document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filterPlayers();
+}
+function filterPlayers() {
+  const search = document.getElementById('filter').value.toLowerCase();
+  document.querySelectorAll('.player-row').forEach(row => {
+    const tierMatch = activeFilter === 'all' || row.dataset.tier === activeFilter;
+    const nameMatch = !search || row.dataset.name.includes(search);
+    row.style.display = (tierMatch && nameMatch) ? '' : 'none';
+  });
+}
+</script>
+
+</body>
+</html>
