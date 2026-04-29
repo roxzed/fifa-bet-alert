@@ -1649,17 +1649,24 @@ class AlertV2Repository(_BaseRepository):
 # BlockedLineRepository — auto-block per (player, line) M1
 # ---------------------------------------------------------------------------
 class BlockedLineRepository(_BaseRepository):
-    """CRUD para a state machine de bloqueio automatico por (player, line).
+    """CRUD para a state machine de bloqueio automatico por (player, line, opp).
 
-    Logica da state machine fica em src/core/blocked_lines.py — esta repo so
-    persiste/le. Estados validos: ACTIVE | SHADOW | PERMANENT.
+    v3 H2H granular (2026-04-29): chave passa a incluir opponent. Cada matchup
+    tem estado independente. Logica em src/core/blocked_lines.py — esta repo
+    so persiste/le. Estados validos: ACTIVE | SHADOW | PERMANENT.
     """
 
-    async def get(self, player: str, line: str) -> Optional[BlockedLine]:
+    async def get(
+        self, player: str, line: str, opponent: str
+    ) -> Optional[BlockedLine]:
         async with self._session() as session:
             stmt = (
                 select(BlockedLine)
-                .where(BlockedLine.player == player, BlockedLine.line == line)
+                .where(
+                    BlockedLine.player == player,
+                    BlockedLine.line == line,
+                    BlockedLine.opponent == opponent,
+                )
             )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
@@ -1669,6 +1676,7 @@ class BlockedLineRepository(_BaseRepository):
         *,
         player: str,
         line: str,
+        opponent: str,
         state: str,
         block_count: int,
         shadow_start_pl: Optional[float] = None,
@@ -1679,13 +1687,18 @@ class BlockedLineRepository(_BaseRepository):
         async with self._session() as session:
             stmt = (
                 select(BlockedLine)
-                .where(BlockedLine.player == player, BlockedLine.line == line)
+                .where(
+                    BlockedLine.player == player,
+                    BlockedLine.line == line,
+                    BlockedLine.opponent == opponent,
+                )
             )
             existing = (await session.execute(stmt)).scalar_one_or_none()
             if existing is None:
                 bl = BlockedLine(
                     player=player,
                     line=line,
+                    opponent=opponent,
                     state=state,
                     block_count=block_count,
                     shadow_start_pl=shadow_start_pl,
@@ -1712,25 +1725,30 @@ class BlockedLineRepository(_BaseRepository):
             return existing
 
     async def list_blocked(self) -> List[BlockedLine]:
-        """Retorna todos com state in (SHADOW, PERMANENT) ordenados por player, line."""
+        """Retorna todos com state in (SHADOW, PERMANENT) ordenados por
+        player, line, opponent."""
         async with self._session() as session:
             stmt = (
                 select(BlockedLine)
                 .where(BlockedLine.state.in_(("SHADOW", "PERMANENT")))
-                .order_by(BlockedLine.player, BlockedLine.line)
+                .order_by(BlockedLine.player, BlockedLine.line, BlockedLine.opponent)
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
     async def list_all(self) -> List[BlockedLine]:
         async with self._session() as session:
-            stmt = select(BlockedLine).order_by(BlockedLine.player, BlockedLine.line)
+            stmt = select(BlockedLine).order_by(
+                BlockedLine.player, BlockedLine.line, BlockedLine.opponent
+            )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def is_suppressed(self, player: str, line: str) -> bool:
-        """Quick check: a linha desse jogador esta bloqueada?"""
-        bl = await self.get(player, line)
+    async def is_suppressed(
+        self, player: str, line: str, opponent: str
+    ) -> bool:
+        """Quick check: o matchup (player, line, opp) esta bloqueado?"""
+        bl = await self.get(player, line, opponent)
         return bl is not None and bl.state in ("SHADOW", "PERMANENT")
 
 

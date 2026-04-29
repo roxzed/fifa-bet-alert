@@ -315,8 +315,11 @@ class OddsMonitor:
                     continue
 
                 try:
+                    # Timing instrumentation (2026-04-29 — diagnose latencia)
+                    _t0 = time.monotonic()
                     # Buscar odds bet365 do jogador (com fuzzy matching)
                     loser_odds, bet365_url, matched_ev = await self._fetch_loser_odds(return_match, loser)
+                    _t_fetch = time.monotonic()
 
                     if loser_odds is None and matched_ev is None:
                         await asyncio.sleep(interval)
@@ -361,12 +364,14 @@ class OddsMonitor:
                         # Get opening odds (necessário para eval)
                         over25_opening = None
                         history = []
+                        _t_hist_start = time.monotonic()
                         try:
                             history = await self.odds_repo.get_history(match_id, loser, "over_2.5")
                             if history:
                                 over25_opening = history[0].odds_value
                         except Exception:
                             pass
+                        _t_hist = time.monotonic()
 
                         sent, was_suppressed = await self.alert_engine.evaluate_and_alert(
                             return_match=return_match,
@@ -385,6 +390,19 @@ class OddsMonitor:
                             bet365_url=bet365_url or "",
                             suppressed_already_recorded=suppressed_recorded,
                         )
+                        _t_eval = time.monotonic()
+                        # Timing log: so quando algo aconteceu (alert ou suppressed)
+                        # ou quando o pipeline demorou >2s — pra nao inundar logs.
+                        _total = _t_eval - _t0
+                        if sent or was_suppressed or _total > 2.0:
+                            logger.bind(category="latency").info(
+                                f"[LAT] match={match_id} loser={loser} "
+                                f"fetch={_t_fetch - _t0:.2f}s "
+                                f"hist={_t_hist - _t_hist_start:.2f}s "
+                                f"eval+alert={_t_eval - _t_hist:.2f}s "
+                                f"total={_total:.2f}s "
+                                f"sent={sent} supp={was_suppressed}"
+                            )
                         if sent:
                             alert_sent = True
                             logger.info(f"Alert sent for return match {match_id}")
@@ -504,15 +522,16 @@ class OddsMonitor:
                 logger.debug(f"Watch {match_id}: sem candidato, skip")
                 return
 
-            # 2026-04-28 fix: skip watch se a (target_player, line) esta em
-            # SHADOW/PERMANENT. Sem isso o watcher promete um alerta que nunca
-            # vai chegar (o alert_engine vai suprimir). H2H_WHITELIST override
-            # mantido pra casos liberados manualmente.
+            # 2026-04-28 fix + 2026-04-29 v3 H2H granular: skip watch se
+            # (target_player, line, opponent) esta em SHADOW/PERMANENT.
+            # is_suppressed agora exige opponent (state machine por matchup).
             blocked_repo = getattr(self.alert_engine, "blocked", None)
             candidate_line = candidate.get("line")
             if blocked_repo is not None and candidate_line:
                 try:
-                    is_supp = await blocked_repo.is_suppressed(loser, candidate_line)
+                    is_supp = await blocked_repo.is_suppressed(
+                        loser, candidate_line, winner
+                    )
                 except Exception as e:
                     logger.warning(
                         f"Watch {match_id}: is_suppressed falhou ({e}), prosseguindo"
@@ -524,7 +543,8 @@ class OddsMonitor:
                         is_supp = False
                 if is_supp:
                     logger.info(
-                        f"Watch {match_id}: skip — {loser}/{candidate_line} "
+                        f"Watch {match_id}: skip — "
+                        f"{loser}/{candidate_line}/vs.{winner} "
                         f"esta suprimida (auto-block); pre-alerta nao seria honrado"
                     )
                     return

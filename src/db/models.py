@@ -619,17 +619,23 @@ class PlayerTeamPreference(Base):
 
 
 # ---------------------------------------------------------------------------
-# BlockedLine — auto-block per (player, line) M1, state machine de 2 strikes.
-# Strike 1: PL_acumulado <= -3u  -> SHADOW (alertas salvos com suppressed=TRUE).
-# Unblock:  shadow_pl >= +1u E shadow_n >= 5  -> ACTIVE (block_count=1).
-# Strike 2: PL_acumulado <= -2u apos unblock  -> PERMANENT (nunca volta).
-# Sem reset de strikes. Ver src/core/blocked_lines.py para a state machine.
+# BlockedLine — auto-block per (player, line, opponent) M1.
+# v3 H2H granular (2026-04-29): chave inclui opponent — cada matchup tem
+# state machine independente. Mantem PLAYER_CLIFF agregado.
+# Filtros: BLOCK PL<=-1.5u (n>=0) | LINE_CLIFF -2u/n>=3 |
+#          PLAYER_CLIFF -2.5u/n>=3 | UNBLOCK +1u (n>=0) | TIMEOUT 30d.
+# Ver src/core/blocked_lines.py para a state machine.
 # ---------------------------------------------------------------------------
 class BlockedLine(Base):
     __tablename__ = "blocked_lines"
 
     player: Mapped[str] = mapped_column(String, primary_key=True)
     line: Mapped[str] = mapped_column(String, primary_key=True)  # over15/over25/over35/over45
+    # v3 (2026-04-29): granular por oponente. Default "" pra back-compat de
+    # registros antigos durante migracao.
+    opponent: Mapped[str] = mapped_column(
+        String, primary_key=True, nullable=False, server_default=""
+    )
     state: Mapped[str] = mapped_column(String, nullable=False, default="ACTIVE")
     block_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     shadow_start_pl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -642,11 +648,13 @@ class BlockedLine(Base):
 
     __table_args__ = (
         Index("ix_blocked_lines_state", "state"),
+        Index("ix_blocked_lines_player_line", "player", "line"),
+        Index("ix_blocked_lines_opponent", "opponent"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<BlockedLine({self.player!r}, {self.line!r}, "
+            f"<BlockedLine({self.player!r}, {self.line!r}, vs={self.opponent!r}, "
             f"state={self.state}, strikes={self.block_count})>"
         )
 

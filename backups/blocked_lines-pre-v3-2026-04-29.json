@@ -1,0 +1,137 @@
+{
+  "rows": [
+    {
+      "player": "LaikingDast",
+      "line": "over25",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-2.2",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:08.086657"
+    },
+    {
+      "player": "Bomb1to",
+      "line": "over35",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-2.01666666666667",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:08.625177"
+    },
+    {
+      "player": "Kivu17",
+      "line": "over25",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-2.5",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:09.090388"
+    },
+    {
+      "player": "Kivu17",
+      "line": "over15",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-0.518518518518519",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:09.552314"
+    },
+    {
+      "player": "Cira",
+      "line": "over15",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-1.16666666666667",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:10.017101"
+    },
+    {
+      "player": "dor1an",
+      "line": "over25",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-8.71138716356108",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:10.481043"
+    },
+    {
+      "player": "cappo",
+      "line": "over15",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-2.31034482758621",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:10.943898"
+    },
+    {
+      "player": "hit",
+      "line": "over25",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-5",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:11.408954"
+    },
+    {
+      "player": "volvo",
+      "line": "over25",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "2.33666666666667",
+      "shadow_start_at": "2026-04-28T02:56:07.679397",
+      "last_block_at": "2026-04-28T02:56:07.679397",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T02:56:11.873738"
+    },
+    {
+      "player": "nikkitta",
+      "line": "over15",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-1.31034482758621",
+      "shadow_start_at": "2026-04-28T06:14:14.308538",
+      "last_block_at": "2026-04-28T06:14:14.308538",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T06:14:14.707726"
+    },
+    {
+      "player": "Jekunam",
+      "line": "over15",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-1.82068965517241",
+      "shadow_start_at": "2026-04-28T08:24:14.310404",
+      "last_block_at": "2026-04-28T08:24:14.310404",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T08:24:14.707174"
+    },
+    {
+      "player": "Jekunam",
+      "line": "over25",
+      "state": "SHADOW",
+      "block_count": 1.0,
+      "shadow_start_pl": "-0.333333333333333",
+      "shadow_start_at": "2026-04-28T11:24:14.392149",
+      "last_block_at": "2026-04-28T11:24:14.392149",
+      "last_unblock_at": null,
+      "updated_at": "2026-04-28T11:24:14.770017"
+    }
+  ],
+  "count": 12
+}

@@ -737,9 +737,10 @@ class BotCommands:
             await update.message.reply_text(f"Erro: {e}")
 
     async def cmd_blocked(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/blocked - Lista linhas (jogador, over) bloqueadas pelo auto-block.
+        """/blocked - Lista matchups (jogador, linha, oponente) bloqueados.
 
-        Read-only. Mostra state, strikes, PL atual e progresso de unblock.
+        v3 H2H granular (2026-04-29): cada (player, line, opponent) tem state
+        machine independente. Read-only.
         """
         try:
             from src.db.database import async_session_factory
@@ -751,25 +752,26 @@ class BotCommands:
 
             if not statuses:
                 await update.message.reply_text(
-                    "🟢 Nenhuma linha bloqueada no momento."
+                    "🟢 Nenhum matchup bloqueado no momento."
                 )
                 return
 
             line_label = {"over15": "O1.5", "over25": "O2.5",
                           "over35": "O3.5", "over45": "O4.5"}
 
-            lines = ["🔒 <b>LINHAS BLOQUEADAS</b>", ""]
+            lines = ["🔒 <b>MATCHUPS BLOQUEADOS</b>", ""]
             for s in statuses:
                 emoji = "⛔" if s["state"] == "PERMANENT" else "🔇"
                 player = s["player"]
                 line = line_label.get(s["line"], s["line"])
+                opp = s["opponent"] or "?"
                 pl = s["pl_total"]
                 n = s["n_total"]
                 strikes = s["block_count"]
 
                 if s["state"] == "PERMANENT":
                     lines.append(
-                        f"{emoji} <b>{player}</b> {line}  "
+                        f"{emoji} <b>{player}</b> {line} vs {opp}  "
                         f"<i>(strike {strikes} — PERMANENTE)</i>"
                     )
                     lines.append(f"   PL = {pl:+.2f}u em {n} alertas")
@@ -777,18 +779,16 @@ class BotCommands:
                     shadow_pl = s["shadow_pl"]
                     shadow_n = s["shadow_n"]
                     needed_pl = s["needed_pl"]
-                    needed_n = s["needed_n"]
                     pl_ok = "✓" if shadow_pl >= needed_pl else "✗"
-                    n_ok = "✓" if shadow_n >= needed_n else "✗"
                     lines.append(
-                        f"{emoji} <b>{player}</b> {line}  "
+                        f"{emoji} <b>{player}</b> {line} vs {opp}  "
                         f"<i>(strike {strikes})</i>"
                     )
                     lines.append(f"   PL total = {pl:+.2f}u em {n} alertas")
                     lines.append(
                         f"   shadow = {shadow_pl:+.2f}u {pl_ok} / "
-                        f"{shadow_n} alerts {n_ok}  "
-                        f"(precisa ≥ +{needed_pl:.0f}u E ≥ {needed_n})"
+                        f"{shadow_n} alerts  "
+                        f"(precisa ≥ +{needed_pl:.0f}u)"
                     )
                 lines.append("")
 

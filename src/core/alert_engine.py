@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -76,6 +77,9 @@ class AlertEngine:
 
         kickoff = return_match.started_at
 
+        # Timing instrumentation (2026-04-29 — diagnose latencia)
+        _t0 = time.monotonic()
+
         evaluation = await self.stats.evaluate_opportunity(
             losing_player=loser,
             opponent_player=winner,
@@ -93,8 +97,16 @@ class AlertEngine:
             loser_goals_g1=loser_goals_g1,
             loser_was_home_g1=loser_was_home_g1,
         )
+        _t_eval = time.monotonic()
 
         if not evaluation.should_alert:
+            # Log timing tambem no caminho "no alert" se demorar - ajuda a achar
+            # gargalos do stats_engine mesmo quando nao gera alerta.
+            if _t_eval - _t0 > 2.0:
+                logger.bind(category="latency").info(
+                    f"[LAT-eval] loser={loser} stats={_t_eval - _t0:.2f}s "
+                    f"reason={evaluation.reason}"
+                )
             logger.info(f"No alert for {loser}: {evaluation.reason}")
             return (False, False)
 
@@ -129,21 +141,19 @@ class AlertEngine:
             logger.info(f"No alert for {loser}: no lines with edge")
             return (False, False)
 
-        # 2026-04-26 fix: checar auto-block ANTES de escolher best_over.
-        # Antes: pegava max(EV) dos over_lines, e se essa linha estivesse em
-        # SHADOW, suprimia o alerta. Mas isso bloqueava OUTRAS linhas que NAO
-        # estavam suprimidas (loser pode ter over_2.5 SHADOW mas over_1.5 ACTIVE).
-        # Agora: filtra over_lines pra remover linhas suprimidas e escolhe o best
-        # entre os ACTIVE. Se TODAS as linhas estao suprimidas, registra suppressed
-        # alert (1x por match, controlado pelo caller via suppressed_already_recorded).
+        # 2026-04-29 v3 H2H granular: is_suppressed agora exige opponent.
+        # Cada (loser, line, winner) tem state machine independente.
+        # H2H_WHITELIST override mantido (libera matchup especifico).
         suppressed_lines: set[str] = set()
         if over_lines and self.blocked is not None:
             for ol in over_lines:
                 ln = ol["line"]
                 try:
-                    is_supp = await self.blocked.is_suppressed(loser, ln)
+                    is_supp = await self.blocked.is_suppressed(loser, ln, winner)
                 except Exception as e:
-                    logger.warning(f"is_suppressed check failed for {loser}/{ln}: {e}")
+                    logger.warning(
+                        f"is_suppressed check failed for {loser}/{ln}/vs.{winner}: {e}"
+                    )
                     is_supp = False
                 # H2H Whitelist override: matchup especifico libera apesar do shadow
                 if is_supp and (loser, winner, ln) in self.stats.H2H_WHITELIST:
@@ -235,6 +245,7 @@ class AlertEngine:
             streak=evaluation.streak,
             p_g1_goals=evaluation.p_g1_goals,
         )
+        _t_create = time.monotonic()
 
         # Dados base compartilhados entre Over e ML
         base_data = {
@@ -426,6 +437,18 @@ class AlertEngine:
         # OddsMonitor usa pra decidir se trava futuras avaliacoes (sent=True)
         # ou continua tentando outras linhas (sent=False mas was_suppressed=True).
         sent_to_vip = message_id is not None
+
+        # Timing instrumentation
+        _t_send = time.monotonic()
+        logger.bind(category="latency").info(
+            f"[LAT-eval+alert] alert#{alert.id} loser={loser} "
+            f"stats_eval={_t_eval - _t0:.2f}s "
+            f"alert_create={_t_create - _t_eval:.2f}s "
+            f"send_total={_t_send - _t_create:.2f}s "
+            f"total={_t_send - _t0:.2f}s "
+            f"sent={sent_to_vip} supp={suppressed}"
+        )
+
         return (sent_to_vip, suppressed)
 
     @staticmethod
