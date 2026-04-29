@@ -34,8 +34,12 @@ from src.db.repositories import BlockedLineRepository
 CUTOFF_UTC = datetime(2026, 4, 15, 1, 7, 0)
 
 # v3 H2H granular (2026-04-29) — owner aprovou
+# 2026-04-29 (tarde): owner trocou BLOCK PL <= -1.5u  ->  PL < -1.0u
+# (sinal estrito). Bloqueia em PL entre -1.01u e -1.49u (que antes nao
+# capturava). Custo simulado: -2.54u/14d em janela in-sample. Owner aceita
+# trade-off por defesa mais agressiva.
 ROLLING_WINDOW = 20
-STRIKE1_BLOCK_PL = -1.5         # rolling PL threshold
+STRIKE1_BLOCK_PL = -1.0         # rolling PL threshold (estrito: PL < threshold)
 STRIKE1_BLOCK_N = 0             # sem amostra minima (basta PL bater)
 LINE_CLIFF_PL = -2.0            # PL dia BRT no matchup
 LINE_CLIFF_N = 3                # alertas dia BRT no matchup
@@ -206,9 +210,11 @@ async def recompute_all_states(
                 # 2) LINE CLIFF: por matchup (3 alertas dia, -2u)
                 elif line_day_n >= LINE_CLIFF_N and line_day_pl <= LINE_CLIFF_PL:
                     triggered = "line_cliff"
-                # 3) Rolling: pl <= -1.5u (n>=0, sem minimo)
+                # 3) Rolling: pl < -1.0u (estrito, n>=0, sem amostra minima)
+                #    Owner pediu sinal estrito 2026-04-29: rolling_pl < -1u
+                #    captura drains entre -1.01u e -1.49u que antes escapavam.
                 elif (rolling_n >= STRIKE1_BLOCK_N
-                        and rolling_pl <= STRIKE1_BLOCK_PL):
+                        and rolling_pl < STRIKE1_BLOCK_PL):
                     triggered = "rolling"
 
                 if triggered is not None:
