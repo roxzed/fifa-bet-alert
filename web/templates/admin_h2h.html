@@ -152,7 +152,7 @@
     {% for c in blocked_cells %}
     <div class="blocked-card" {% if c.state == 'PERMANENT' %}style="border-left-color: #6A1B9A"{% endif %}>
       <div class="header">
-        {{ c.player }} {{ c.line|replace('over', 'O').replace('15','1.5').replace('25','2.5').replace('35','3.5').replace('45','4.5') }}
+        {{ c.player }} {{ c.line|replace('over15', 'O1.5')|replace('over25', 'O2.5')|replace('over35', 'O3.5')|replace('over45', 'O4.5') }}
         vs {{ c.opponent }}
         <span class="blocked-tag {% if c.state == 'PERMANENT' %}permanent{% endif %}">{{ c.state }}</span>
       </div>
