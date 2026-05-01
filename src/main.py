@@ -248,9 +248,11 @@ async def main() -> None:
     # --- Scheduler ---
     scheduler = TaskScheduler()
 
-    # Retry pending pair matches every 5 min (otimizado: 1 fetch serve todos os pares)
+    # Retry pending pair matches every 60s — 5 min era tarde demais: G2 so aparece
+    # nos upcoming events ~poucos minutos antes do kickoff, fazendo o watch T-90s
+    # abortar ("kickoff ja passou"). Com 60s o pair e detectado a tempo.
     scheduler.add_interval_task(
-        pair_matcher.retry_pending, seconds=300, task_id="retry_pending_pairs"
+        pair_matcher.retry_pending, seconds=60, task_id="retry_pending_pairs"
     )
 
     # Daily results at 23:50 (same format as /results command)
