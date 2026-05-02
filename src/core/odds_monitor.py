@@ -562,6 +562,7 @@ class OddsMonitor:
                 "line_label": candidate["line_label"],
                 "target_player": candidate["target_player"],
                 "target_odds": candidate["target_odds"],
+                "lines": candidate.get("lines") or [],
             }
             notifier = self.alert_engine.notifier
             await notifier.send_watch(

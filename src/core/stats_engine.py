@@ -1312,6 +1312,18 @@ class StatsEngine:
         best, target = max(candidates, key=lambda x: x[0].true_prob_conservative)
 
         line_labels = {"over15": "over 1.5", "over25": "over 2.5", "over35": "over 3.5"}
+        all_lines = [
+            {
+                "line": le.line,
+                "line_label": line_labels.get(le.line, le.line),
+                "target_odds": tgt,
+                "predicted_tp": le.true_prob_conservative,
+                "would_alert_at_target": le.should_alert,
+            }
+            for le, tgt in sorted(
+                candidates, key=lambda x: x[0].true_prob_conservative, reverse=True
+            )
+        ]
         return {
             "line": best.line,
             "line_label": line_labels.get(best.line, best.line),
@@ -1319,6 +1331,7 @@ class StatsEngine:
             "target_player": losing_player,
             "predicted_tp": best.true_prob_conservative,
             "would_alert_at_target": best.should_alert,
+            "lines": all_lines,
         }
 
     # ------------------------------------------------------------------

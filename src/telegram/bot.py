@@ -574,7 +574,7 @@ class TelegramNotifier:
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
-                disable_notification=True,
+                disable_notification=False,
             )
             sent.append((self.chat_id, msg.message_id))
             main_msg_id = msg.message_id
@@ -589,7 +589,7 @@ class TelegramNotifier:
                     text=text,
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
-                    disable_notification=True,
+                    disable_notification=False,
                 )
                 sent.append((self._group_chat_id, gmsg.message_id))
             except TelegramError as e:
