@@ -40,14 +40,8 @@ MIN_GAMES_C2 = 15  # era 10. Auditoria 25/04: 6-14 jogos = -11.71u em 61 alertas
 # nekishka over15: -4.00u em 4 (0%). nikkitta over25: -2.29u em 4 (25%).
 # Simaponika over15: -2.26u em 61 (56%) — n grande sample, sinal real.
 # A1ose: 3 alertas total 0% WR -3u.
-BLOCKED_LINES_V2: dict[str, set[str]] = {
-    "Stormi":     {"over15"},
-    "Jekunam":    {"over15"},
-    "nekishka":   {"over15"},
-    "nikkitta":   {"over25"},
-    "Simaponika": {"over15"},
-    "A1ose":      {"over15", "over25", "over35", "over45"},  # todos
-}
+# 2026-05-02: esvaziado por pedido do owner. Tudo via SHADOW V2.
+BLOCKED_LINES_V2: dict[str, set[str]] = {}
 
 
 @dataclass

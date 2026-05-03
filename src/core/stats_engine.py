@@ -306,12 +306,67 @@ class StatsEngine:
         self.team_stats = team_stats_repo
         # MELHORIA 2: Cache em memória com TTL de 5 minutos
         self._cache = _StatsCache(ttl_seconds=300.0)
+        # 2026-04-29 PERF: caches leves pra player profiles e team stats
+        # (TTL 60s — atualizam apos cada G2 validado mas em rodadas curtas
+        # sao razoavelmente estaveis).
+        self._player_profile_cache: dict[str, tuple[float, object]] = {}
+        self._team_stats_cache: dict[str, tuple[float, object]] = {}
+        self._matchup_stats_cache: dict[tuple[str, str], tuple[float, object]] = {}
+        self._player_team_pref_cache: dict[tuple[str, str], tuple[float, object]] = {}
+        self._minor_cache_ttl: float = 60.0
         # Cache da blacklist dinâmica (TTL 15 min para não consultar DB toda vez)
         self._dynamic_blacklist: set[str] = set()
         self._dynamic_blacklist_expires: float = 0.0
         # Cache de jogadores com histórico positivo (para filtro de horário)
         self._positive_players: set[str] = set()
         self._positive_players_expires: float = 0.0
+
+    # 2026-04-29 PERF: helpers de cache TTL pra reduzir round-trips DB
+    async def _cached_get_profile(self, player_name: str):
+        """get_profile com cache TTL 60s."""
+        import time as _t
+        now = _t.monotonic()
+        entry = self._player_profile_cache.get(player_name)
+        if entry and now < entry[0]:
+            return entry[1]
+        profile = await self.players.get_profile(player_name)
+        self._player_profile_cache[player_name] = (now + self._minor_cache_ttl, profile)
+        return profile
+
+    async def _cached_team_stat(self, team_name: str):
+        """team_stats.get_or_create com cache TTL 60s."""
+        import time as _t
+        now = _t.monotonic()
+        entry = self._team_stats_cache.get(team_name)
+        if entry and now < entry[0]:
+            return entry[1]
+        ts = await self.team_stats.get_or_create(team_name)
+        self._team_stats_cache[team_name] = (now + self._minor_cache_ttl, ts)
+        return ts
+
+    async def _cached_matchup(self, team_a: str, team_b: str):
+        """team_stats.get_matchup_stats com cache TTL 60s."""
+        import time as _t
+        now = _t.monotonic()
+        key = (team_a, team_b)
+        entry = self._matchup_stats_cache.get(key)
+        if entry and now < entry[0]:
+            return entry[1]
+        m = await self.team_stats.get_matchup_stats(team_a, team_b)
+        self._matchup_stats_cache[key] = (now + self._minor_cache_ttl, m)
+        return m
+
+    async def _cached_player_team_pref(self, player_name: str, team_name: str):
+        """team_stats.get_player_team_preference com cache TTL 60s."""
+        import time as _t
+        now = _t.monotonic()
+        key = (player_name, team_name)
+        entry = self._player_team_pref_cache.get(key)
+        if entry and now < entry[0]:
+            return entry[1]
+        p = await self.team_stats.get_player_team_preference(player_name, team_name)
+        self._player_team_pref_cache[key] = (now + self._minor_cache_ttl, p)
+        return p
 
     # ------------------------------------------------------------------
     # Blacklist dinâmica e jogadores positivos (cache com TTL)
@@ -599,7 +654,7 @@ class StatsEngine:
             n_player = p_player_stat.total_samples if p_player_stat else 0
             # Fallback: Player table
             try:
-                profile = await self.players.get_profile(losing_player)
+                profile = await self._cached_get_profile(losing_player)
                 if profile and profile.total_return_matches >= settings.min_player_sample:
                     o15_loss = getattr(profile, "over15_after_loss", 0) or 0
                     p_player_15 = bayesian_update(7, 10, o15_loss, profile.total_return_matches)
@@ -1370,10 +1425,10 @@ class StatsEngine:
     # aqui antes (A1ose, Boulevard, Kavviro, Kot, R0ge, Revange, SPACE, V1nn,
     # hit, maksdh) saem pro auto-block per-line — state machine vai colocar em
     # SHADOW automaticamente baseado no PL real de cada linha.
-    PLAYER_BLACKLIST: set[str] = {
-        "Stormi",    # 2026-04-24: saiu dynamic blacklist e voltou a dar RED
-        "dor1an",    # 2026-04-26: drain consistente
-    }
+    # 2026-05-02: PLAYER_BLACKLIST esvaziada por pedido do owner.
+    # Tudo passa a ser gerenciado pelo SHADOW protocol (auto-block per
+    # player+line+opponent baseado em PL real).
+    PLAYER_BLACKLIST: set[str] = set()
 
     # Protocolo SWAP_TO_OVER15 removido em 2026-04-26 por pedido do owner.
     # Os 3 players que estavam aqui (pikalicaaa, Jekunam, RossFCDK) agora sao
@@ -1392,14 +1447,8 @@ class StatsEngine:
     # Auditoria mostrou que as regras manuais home/away tinham bug (logica invertida)
     # e premissas erradas (ex: volvo AWAY era positivo, nao desastroso).
     # Auto-block usa PL real por linha — autocorrige sem necessidade de regra manual.
-    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {
-        # 2026-04-26: bloqueios por linha solicitados pelo owner
-        "LaikingDast": {"block_lines": {"over15", "over25"}},
-        "nekishka":    {"block_lines": {"over25"}},
-        "Bomb1to":     {"block_lines": {"over35"}},
-        "nikkitta":    {"block_lines": {"over25"}},
-        "labotryas":   {"block_lines": {"over25"}},
-    }
+    # 2026-05-02: esvaziada por pedido do owner. Tudo via SHADOW.
+    PLAYER_CONDITIONAL_BLACKLIST: dict[str, dict] = {}
 
     # Jogadores com O2.5 >= 62% em G2 (n>=90, dados calibrados)
     # V1nn removido: WR=33% em producao (05-14/Abr), movido para blacklist
@@ -1629,7 +1678,7 @@ class StatsEngine:
             return (1.0, 0)
         try:
             # Tentar tabela pré-computada primeiro (rápido)
-            pref = await self.team_stats.get_player_team_preference(player_name, team_name)
+            pref = await self._cached_player_team_pref(player_name, team_name)
             if pref and pref.times_used >= 5:
                 combo_avg = pref.avg_goals_with
                 # Buscar média geral do jogador para comparar
@@ -1734,14 +1783,24 @@ class StatsEngine:
             return {"n": 0, "o15_rate": 0.0, "o25_rate": 0.0, "o35_rate": 0.0,
                     "o45_rate": 0.0, "avg_goals": 0.0}
         try:
+            # 2026-04-29 PERF: troquei N+1 (1 query G2 + N queries G1) por
+            # JOIN unico G2+G1. Reduz ~15 queries -> 1 query em sample
+            # tipico. Ganho medido: ~0.5-1s por evaluate_opportunity.
             from sqlalchemy import select, or_, and_, desc
+            from sqlalchemy.orm import aliased
             from src.db.models import Match as MatchModel
 
+            G1 = aliased(MatchModel)
             stmt = (
-                select(MatchModel)
+                select(MatchModel, G1)
+                .join(G1, MatchModel.pair_match_id == G1.id)
                 .where(
                     MatchModel.is_return_match == True,  # noqa: E712
                     MatchModel.score_home.is_not(None),
+                    MatchModel.pair_match_id.is_not(None),
+                    G1.score_home.is_not(None),
+                    G1.score_away.is_not(None),
+                    G1.score_home != G1.score_away,  # nao empate
                     or_(
                         and_(
                             MatchModel.player_home == losing_player,
@@ -1757,7 +1816,7 @@ class StatsEngine:
                 .limit(n * 3)  # buffer pra filtrar quem perdeu G1
             )
             result = await self.matches.execute_query(stmt)
-            g2_candidates = result.scalars().all()
+            rows = result.all()  # [(g2, g1), ...]
         except Exception as exc:
             logger.warning(
                 f"Erro recent_h2h_form {losing_player} vs {opponent_player}: {exc}"
@@ -1765,19 +1824,9 @@ class StatsEngine:
             return {"n": 0, "o15_rate": 0.0, "o25_rate": 0.0, "o35_rate": 0.0,
                     "o45_rate": 0.0, "avg_goals": 0.0}
 
-        # Pra cada G2, verificar se losing_player era loser do G1 pareado
+        # Filtrar G2s onde losing_player foi o loser de G1
         qualifying_goals: list[int] = []
-        for g2 in g2_candidates:
-            if not g2.pair_match_id:
-                continue
-            try:
-                g1 = await self.matches.get_by_id(g2.pair_match_id)
-            except Exception:
-                continue
-            if not g1 or g1.score_home is None or g1.score_away is None:
-                continue
-            if g1.score_home == g1.score_away:
-                continue
+        for g2, g1 in rows:
             if g1.score_home > g1.score_away:
                 loser_g1 = g1.player_away
             else:
@@ -1957,7 +2006,7 @@ class StatsEngine:
         Returns: (is_new, total_return_matches)
         """
         try:
-            profile = await self.players.get_profile(player_name)
+            profile = await self._cached_get_profile(player_name)
             if not profile:
                 return (True, 0)
             total = profile.total_return_matches or 0
@@ -2271,7 +2320,7 @@ class StatsEngine:
             r45 = bayesian_update(int(0.20 * 10), 10, stat.over45_hits, stat.total_samples)
             return (r25, r35, r45, stat.total_samples)
         try:
-            profile = await self.players.get_profile(player_name)
+            profile = await self._cached_get_profile(player_name)
             if profile and profile.total_return_matches >= settings.min_player_sample:
                 r25 = bayesian_update(5, 10, profile.over25_after_loss, profile.total_return_matches)
                 r35 = bayesian_update(3, 10, profile.over35_after_loss, profile.total_return_matches)
@@ -2370,13 +2419,13 @@ class StatsEngine:
         try:
             # 1. Matchup especifico
             if opponent_team:
-                matchup = await self.team_stats.get_matchup_stats(team_name, opponent_team)
+                matchup = await self._cached_matchup(team_name, opponent_team)
                 if matchup and matchup.total_games >= settings.min_team_sample:
                     return (matchup.over25_rate, matchup.total_games)
 
             # 2. Player+team combo (mais valioso que time generico)
             if player_name:
-                pref = await self.team_stats.get_player_team_preference(player_name, team_name)
+                pref = await self._cached_player_team_pref(player_name, team_name)
                 if pref and pref.times_used >= 5:
                     # avg_goals_with é média de gols do jogador com este time
                     # Converter para proxy de over25_rate: P(goals > 2)
@@ -2386,7 +2435,7 @@ class StatsEngine:
                     return (over25_proxy, pref.times_used)
 
             # 3. Team generico
-            team_stat = await self.team_stats.get_or_create(team_name)
+            team_stat = await self._cached_team_stat(team_name)
             if team_stat.total_games >= settings.min_team_sample:
                 return (team_stat.over25_rate, team_stat.total_games)
 
@@ -2416,17 +2465,24 @@ class StatsEngine:
         Uses best_line_hits (hit pela linha que foi alertada) em vez de
         over25_hit fixo, para nao penalizar alertas de O1.5 que acertam
         mas nao batem O2.5.
+
+        2026-04-29 PERF: cache 5min — regime nao muda a cada poll.
         """
+        import time as _t
+        cached = getattr(self, "_regime_cache", None)
+        if cached is not None and _t.monotonic() < cached[0]:
+            return cached[1]
         try:
             recent = await self.alerts.get_period_stats(days=settings.regime_window)
             validated = recent.get("validated", 0)
             if validated < 20:
-                return {"status": "HEALTHY", "z_score": 0.0, "recent_rate": 0.0,
-                        "message": "Insufficient data", "action": "Collect more data"}
+                result = {"status": "HEALTHY", "z_score": 0.0, "recent_rate": 0.0,
+                          "message": "Insufficient data", "action": "Collect more data"}
+                self._regime_cache = (_t.monotonic() + 300.0, result)
+                return result
 
             best_hits = recent.get("best_line_hits", 0)
             recent_rate = best_hits / validated
-            # Taxa historica esperada: ~60% (baseline do metodo)
             historical_rate = 0.60
 
             result = detect_regime_change(
@@ -2436,6 +2492,7 @@ class StatsEngine:
                 z_threshold_warning=settings.regime_warning_z,
                 z_threshold_degraded=settings.regime_degraded_z,
             )
+            self._regime_cache = (_t.monotonic() + 300.0, result)  # 5min TTL
             return result
         except Exception:
             return {"status": "HEALTHY", "z_score": 0.0, "recent_rate": 0.0,
@@ -2446,9 +2503,22 @@ class StatsEngine:
     # ------------------------------------------------------------------
 
     async def is_cold_start_complete(self) -> bool:
-        """Returns True if we have 90+ days of data."""
+        """Returns True if we have 90+ days of data.
+
+        2026-04-29 PERF: cache 30min — uma vez true, fica true. Antes esta
+        funcao chamava get_cold_start_progress que faz 4 queries pesadas
+        (count_total, count_pairs, count_unique, get_oldest_match_date)
+        em tabela com dezenas de milhares de rows. Era o gargalo do gather.
+        """
+        import time as _t
+        cached = getattr(self, "_cold_start_cache", None)
+        if cached is not None and _t.monotonic() < cached[0]:
+            return cached[1]
         progress = await self.get_cold_start_progress()
-        return progress.is_complete
+        complete = progress.is_complete
+        # TTL 30min — depois de complete, fica true sempre
+        self._cold_start_cache = (_t.monotonic() + 1800.0, complete)
+        return complete
 
     async def get_cold_start_progress(self) -> ColdStartProgress:
         """Compute cold start collection progress."""

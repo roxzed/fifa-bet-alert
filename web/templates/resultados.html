@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Resultados - Lenda_BOT</title>
+    <title>Resultados - LENDA BOT</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -87,8 +87,8 @@
 <nav class="glass sticky top-0 z-50 border-b border-gray-800">
     <div class="max-w-[1400px] mx-auto px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between">
         <div class="flex items-center gap-2 sm:gap-3">
-            <img src="/static/logo.png" alt="Lenda_BOT" class="logo-img w-7 h-7 sm:w-9 sm:h-9 rounded-lg" />
-            <span class="text-base sm:text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">Lenda_BOT</span>
+            <img src="/static/logo.png" alt="LENDA BOT" class="logo-img w-7 h-7 sm:w-9 sm:h-9 rounded-lg" />
+            <span class="text-base sm:text-xl font-bold bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">LENDA BOT</span>
             <span class="text-[10px] text-gray-500 bg-gray-800 px-1.5 sm:px-2 py-0.5 rounded hidden sm:inline">LIVE</span>
         </div>
         <div class="flex items-center gap-2 sm:gap-4">
@@ -179,7 +179,7 @@
                 </thead>
                 <tbody>
                 {% for a in passed | sort(attribute='datetime', reverse=true) %}
-                <tr class="border-b border-gray-800/40 {% if a.hit %}row-green{% elif a.hit == false %}row-red{% endif %}"
+                <tr class="border-b border-gray-800/40 {% if a.cancelled %}{% elif a.hit %}row-green{% elif a.hit == false %}row-red{% endif %}"
                     data-search="{{ a.player|lower }} {{ a.opponent|lower }} {{ a.team|lower }} {{ a.opp_team|lower }}">
                     <td class="py-2 px-2 text-gray-300" data-label="Data">{{ a.date }}</td>
                     <td class="py-2 px-2 text-gray-400" data-label="Hora">{{ a.time }}</td>
@@ -192,7 +192,9 @@
                     <td class="py-2 px-2 text-center text-yellow-300 font-medium" data-label="Odds">{{ a.odds }}</td>
                     <td class="py-2 px-2 text-center text-lg font-bold text-white cell-goals" data-label="Gols G2">{{ a.goals if a.goals is not none else '-' }}</td>
                     <td class="py-2 px-2 text-center cell-result" data-label="Resultado">
-                        {% if a.hit == true %}
+                        {% if a.cancelled %}
+                            <span class="text-orange-400 font-bold">CANCELED</span>
+                        {% elif a.hit == true %}
                             <span class="text-green-400 font-bold">GREEN</span>
                         {% elif a.hit == false %}
                             <span class="text-red-400 font-bold">RED</span>
@@ -200,7 +202,7 @@
                             <span class="text-gray-600">-</span>
                         {% endif %}
                     </td>
-                    <td class="py-2 px-2 text-right font-bold cell-pl {% if a.pl > 0 %}text-green-400{% elif a.pl < 0 %}text-red-400{% else %}text-gray-500{% endif %}" data-label="P/L">
+                    <td class="py-2 px-2 text-right font-bold cell-pl {% if a.cancelled %}text-orange-400{% elif a.pl > 0 %}text-green-400{% elif a.pl < 0 %}text-red-400{% else %}text-gray-500{% endif %}" data-label="P/L">
                         {{ '%+.2f'|format(a.pl) }}
                     </td>
                     <td class="py-2 px-2 text-right text-gray-400" data-label="Acumulado">

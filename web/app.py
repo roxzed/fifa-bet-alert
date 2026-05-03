@@ -83,6 +83,10 @@ LINE_LABELS = {
     "over35": "Over 3.5", "over45": "Over 4.5",
 }
 
+# Alertas cancelados manualmente pelo owner. Ignorados em PL/WR/ROI e
+# exibidos como "CANCELED" no dashboard. Pra cancelar mais, adicionar ID aqui.
+CANCELLED_ALERT_IDS: set[int] = {1436, 1447}
+
 
 def apply_filter(r: dict, sent_local: datetime | None) -> tuple[bool, str]:
     """Return (passed, reason) mirroring production filters.
@@ -391,9 +395,10 @@ def build_dataset(rows: list[dict]) -> dict:
     for r in rows:
         line = r["best_line"] or "over25"
         is_home = r["losing_player"] == r.get("player_home")
-        hit = get_hit(r)
+        cancelled = r["id"] in CANCELLED_ALERT_IDS
+        hit = None if cancelled else get_hit(r)
         odds = get_odds(r)
-        pl = get_profit(r)
+        pl = 0.0 if cancelled else get_profit(r)
 
         loser_team = r.get("team_home") if is_home else r.get("team_away")
         opp_team = r.get("team_away") if is_home else r.get("team_home")
@@ -433,6 +438,7 @@ def build_dataset(rows: list[dict]) -> dict:
             "star": r["star_rating"] or 0,
             "hit": hit,
             "pl": round(pl, 2),
+            "cancelled": cancelled,
             "passed": True,
             "hour": sent_local.hour if sent_local else 0,
             "weekday": WEEKDAYS_PT.get(sent_local.weekday(), "?") if sent_local else "?",
