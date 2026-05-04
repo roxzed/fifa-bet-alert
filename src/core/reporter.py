@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from loguru import logger
 
+from src.core.cancelled_alerts import CANCELLED_ALERT_IDS
+
 
 class Reporter:
     """Generates and sends scheduled performance reports."""
@@ -131,8 +133,14 @@ class Reporter:
             if is_free_alert and scope == "vip":
                 free_total += 1
 
+            # Cancelado pelo owner: nao conta em PL/greens/validated
+            is_cancelled = a.id in CANCELLED_ALERT_IDS
+
             gols = a.actual_goals
-            if gols is not None:
+            if is_cancelled:
+                gols = a.actual_goals if a.actual_goals is not None else "—"
+                resultado = "⚪"
+            elif gols is not None:
                 total_validated += 1
                 thresholds = {"over15": 1, "over25": 2, "over35": 3, "over45": 4}
                 hit = gols > thresholds.get(bl, 2)
@@ -161,7 +169,9 @@ class Reporter:
         header = "Hora  | Jogador      | Linha | Odds   | G | R"
         sep = "—" * 48
 
-        total = len(alerts)
+        # Cancelados nao contam pra "aguardando resultado" nem pro total apostavel
+        cancelled_count = sum(1 for a in alerts if a.id in CANCELLED_ALERT_IDS)
+        total = len(alerts) - cancelled_count
         losses = total_validated - greens
         roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
         roi_emoji = "📈" if total_profit >= 0 else "📉"
