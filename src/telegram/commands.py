@@ -14,6 +14,8 @@ from loguru import logger
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+from src.core.cancelled_alerts import CANCELLED_ALERT_IDS
+
 
 class BotCommands:
     """Handles /commands sent to the bot in Telegram."""
@@ -535,9 +537,15 @@ class BotCommands:
                 if is_free_alert and not is_free:
                     free_total += 1
 
+                # Cancelado pelo owner: nao conta em PL/greens/validated
+                is_cancelled = a.id in CANCELLED_ALERT_IDS
+
                 # Resultado
                 gols = a.actual_goals
-                if gols is not None:
+                if is_cancelled:
+                    gols = a.actual_goals if a.actual_goals is not None else "—"
+                    resultado = "⚪"
+                elif gols is not None:
                     total_validated += 1
                     # Determinar hit
                     if bl == "over15":
@@ -579,8 +587,10 @@ class BotCommands:
             header = "Hora  | Jogador      | Linha | Odds   | G | R"
             sep = "—" * 48
 
-            # ROI VIP (=universo selecionado)
-            total = len(alerts)
+            # ROI VIP (=universo selecionado). Cancelados nao contam pra
+            # "aguardando resultado" nem pro total apostavel.
+            cancelled_count = sum(1 for a in alerts if a.id in CANCELLED_ALERT_IDS)
+            total = len(alerts) - cancelled_count
             losses = total_validated - greens
             roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
             roi_emoji = "📈" if total_profit >= 0 else "📉"

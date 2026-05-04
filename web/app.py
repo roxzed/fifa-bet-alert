@@ -83,9 +83,10 @@ LINE_LABELS = {
     "over35": "Over 3.5", "over45": "Over 4.5",
 }
 
-# Alertas cancelados manualmente pelo owner. Ignorados em PL/WR/ROI e
-# exibidos como "CANCELED" no dashboard. Pra cancelar mais, adicionar ID aqui.
-CANCELLED_ALERT_IDS: set[int] = {1436, 1447}
+# Cancelados sao definidos em src/core/cancelled_alerts.py (compartilhado com /results)
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from src.core.cancelled_alerts import CANCELLED_ALERT_IDS  # noqa: E402
 
 
 def apply_filter(r: dict, sent_local: datetime | None) -> tuple[bool, str]:
