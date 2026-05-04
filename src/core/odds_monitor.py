@@ -93,10 +93,11 @@ def _adaptive_poll_interval(minutes_to_kickoff: float | None) -> int:
         # Historico:
         # - 10s (original)
         # - 4s (2026-04-23) — cortar latencia 10-13s -> 4-5s
-        # - 2s (2026-04-28) — owner aprovou em 2026-04-26, aplicado hoje.
-        #   Margem ~50% sobre limite 3600 req/h da Bet365.
-        # Rollback: mudar para 4 ou 10.
-        return 2
+        # - 2s (2026-04-28) — saturou rate limit 3600 req/h em horas de
+        #   pico (3+ matches concorrentes em hot zone, 33% do tempo).
+        # - 3s (2026-05-04) — meio termo: 20 req/min/match. OK ate 3
+        #   matches concorrentes (95% do tempo); pico com 4+ ainda raspa.
+        return 3
 
 
 class OddsMonitor:
