@@ -21,6 +21,8 @@ from difflib import SequenceMatcher
 
 from loguru import logger
 
+from src.core.h2h_tier import compute_h2h_tier
+
 
 def _normalize_player(name: str) -> str:
     """Normalize a player name for fuzzy comparison."""
@@ -550,6 +552,24 @@ class OddsMonitor:
                     )
                     return
 
+            # Calcular tier H2H pra cada linha prevista do candidate
+            alert_repo = getattr(self.alert_engine, "alerts", None)
+            blocked_repo = getattr(self.alert_engine, "blocked", None)
+            cand_lines = candidate.get("lines") or []
+            for ln in cand_lines:
+                ln_key = ln.get("line")
+                if not ln_key or alert_repo is None:
+                    continue
+                try:
+                    tier_res = await compute_h2h_tier(
+                        alert_repo, blocked_repo, loser, ln_key, winner
+                    )
+                    ln["h2h_tier"] = tier_res.tier
+                except Exception as e:
+                    logger.warning(
+                        f"watch tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
+                    )
+
             # Montar payload e enviar
             from zoneinfo import ZoneInfo
             kickoff_brt = (
@@ -563,7 +583,7 @@ class OddsMonitor:
                 "line_label": candidate["line_label"],
                 "target_player": candidate["target_player"],
                 "target_odds": candidate["target_odds"],
-                "lines": candidate.get("lines") or [],
+                "lines": cand_lines,
             }
             notifier = self.alert_engine.notifier
             await notifier.send_watch(

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
+from src.core.h2h_tier import compute_h2h_tier
+
 
 class AlertEngine:
     """
@@ -335,6 +337,18 @@ class AlertEngine:
             over_data["alert_odds"] = best_over["odds"]
             over_data["true_prob"] = best_over["true_prob"]
             over_data["all_lines"] = over_lines
+            # H2H tier (letra mostrada no alert): historico do (loser, line, winner)
+            try:
+                tier_res = await compute_h2h_tier(
+                    self.alerts, self.blocked, loser, best_over["line"], winner
+                )
+                over_data["h2h_tier"] = tier_res.tier
+                over_data["h2h_tier_n"] = tier_res.n
+                over_data["h2h_tier_roi"] = tier_res.roi
+                over_data["h2h_tier_pl"] = tier_res.pl
+            except Exception as e:
+                logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
+                over_data["h2h_tier"] = "?"
             message_id = await self.notifier.send_alert(over_data)
             if message_id:
                 try:

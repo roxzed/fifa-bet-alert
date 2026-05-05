@@ -33,9 +33,10 @@ def _odds(value: float | None) -> str:
 
 def format_alert(d: dict) -> str:
     """Format a betting opportunity alert message — clean version."""
-    stars = d.get("star_rating", 0)
-    level = d.get("alert_level", "yellow")
-    level_emoji = _level_emoji(level)
+    # H2H tier (S/A/B/C/D/?) — letra que reflete historico H2H do combo
+    # (player, line, opp). Mostrada como prefixo se vier no payload.
+    h2h_tier = d.get("h2h_tier")
+    tier_prefix = f"[{h2h_tier}] " if h2h_tier else ""
 
     # Kickoff em BRT
     kickoff_str = ""
@@ -52,25 +53,20 @@ def format_alert(d: dict) -> str:
     alert_label = d.get("alert_label", "Over 2.5")
     alert_odds = d.get("alert_odds") or d.get("over25_odds")
 
-    # Winrate
-    winrate = d.get("true_prob")
-    winrate_str = _pct(winrate) if winrate else "N/A"
-
     # Multi-linha: mostrar TODAS as linhas com edge
     all_lines = d.get("all_lines", [])
     if len(all_lines) > 1:
         lines_block = "\n".join(
-            f"  {l['label']} {_odds(l['odds'])} — {_pct(l['true_prob'])} (edge {l['edge']:.0%}, EV {l['ev']:.0%})"
+            f"  {l['label']} {_odds(l['odds'])}"
             for l in sorted(all_lines, key=lambda x: x.get("ev", 0), reverse=True)
         )
-        bet_section = f"<b>Apostas com edge:</b>\n{lines_block}"
+        bet_section = f"{tier_prefix}<b>Apostas:</b>\n{lines_block}"
     else:
         bet_type = "Aposta" if "Vitória" not in str(alert_label) else "Aposta ML"
-        bet_section = f"<b>{bet_type}:</b> {_esc(alert_label)} {_odds(alert_odds)}\nWinrate: {winrate_str}"
+        bet_section = f"{tier_prefix}<b>{bet_type}:</b> {_esc(alert_label)} {_odds(alert_odds)}"
 
     return (
         f"{bet_section}\n"
-        f"{_stars(stars)} {level_emoji}\n"
         f"\n"
         f"<b>Jogo anterior:</b>\n"
         f"{_esc(d.get('game1_player_home'))} ({_esc(d.get('game1_team_home') or d.get('return_team_home'))}) "
@@ -156,8 +152,11 @@ def format_watch_message(d: dict) -> str:
         odds = ln.get("target_odds", 0) or 0
         tp = ln.get("predicted_tp")
         tp_str = f" — TP {tp * 100:.0f}%" if isinstance(tp, (int, float)) else ""
+        # Tier H2H da linha (se vier no payload)
+        tier = ln.get("h2h_tier")
+        tier_str = f" [{tier}]" if tier else ""
         body.append(
-            f"   • {_esc(ln.get('line_label'))} @ {odds:.2f}+{tp_str}"
+            f"   • {_esc(ln.get('line_label'))} @ {odds:.2f}+{tp_str}{tier_str}"
         )
     lines_block = "\n".join(body)
 
