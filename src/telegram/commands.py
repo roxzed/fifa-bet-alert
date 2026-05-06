@@ -899,9 +899,11 @@ class BotCommands:
         except Exception as e:
             logger.warning(f"track_free_group_member error: {e}")
 
-    async def cmd_all(self, update: Update,
-                      context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/all <mensagem> — posta no grupo free marcando todo mundo. Só admin."""
+    async def _do_all_broadcast(self, update: Update, texto: str) -> None:
+        """Lógica compartilhada do /all: valida admin, busca members, posta.
+
+        Aceita texto puro OU foto/video em update.message (com legenda).
+        """
         from src.config import settings
         admin_id = settings.telegram_admin_chat_id
         free_id = settings.telegram_free_group_id
@@ -912,19 +914,10 @@ class BotCommands:
                 "TELEGRAM_FREE_GROUP_ID no .env."
             )
             return
-
         if str(update.effective_user.id) != str(admin_id):
             return  # silencioso para não-admin
-
         if not self.session_factory:
             await update.message.reply_text("session_factory não configurado.")
-            return
-
-        texto = " ".join(context.args).strip() if context.args else ""
-        if not texto:
-            await update.message.reply_text(
-                "Uso: /all <mensagem>\nEx.: /all Resultado de hoje: +R$ 2.840"
-            )
             return
 
         from src.db.models import FreeGroupMember
@@ -943,36 +936,117 @@ class BotCommands:
             )
             return
 
-        # Telegram limita ~50 menções por mensagem; faz batches de 40
-        BATCH = 40
+        msg = update.message
         bot = self.notifier.bot
         sent_count = 0
+
+        # ETAPA 1 — Repassa mídia (se houver) com legenda original (sem menções, evita
+        # estourar limite de 1024 chars). Foto/video/document/animation suportados.
+        try:
+            if msg.photo:
+                file_id = msg.photo[-1].file_id  # melhor qualidade
+                cap = texto[:1024] if texto else None
+                await bot.send_photo(
+                    chat_id=free_id, photo=file_id, caption=cap,
+                    parse_mode=ParseMode.HTML if cap else None,
+                )
+            elif msg.video:
+                cap = texto[:1024] if texto else None
+                await bot.send_video(
+                    chat_id=free_id, video=msg.video.file_id, caption=cap,
+                    parse_mode=ParseMode.HTML if cap else None,
+                )
+            elif msg.animation:
+                cap = texto[:1024] if texto else None
+                await bot.send_animation(
+                    chat_id=free_id, animation=msg.animation.file_id, caption=cap,
+                    parse_mode=ParseMode.HTML if cap else None,
+                )
+            elif msg.document:
+                cap = texto[:1024] if texto else None
+                await bot.send_document(
+                    chat_id=free_id, document=msg.document.file_id, caption=cap,
+                    parse_mode=ParseMode.HTML if cap else None,
+                )
+            elif texto:
+                # Sem mídia: texto vira a primeira mensagem (junto com 1º batch)
+                pass
+            else:
+                await update.message.reply_text(
+                    "Uso: /all <mensagem>  (ou manda foto/video com /all na legenda)"
+                )
+                return
+        except Exception as e:
+            logger.error(f"cmd_all media send error: {e}")
+            await update.message.reply_text(f"Erro ao postar mídia: {e}")
+            return
+
+        # ETAPA 2 — Posta menções em batches de 40 (limite de menções do Telegram)
+        BATCH = 40
+        has_media = bool(
+            msg.photo or msg.video or msg.animation or msg.document
+        )
         for i in range(0, len(members), BATCH):
             batch = members[i:i + BATCH]
             mentions = " ".join(
                 f"<a href=\"tg://user?id={m.user_id}\">{m.first_name or 'user'}</a>"
                 for m in batch
             )
-            body = texto if i == 0 else "​"  # zero-width space nos batches extras
-            full = f"{body}\n\n{mentions}"
+            # Se tem mídia, todas as msgs de menção são "extras" (a foto já foi postada).
+            # Se NÃO tem mídia e é o 1º batch, junta texto + menções.
+            if not has_media and i == 0 and texto:
+                full = f"{texto}\n\n{mentions}"
+            else:
+                full = mentions
             try:
                 await bot.send_message(
-                    chat_id=free_id,
-                    text=full,
+                    chat_id=free_id, text=full,
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
                 sent_count += len(batch)
             except Exception as e:
-                logger.error(f"cmd_all send error: {e}")
+                logger.error(f"cmd_all mentions send error: {e}")
                 await update.message.reply_text(
-                    f"Erro ao enviar para o grupo free: {e}"
+                    f"Erro ao enviar menções: {e}"
                 )
                 return
 
         await update.message.reply_text(
             f"✅ Postado no grupo free com {sent_count} menções."
         )
+
+    async def cmd_all(self, update: Update,
+                      context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/all <mensagem> — posta no grupo free marcando todo mundo. Só admin.
+
+        Aceita comando em texto puro OU como legenda de foto/video/gif/document.
+        """
+        # Texto após o comando, vem em context.args quando é msg de texto puro
+        texto = " ".join(context.args).strip() if context.args else ""
+        await self._do_all_broadcast(update, texto)
+
+    async def cmd_all_caption(self, update: Update,
+                              context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler alternativo: /all em legenda de mídia (foto/video/etc).
+
+        CommandHandler do python-telegram-bot ignora caption por padrão, então
+        usamos um MessageHandler separado pra esse caso.
+        """
+        msg = update.effective_message
+        if not msg:
+            return
+        caption = (msg.caption or "").strip()
+        if not caption:
+            return
+        # Pega só a 1ª palavra pra checar comando (com ou sem @bot)
+        first = caption.split(maxsplit=1)[0].lower()
+        if first not in ("/all", f"/all@{getattr(self.notifier.bot, 'username', '') or ''}".lower()):
+            return
+        # Tudo após o /all é o texto a publicar
+        parts = caption.split(maxsplit=1)
+        texto = parts[1].strip() if len(parts) > 1 else ""
+        await self._do_all_broadcast(update, texto)
 
     async def cmd_optin(self, update: Update,
                         context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1099,6 +1173,14 @@ class BotCommands:
         application.add_handler(CommandHandler("all", self.cmd_all))
         application.add_handler(CommandHandler("freecount", self.cmd_freecount))
         application.add_handler(CommandHandler("optin", self.cmd_optin))
+        # /all em legenda de foto/video/gif/document (CommandHandler ignora captions)
+        application.add_handler(
+            MessageHandler(
+                filters.CAPTION & filters.CaptionRegex(r"^/all(\s|$|@)"),
+                self.cmd_all_caption,
+            ),
+            group=10,
+        )
         application.add_handler(
             CallbackQueryHandler(self.callback_optin, pattern=r"^lenda:optin$")
         )
