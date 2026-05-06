@@ -1030,20 +1030,15 @@ class BotCommands:
                               context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handler alternativo: /all em legenda de mídia (foto/video/etc).
 
-        CommandHandler do python-telegram-bot ignora caption por padrão, então
-        usamos um MessageHandler separado pra esse caso.
+        Disparado pelo MessageHandler com filters.CaptionRegex(r"^/all\\b").
+        Extrai o texto após /all e delega pra _do_all_broadcast.
         """
         msg = update.effective_message
-        if not msg:
-            return
-        caption = (msg.caption or "").strip()
+        caption = (msg.caption or "").strip() if msg else ""
+        logger.info(f"cmd_all_caption fired: caption={caption[:80]!r}")
         if not caption:
             return
-        # Pega só a 1ª palavra pra checar comando (com ou sem @bot)
-        first = caption.split(maxsplit=1)[0].lower()
-        if first not in ("/all", f"/all@{getattr(self.notifier.bot, 'username', '') or ''}".lower()):
-            return
-        # Tudo após o /all é o texto a publicar
+        # Tudo após o /all (ou /all@bot) é o texto a publicar
         parts = caption.split(maxsplit=1)
         texto = parts[1].strip() if len(parts) > 1 else ""
         await self._do_all_broadcast(update, texto)
@@ -1174,12 +1169,17 @@ class BotCommands:
         application.add_handler(CommandHandler("freecount", self.cmd_freecount))
         application.add_handler(CommandHandler("optin", self.cmd_optin))
         # /all em legenda de foto/video/gif/document (CommandHandler ignora captions)
+        media_filter = (
+            filters.PHOTO
+            | filters.VIDEO
+            | filters.ANIMATION
+            | filters.Document.ALL
+        )
         application.add_handler(
             MessageHandler(
-                filters.CAPTION & filters.CaptionRegex(r"^/all(\s|$|@)"),
+                media_filter & filters.CaptionRegex(r"^/all\b"),
                 self.cmd_all_caption,
-            ),
-            group=10,
+            )
         )
         application.add_handler(
             CallbackQueryHandler(self.callback_optin, pattern=r"^lenda:optin$")
