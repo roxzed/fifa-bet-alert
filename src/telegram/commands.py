@@ -10,9 +10,24 @@ Correções aplicadas (auditoria 2025-03-25):
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from loguru import logger
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from sqlalchemy import select
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from src.core.cancelled_alerts import CANCELLED_ALERT_IDS
 
@@ -21,7 +36,8 @@ class BotCommands:
     """Handles /commands sent to the bot in Telegram."""
 
     def __init__(self, notifier, stats_engine, match_repo, alert_repo, league_repo,
-                 player_repo=None, odds_monitor=None, alert_v2_repo=None) -> None:
+                 player_repo=None, odds_monitor=None, alert_v2_repo=None,
+                 session_factory=None) -> None:
         self.notifier = notifier
         self.stats_engine = stats_engine
         self.matches = match_repo
@@ -30,6 +46,7 @@ class BotCommands:
         self.players = player_repo  # BUG 2 fix: recebe instância com sessão
         self.odds_monitor = odds_monitor
         self.alerts_v2 = alert_v2_repo  # Method 2 repo (opcional)
+        self.session_factory = session_factory  # para /all e tracking de membros
 
     def _is_v2_group(self, update: Update) -> bool:
         """Retorna True se o comando foi enviado no grupo M2."""
@@ -844,6 +861,224 @@ class BotCommands:
             logger.error(f"cmd_relatorio error: {e}")
             await update.message.reply_text(f"Erro: {e}")
 
+    # ------------------------------------------------------------------
+    # FREE GROUP — tracking de membros + comando /all (marketing)
+    # ------------------------------------------------------------------
+
+    async def track_free_group_member(self, update: Update,
+                                       context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Toda mensagem no grupo FREE registra o usuário no DB."""
+        from src.config import settings
+        free_id = settings.telegram_free_group_id
+        if not free_id:
+            return
+        chat = update.effective_chat
+        user = update.effective_user
+        if not chat or not user or user.is_bot:
+            return
+        if str(chat.id) != str(free_id):
+            return
+        if not self.session_factory:
+            return
+        try:
+            from src.db.models import FreeGroupMember
+            async with self.session_factory() as session:
+                existing = await session.get(FreeGroupMember, user.id)
+                if existing:
+                    existing.first_name = user.first_name or existing.first_name
+                    existing.username = user.username or existing.username
+                    existing.last_seen = datetime.utcnow()
+                else:
+                    session.add(FreeGroupMember(
+                        user_id=user.id,
+                        first_name=user.first_name or "user",
+                        username=user.username,
+                        last_seen=datetime.utcnow(),
+                    ))
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"track_free_group_member error: {e}")
+
+    async def cmd_all(self, update: Update,
+                      context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/all <mensagem> — posta no grupo free marcando todo mundo. Só admin."""
+        from src.config import settings
+        admin_id = settings.telegram_admin_chat_id
+        free_id = settings.telegram_free_group_id
+
+        if not admin_id or not free_id:
+            await update.message.reply_text(
+                "Comando indisponível: configure TELEGRAM_ADMIN_CHAT_ID e "
+                "TELEGRAM_FREE_GROUP_ID no .env."
+            )
+            return
+
+        if str(update.effective_user.id) != str(admin_id):
+            return  # silencioso para não-admin
+
+        if not self.session_factory:
+            await update.message.reply_text("session_factory não configurado.")
+            return
+
+        texto = " ".join(context.args).strip() if context.args else ""
+        if not texto:
+            await update.message.reply_text(
+                "Uso: /all <mensagem>\nEx.: /all Resultado de hoje: +R$ 2.840"
+            )
+            return
+
+        from src.db.models import FreeGroupMember
+        try:
+            async with self.session_factory() as session:
+                result = await session.execute(select(FreeGroupMember))
+                members = result.scalars().all()
+        except Exception as e:
+            logger.error(f"cmd_all DB error: {e}")
+            await update.message.reply_text(f"Erro ao buscar membros: {e}")
+            return
+
+        if not members:
+            await update.message.reply_text(
+                "Nenhum membro registrado. Roda scripts/sync_free_group_members.py."
+            )
+            return
+
+        # Telegram limita ~50 menções por mensagem; faz batches de 40
+        BATCH = 40
+        bot = self.notifier.bot
+        sent_count = 0
+        for i in range(0, len(members), BATCH):
+            batch = members[i:i + BATCH]
+            mentions = " ".join(
+                f"<a href=\"tg://user?id={m.user_id}\">{m.first_name or 'user'}</a>"
+                for m in batch
+            )
+            body = texto if i == 0 else "​"  # zero-width space nos batches extras
+            full = f"{body}\n\n{mentions}"
+            try:
+                await bot.send_message(
+                    chat_id=free_id,
+                    text=full,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                sent_count += len(batch)
+            except Exception as e:
+                logger.error(f"cmd_all send error: {e}")
+                await update.message.reply_text(
+                    f"Erro ao enviar para o grupo free: {e}"
+                )
+                return
+
+        await update.message.reply_text(
+            f"✅ Postado no grupo free com {sent_count} menções."
+        )
+
+    async def cmd_optin(self, update: Update,
+                        context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/optin — posta no grupo free a mensagem de ativação com botão. Só admin."""
+        from src.config import settings
+        admin_id = settings.telegram_admin_chat_id
+        free_id = settings.telegram_free_group_id
+        if str(update.effective_user.id) != str(admin_id):
+            return
+        if not free_id:
+            await update.message.reply_text("TELEGRAM_FREE_GROUP_ID não configurado.")
+            return
+        try:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "\U0001f514 ATIVAR NOTIFICAÇÕES",
+                    callback_data="lenda:optin",
+                )
+            ]])
+            text = (
+                "<b>\U0001f514 ATIVE SUAS NOTIFICAÇÕES</b>\n\n"
+                "Toda noite o bot posta o resultado do dia aqui no grupo.\n"
+                "Se você quer ser avisado quando o resultado sair, "
+                "toca no botão abaixo.\n\n"
+                "<i>Sem isso, você não recebe ping.</i>"
+            )
+            msg = await self.notifier.bot.send_message(
+                chat_id=free_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            try:
+                await self.notifier.bot.pin_chat_message(
+                    chat_id=free_id,
+                    message_id=msg.message_id,
+                    disable_notification=False,
+                )
+            except Exception as e:
+                logger.warning(f"Não consegui fixar a mensagem de opt-in: {e}")
+            await update.message.reply_text(
+                "✅ Mensagem de ativação postada e fixada no grupo free."
+            )
+        except Exception as e:
+            logger.error(f"cmd_optin error: {e}")
+            await update.message.reply_text(f"Erro: {e}")
+
+    async def callback_optin(self, update: Update,
+                              context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler do botão 'ATIVAR NOTIFICAÇÕES'. Registra user no DB."""
+        query = update.callback_query
+        if not query or query.data != "lenda:optin":
+            return
+        user = query.from_user
+        if not user or user.is_bot:
+            await query.answer("Apenas usuários reais podem ativar.")
+            return
+        if not self.session_factory:
+            await query.answer("Configuração incompleta.", show_alert=True)
+            return
+        try:
+            from src.db.models import FreeGroupMember
+            async with self.session_factory() as session:
+                existing = await session.get(FreeGroupMember, user.id)
+                if existing:
+                    existing.first_name = user.first_name or existing.first_name
+                    existing.username = user.username or existing.username
+                    existing.last_seen = datetime.utcnow()
+                    msg = "Você já está ativo. Continua recebendo o resultado todo dia."
+                else:
+                    session.add(FreeGroupMember(
+                        user_id=user.id,
+                        first_name=user.first_name or "user",
+                        username=user.username,
+                        last_seen=datetime.utcnow(),
+                    ))
+                    msg = "Ativado! Você vai receber o resultado todo dia."
+                await session.commit()
+            await query.answer(msg, show_alert=False)
+        except Exception as e:
+            logger.error(f"callback_optin error: {e}")
+            await query.answer("Erro ao ativar. Tenta de novo.", show_alert=True)
+
+    async def cmd_freecount(self, update: Update,
+                             context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/freecount — quantos membros do grupo free foram registrados até agora."""
+        from src.config import settings
+        admin_id = settings.telegram_admin_chat_id
+        if str(update.effective_user.id) != str(admin_id):
+            return
+        if not self.session_factory:
+            return
+        from src.db.models import FreeGroupMember
+        from sqlalchemy import func as sa_func
+        try:
+            async with self.session_factory() as session:
+                result = await session.execute(
+                    select(sa_func.count(FreeGroupMember.user_id))
+                )
+                count = result.scalar() or 0
+            await update.message.reply_text(
+                f"{count} membros registrados no grupo free."
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Erro: {e}")
+
     def register_handlers(self, application: Application) -> None:
         """Register all command handlers with the bot application."""
         application.add_handler(CommandHandler("status", self.cmd_status))
@@ -860,4 +1095,18 @@ class BotCommands:
         application.add_handler(CommandHandler("monitor", self.cmd_monitor))
         application.add_handler(CommandHandler("blocked", self.cmd_blocked))
         application.add_handler(CommandHandler("relatorio", self.cmd_relatorio))
+        # Free group: /all + tracking de membros + opt-in via botão (marketing)
+        application.add_handler(CommandHandler("all", self.cmd_all))
+        application.add_handler(CommandHandler("freecount", self.cmd_freecount))
+        application.add_handler(CommandHandler("optin", self.cmd_optin))
+        application.add_handler(
+            CallbackQueryHandler(self.callback_optin, pattern=r"^lenda:optin$")
+        )
+        application.add_handler(
+            MessageHandler(
+                filters.ChatType.GROUPS & ~filters.COMMAND,
+                self.track_free_group_member,
+            ),
+            group=99,
+        )
         logger.info("Telegram command handlers registered")

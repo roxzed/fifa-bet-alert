@@ -214,6 +214,7 @@ async def main() -> None:
         player_repo=PlayerRepository(sf),
         odds_monitor=odds_monitor,
         alert_v2_repo=alert_v2_repo,
+        session_factory=sf,  # para /all e tracking do grupo free
     )
 
     # Registrar handlers e iniciar polling do Telegram

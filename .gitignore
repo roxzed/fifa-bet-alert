@@ -26,3 +26,5 @@ analysis/
 check_output.txt
 test.txt
 *.bat
+*.session
+*.session-journal

@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -584,6 +585,27 @@ class AlertV2(Base):
             f"<AlertV2(id={self.id}, match_id={self.match_id}, "
             f"loser={self.losing_player!r}, camada={self.camada!r})>"
         )
+
+
+class FreeGroupMember(Base):
+    __tablename__ = "free_group_members"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    first_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_free_group_members_last_seen", "last_seen"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<FreeGroupMember(user_id={self.user_id}, name={self.first_name!r})>"
 
 
 class PlayerTeamPreference(Base):

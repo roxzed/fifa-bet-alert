@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     telegram_free_group_id: str = ""  # Grupo FREE (vazio = FREE inativo, so VIP recebe)
     free_min_true_prob: float = 0.80  # tp_conservative minimo pra alerta ir pro FREE
     free_max_per_day: int = 2         # cap diario BRT de alertas no FREE
+    # Marketing / membros do grupo free
+    telegram_api_id: str = ""  # my.telegram.org → API development tools (Telethon sync)
+    telegram_api_hash: str = ""
 
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"
