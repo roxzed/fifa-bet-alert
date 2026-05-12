@@ -315,18 +315,38 @@ class AlertEngine:
 
         message_id = None
 
-        # 2026-04-26 fix: suppression ja foi checada antes do create.
-        # all_over_suppressed=True significa: todas as linhas dispararam alerta
-        # mas TODAS estao em SHADOW/PERMANENT — alerta foi salvo so pra shadow tracking.
-        suppressed = all_over_suppressed and best_line != "ml"
+        # SHADOW suppression (todos as linhas over bloqueadas pelo auto-block)
+        shadow_suppressed = all_over_suppressed and best_line != "ml"
+
+        # GIRANDO filter: tier D (ROI 0-5%, n>=3) suprime sem enviar ao Telegram,
+        # salva no banco pra tracking. Sai automaticamente quando ROI muda de faixa.
+        girando_suppressed = False
+        h2h_tier_res = None
+        if best_over is not None and not shadow_suppressed:
+            try:
+                h2h_tier_res = await compute_h2h_tier(
+                    self.alerts, self.blocked, loser, best_over["line"], winner
+                )
+                if h2h_tier_res.tier == "D":
+                    girando_suppressed = True
+                    logger.bind(category="alert").info(
+                        f"GIRANDO suppressed: {loser} {best_over['line']} vs {winner} "
+                        f"tier=D ROI={h2h_tier_res.roi:+.1f}% n={h2h_tier_res.n} "
+                        f"— salvo no DB sem enviar ao Telegram"
+                    )
+            except Exception as e:
+                logger.warning(f"compute_h2h_tier (girando check) falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
+
+        suppressed = shadow_suppressed or girando_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
             except Exception as e:
                 logger.warning(f"mark_suppressed failed for alert {alert.id}: {e}")
-            logger.bind(category="alert").info(
-                f"OVER alert SUPPRESSED (auto-block): {loser} {best_line} "
-                f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
+            if shadow_suppressed:
+                logger.bind(category="alert").info(
+                    f"OVER alert SUPPRESSED (auto-block): {loser} {best_line} "
+                    f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
                 )
 
         # 1) Enviar alerta OVER GOLS (se houver linhas com edge E nao suprimido)
@@ -337,18 +357,24 @@ class AlertEngine:
             over_data["alert_odds"] = best_over["odds"]
             over_data["true_prob"] = best_over["true_prob"]
             over_data["all_lines"] = over_lines
-            # H2H tier (letra mostrada no alert): historico do (loser, line, winner)
-            try:
-                tier_res = await compute_h2h_tier(
-                    self.alerts, self.blocked, loser, best_over["line"], winner
-                )
-                over_data["h2h_tier"] = tier_res.tier
-                over_data["h2h_tier_n"] = tier_res.n
-                over_data["h2h_tier_roi"] = tier_res.roi
-                over_data["h2h_tier_pl"] = tier_res.pl
-            except Exception as e:
-                logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
-                over_data["h2h_tier"] = "?"
+            # H2H tier (ja computado acima no girando check, ou computar agora se pulou)
+            if h2h_tier_res is not None:
+                over_data["h2h_tier"] = h2h_tier_res.tier
+                over_data["h2h_tier_n"] = h2h_tier_res.n
+                over_data["h2h_tier_roi"] = h2h_tier_res.roi
+                over_data["h2h_tier_pl"] = h2h_tier_res.pl
+            else:
+                try:
+                    h2h_tier_res = await compute_h2h_tier(
+                        self.alerts, self.blocked, loser, best_over["line"], winner
+                    )
+                    over_data["h2h_tier"] = h2h_tier_res.tier
+                    over_data["h2h_tier_n"] = h2h_tier_res.n
+                    over_data["h2h_tier_roi"] = h2h_tier_res.roi
+                    over_data["h2h_tier_pl"] = h2h_tier_res.pl
+                except Exception as e:
+                    logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
+                    over_data["h2h_tier"] = "?"
             message_id = await self.notifier.send_alert(over_data)
             if message_id:
                 try:

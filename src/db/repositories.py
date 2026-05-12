@@ -1757,13 +1757,20 @@ class BlockedLineRepository(_BaseRepository):
 # 2026-04-26: clone do BlockedLineRepository pro Method 2.
 # ---------------------------------------------------------------------------
 class BlockedLineV2Repository(_BaseRepository):
-    """CRUD para a state machine de bloqueio automatico v2 (Method 2)."""
+    """CRUD para a state machine de bloqueio automatico v2 (Method 2).
 
-    async def get(self, player: str, line: str) -> Optional[BlockedLineV2]:
+    Granular por (player, line, opponent) desde 2026-05-04.
+    """
+
+    async def get(self, player: str, line: str, opponent: str = "") -> Optional[BlockedLineV2]:
         async with self._session() as session:
             stmt = (
                 select(BlockedLineV2)
-                .where(BlockedLineV2.player == player, BlockedLineV2.line == line)
+                .where(
+                    BlockedLineV2.player == player,
+                    BlockedLineV2.line == line,
+                    BlockedLineV2.opponent == opponent,
+                )
             )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
@@ -1773,6 +1780,7 @@ class BlockedLineV2Repository(_BaseRepository):
         *,
         player: str,
         line: str,
+        opponent: str = "",
         state: str,
         block_count: int,
         shadow_start_pl: Optional[float] = None,
@@ -1783,13 +1791,18 @@ class BlockedLineV2Repository(_BaseRepository):
         async with self._session() as session:
             stmt = (
                 select(BlockedLineV2)
-                .where(BlockedLineV2.player == player, BlockedLineV2.line == line)
+                .where(
+                    BlockedLineV2.player == player,
+                    BlockedLineV2.line == line,
+                    BlockedLineV2.opponent == opponent,
+                )
             )
             existing = (await session.execute(stmt)).scalar_one_or_none()
             if existing is None:
                 bl = BlockedLineV2(
                     player=player,
                     line=line,
+                    opponent=opponent,
                     state=state,
                     block_count=block_count,
                     shadow_start_pl=shadow_start_pl,
@@ -1821,17 +1834,19 @@ class BlockedLineV2Repository(_BaseRepository):
             stmt = (
                 select(BlockedLineV2)
                 .where(BlockedLineV2.state.in_(("SHADOW", "PERMANENT")))
-                .order_by(BlockedLineV2.player, BlockedLineV2.line)
+                .order_by(BlockedLineV2.player, BlockedLineV2.line, BlockedLineV2.opponent)
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
     async def list_all(self) -> List[BlockedLineV2]:
         async with self._session() as session:
-            stmt = select(BlockedLineV2).order_by(BlockedLineV2.player, BlockedLineV2.line)
+            stmt = select(BlockedLineV2).order_by(
+                BlockedLineV2.player, BlockedLineV2.line, BlockedLineV2.opponent
+            )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def is_suppressed(self, player: str, line: str) -> bool:
-        bl = await self.get(player, line)
+    async def is_suppressed(self, player: str, line: str, opponent: str = "") -> bool:
+        bl = await self.get(player, line, opponent)
         return bl is not None and bl.state in ("SHADOW", "PERMANENT")

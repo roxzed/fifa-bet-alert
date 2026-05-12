@@ -148,16 +148,16 @@ class AlertEngineV2:
             "bet365_url": bet365_url,
         }
 
-        # 2026-04-26: SHADOW protocol M2 — checa auto-block antes de enviar
+        # SHADOW protocol M2 granular — checa auto-block por (loser, line, opponent)
         suppressed = False
         if self.blocked is not None and evaluation.best_line:
             try:
                 suppressed = await self.blocked.is_suppressed(
-                    loser, evaluation.best_line
+                    loser, evaluation.best_line, winner
                 )
             except Exception as e:
                 logger.warning(
-                    f"M2 is_suppressed check failed for {loser}/{evaluation.best_line}: {e}"
+                    f"M2 is_suppressed check failed for {loser}/{evaluation.best_line}/vs.{winner}: {e}"
                 )
                 suppressed = False
 

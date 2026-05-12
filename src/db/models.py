@@ -682,14 +682,18 @@ class BlockedLine(Base):
 
 
 # ---------------------------------------------------------------------------
-# BlockedLineV2 — auto-block per (player, line) M2 (2026-04-26).
-# Replica do BlockedLine pro Method 2.
+# BlockedLineV2 — auto-block per (player, line, opponent) M2.
+# v2 granular (2026-05-04): chave inclui opponent — cada matchup H2H tem
+# state machine independente, igual ao M1 BlockedLine.
 # ---------------------------------------------------------------------------
 class BlockedLineV2(Base):
     __tablename__ = "blocked_lines_v2"
 
     player: Mapped[str] = mapped_column(String, primary_key=True)
     line: Mapped[str] = mapped_column(String, primary_key=True)
+    opponent: Mapped[str] = mapped_column(
+        String, primary_key=True, nullable=False, server_default=""
+    )
     state: Mapped[str] = mapped_column(String, nullable=False, default="ACTIVE")
     block_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     shadow_start_pl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -702,10 +706,12 @@ class BlockedLineV2(Base):
 
     __table_args__ = (
         Index("ix_blocked_lines_v2_state", "state"),
+        Index("ix_blocked_lines_v2_player_line", "player", "line"),
+        Index("ix_blocked_lines_v2_opponent", "opponent"),
     )
 
     def __repr__(self) -> str:
         return (
-            f"<BlockedLineV2({self.player!r}, {self.line!r}, "
+            f"<BlockedLineV2({self.player!r}, {self.line!r}, vs={self.opponent!r}, "
             f"state={self.state}, strikes={self.block_count})>"
         )
