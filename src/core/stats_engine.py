@@ -245,28 +245,35 @@ class StatsEngine:
     DYNAMIC_BLACKLIST_MIN_ALERTS: int = 8
     DYNAMIC_BLACKLIST_MAX_WR: float = 0.30
 
+    # Jogadores permanentemente bloqueados (auditoria 2026-05-11).
+    # Nao passam pelo stats engine — bloqueio incondicional antes de qualquer avaliacao.
+    # Criterio: WR < 25% com 8+ alertas = padrao estrutural, nao variancia.
+    # Revange: WR 12.5%, 8 alertas, -6.31u. A1ose: WR 25%, 8 alertas, -4.19u.
+    PLAYER_PERMANENT_BLOCK: set[str] = {
+        "Revange",
+        "A1ose",
+    }
+
     # Jogadores isentos da blacklist dinamica — gerenciados pelo auto-block per (player, line).
     # Decidido 2026-04-25: hotShot e Kavviro saem do conditional+dynamic para serem
     # avaliados pelo auto-block (mais cirurgico, separa por linha). Se tomarem -3u
     # numa linha especifica, auto-block bloqueia automaticamente.
+    # 2026-05-11: Revange removido — movido para PLAYER_PERMANENT_BLOCK.
     DYNAMIC_BLACKLIST_EXEMPT: set[str] = {
         "hotShot", "Kavviro",
         # 2026-04-25 fase 2: ex-conditional + SWAP movidos para auto-block estrito
-        "Boulevard", "Revange", "SPACE",
+        "Boulevard", "SPACE",
         "Cira", "tohi4", "dor1an",
         "pikalicaaa", "Jekunam", "RossFCDK",
         # 2026-04-25 fase 3: ex-conditional home/away movidos pro auto-block.
-        # Validacao mostrou regras inconsistentes (volvo AWAY era POSITIVO no real,
-        # mas regra dizia para bloquear AWAY — bug + premissa errada). Auto-block
-        # cuida via PL real por linha.
         "volvo", "Grellz", "nikkitta",
     }
 
     # Players de alto risco — historicamente drenavam, sob auto-block ESTRITO:
-    # entry SHADOW em PL <= -2u (em vez do default -3u). Recovery e strike 2
-    # mantem default. Decidido 2026-04-25 com Plinio.
+    # entry SHADOW em PL <= -2u (em vez do default -3u).
+    # 2026-05-11: Revange removido — movido para PLAYER_PERMANENT_BLOCK.
     HIGH_RISK_PLAYERS: set[str] = {
-        "Boulevard", "Revange", "SPACE",
+        "Boulevard", "SPACE",
         "Cira", "tohi4", "dor1an",
         "pikalicaaa", "Jekunam", "RossFCDK",
         # Fase 3
@@ -578,6 +585,25 @@ class StatsEngine:
 
         if match_time is None:
             match_time = datetime.now(timezone.utc)
+
+        # ── Bloqueio permanente: jogadores estruturalmente ruins (auditoria 2026-05-11) ──
+        if losing_player in self.PLAYER_PERMANENT_BLOCK:
+            logger.info(f"Jogador {losing_player} no PLAYER_PERMANENT_BLOCK: bloqueado")
+            loss_type_early = classify_loss(game1_score_winner, game1_score_loser)
+            return OpportunityEvaluation(
+                should_alert=False,
+                reason=f"PERMANENT_BLOCK: {losing_player} (padrao estrutural, nao variancia)",
+                best_line="over25",
+                implied_prob=0.0, true_prob=0.0, true_prob_conservative=0.0,
+                confidence_interval=(0.0, 1.0),
+                edge_val=0.0, expected_value_val=0.0, kelly_fraction_val=0.0, star_rating_val=0,
+                p_base=0.0, p_loss_type=0.0, p_player=0.0, p_recent_form=0.0,
+                p_h2h=0.0, p_y_post_win=0.0, p_time_slot=0.0, p_team=0.0, p_market_adj=0.0,
+                player_sample_size=0, h2h_sample_size=0, recent_form_sample=0,
+                global_sample_size=0, loss_type_sample_size=0, team_sample_size=0,
+                loss_type=loss_type_early, loss_margin=game1_score_winner - game1_score_loser,
+                player_flag="permanent_block",
+            )
 
         # ── Blacklist dinâmica: atualiza cache e bloqueia jogadores ruins ──
         await self._refresh_dynamic_blacklist()
@@ -1040,23 +1066,41 @@ class StatsEngine:
                     reason=f"Blacklist condicional: {cond_reason}",
                 )
 
-            # ── Filtros por linha (auditoria 2026-04-04) ──────────────
-            # O1.5: só alerta se odds >= 1.65 E perdedor fez 2+ gols em G1.
-            # Para SWAP players: odds minima 1.70 (requisito do backtest da estrategia).
-            if line_name == "over15":
-                min_odds_o15 = (
-                    self.SWAP_OVER15_MIN_ODDS
-                    if losing_player in self.PLAYER_SWAP_TO_OVER15
-                    else 1.65
+            # ── Filtros por linha (auditoria 2026-05-11) ──────────────
+            # Tight ALL: WR 49.8%, ROI -8.0%, -24.77u em 309 alertas (auditoria 11/05).
+            # Bloqueio total — tight AWAY ja era bloqueado antes; agora tight HOME tambem.
+            # tight HOME: WR 52.9%, ROI -0.2% — neutro nao compensa o noise.
+            if loss_type == "tight":
+                return LineEvaluation(
+                    line=line_name, odds=odds, true_prob=tp,
+                    true_prob_conservative=tp,
+                    implied_prob=implied_probability(odds),
+                    edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
+                    should_alert=False,
+                    reason="tight bloqueado: WR 49.8%, ROI -8.0% (309 alertas, auditoria 11/05)",
                 )
-                if odds < min_odds_o15 or loser_goals_g1 < 2:
+
+            # O1.5: odds minima 1.75 (auditoria 11/05: breakeven matematico 1.73, ROI -0.4%).
+            # Adicional: loss_type deve ser medium ou blowout (qualquer variacao).
+            # tight ja bloqueado acima. tight_open: WR 56.5%, ROI 2.5% — marginal, manter.
+            if line_name == "over15":
+                if odds < 1.75:
                     return LineEvaluation(
                         line=line_name, odds=odds, true_prob=tp,
                         true_prob_conservative=tp,
                         implied_prob=implied_probability(odds),
                         edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
                         should_alert=False,
-                        reason=f"O1.5 filtrado: odds={odds:.2f}<{min_odds_o15} ou g1_goals={loser_goals_g1}<2",
+                        reason=f"O1.5 filtrado: odds={odds:.2f}<1.75 (breakeven matematico)",
+                    )
+                if loser_goals_g1 < 2:
+                    return LineEvaluation(
+                        line=line_name, odds=odds, true_prob=tp,
+                        true_prob_conservative=tp,
+                        implied_prob=implied_probability(odds),
+                        edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
+                        should_alert=False,
+                        reason=f"O1.5 filtrado: g1_goals={loser_goals_g1}<2",
                     )
 
             # O2.5 e O3.5: odds mínima 1.80
@@ -1073,7 +1117,6 @@ class StatsEngine:
 
             # Probabilidade de decisao: blend entre tp (Bayesiano, todas camadas)
             # e taxa individual real do jogador.
-            # Com 6+ amostras individuais, individual pesa mais que tp.
             obs_hits = min(_obs.get(line_name, 0), _obs_total)
             individual_rate = obs_hits / _obs_total if _obs_total > 0 else tp
 
@@ -1096,21 +1139,7 @@ class StatsEngine:
             # Jogador novo: exigir edge mais alto (menos dados = mais incerteza)
             effective_min_edge = settings.min_edge
             if is_new_player:
-                effective_min_edge = max(settings.min_edge, 0.25)  # min 25% para novos
-
-            # Loser é HOME ou AWAY em G2 (mesmo lado que G1 no Esoccer)
-            loser_is_home_g2 = loser_was_home_g1  # None se desconhecido
-
-            # Filtro tight AWAY: bloqueio total (WR=39.5%, ROI=-24.9%)
-            if loser_is_home_g2 is False and loss_type == "tight":
-                return LineEvaluation(
-                    line=line_name, odds=odds, true_prob=tp,
-                    true_prob_conservative=tp,
-                    implied_prob=implied_probability(odds),
-                    edge_val=edge_v, ev_val=0.0, kelly_val=0.0, stars=0,
-                    should_alert=False,
-                    reason="tight AWAY bloqueado (WR=39.5%, ROI=-24.9%)",
-                )
+                effective_min_edge = max(settings.min_edge, 0.25)
 
             alert, reason = should_alert(
                 edge_val=edge_v,
@@ -1306,11 +1335,7 @@ class StatsEngine:
         """
         from datetime import datetime, timezone
 
-        over15_target = (
-            self.SWAP_OVER15_MIN_ODDS
-            if losing_player in self.PLAYER_SWAP_TO_OVER15
-            else 1.65
-        )
+        over15_target = 1.75  # alinhado com novo floor O1.5 (auditoria 11/05)
 
         score_home = game1_match.score_home or 0
         score_away = game1_match.score_away or 0
