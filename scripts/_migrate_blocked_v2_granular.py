@@ -10,36 +10,35 @@ import asyncio
 from sqlalchemy import text
 from src.db.database import get_session
 
-
-RECREATE_SQL = """
-DROP TABLE IF EXISTS blocked_lines_v2;
-
-CREATE TABLE blocked_lines_v2 (
-    player          VARCHAR NOT NULL,
-    line            VARCHAR NOT NULL,
-    opponent        VARCHAR NOT NULL DEFAULT '',
-    state           VARCHAR NOT NULL DEFAULT 'ACTIVE',
-    block_count     INTEGER NOT NULL DEFAULT 0,
-    shadow_start_pl FLOAT,
-    shadow_start_at TIMESTAMP,
-    last_block_at   TIMESTAMP,
-    last_unblock_at TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT NOW(),
-    PRIMARY KEY (player, line, opponent)
-);
-
-CREATE INDEX ix_blocked_lines_v2_state        ON blocked_lines_v2 (state);
-CREATE INDEX ix_blocked_lines_v2_player_line  ON blocked_lines_v2 (player, line);
-CREATE INDEX ix_blocked_lines_v2_opponent     ON blocked_lines_v2 (opponent);
-"""
+# asyncpg nao aceita multiplos comandos num unico statement — executar separados
+STATEMENTS = [
+    "DROP TABLE IF EXISTS blocked_lines_v2",
+    """CREATE TABLE blocked_lines_v2 (
+        player          VARCHAR NOT NULL,
+        line            VARCHAR NOT NULL,
+        opponent        VARCHAR NOT NULL DEFAULT '',
+        state           VARCHAR NOT NULL DEFAULT 'ACTIVE',
+        block_count     INTEGER NOT NULL DEFAULT 0,
+        shadow_start_pl FLOAT,
+        shadow_start_at TIMESTAMP,
+        last_block_at   TIMESTAMP,
+        last_unblock_at TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (player, line, opponent)
+    )""",
+    "CREATE INDEX ix_blocked_lines_v2_state       ON blocked_lines_v2 (state)",
+    "CREATE INDEX ix_blocked_lines_v2_player_line ON blocked_lines_v2 (player, line)",
+    "CREATE INDEX ix_blocked_lines_v2_opponent    ON blocked_lines_v2 (opponent)",
+]
 
 
 async def main():
     async with get_session() as s:
-        await s.execute(text(RECREATE_SQL))
-        await s.commit()
-    print("OK: blocked_lines_v2 recriada com PK (player, line, opponent).")
-    print("Execute recompute_all_states() no proximo ciclo para repopular.")
+        for stmt in STATEMENTS:
+            await s.execute(text(stmt))
+            print(f"  OK: {stmt[:60]}...")
+    print("\nOK: blocked_lines_v2 recriada com PK (player, line, opponent).")
+    print("Sera repopulada automaticamente no proximo recompute_all_states().")
 
 
 if __name__ == "__main__":
