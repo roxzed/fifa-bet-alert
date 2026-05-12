@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
+from src.core.h2h_tier import compute_h2h_tier_v2
+
 
 class AlertEngineV2:
     """
@@ -149,18 +151,34 @@ class AlertEngineV2:
         }
 
         # SHADOW protocol M2 granular — checa auto-block por (loser, line, opponent)
-        suppressed = False
+        shadow_suppressed = False
         if self.blocked is not None and evaluation.best_line:
             try:
-                suppressed = await self.blocked.is_suppressed(
+                shadow_suppressed = await self.blocked.is_suppressed(
                     loser, evaluation.best_line, winner
                 )
             except Exception as e:
                 logger.warning(
                     f"M2 is_suppressed check failed for {loser}/{evaluation.best_line}/vs.{winner}: {e}"
                 )
-                suppressed = False
 
+        # GIRANDO filter M2: tier D (ROI 0-5%, n>=3) suprime sem enviar
+        girando_suppressed = False
+        if not shadow_suppressed and evaluation.best_line:
+            try:
+                tier_res = await compute_h2h_tier_v2(
+                    self.alerts, self.blocked, loser, evaluation.best_line, winner
+                )
+                if tier_res.tier == "D":
+                    girando_suppressed = True
+                    logger.bind(category="alert_v2").info(
+                        f"M2 GIRANDO suppressed: {loser} {evaluation.best_line} vs {winner} "
+                        f"tier=D ROI={tier_res.roi:+.1f}% n={tier_res.n} — salvo sem enviar"
+                    )
+            except Exception as e:
+                logger.warning(f"M2 compute_h2h_tier_v2 falhou ({loser}/{evaluation.best_line}/vs.{winner}): {e}")
+
+        suppressed = shadow_suppressed or girando_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
@@ -168,10 +186,11 @@ class AlertEngineV2:
                 logger.warning(
                     f"M2 mark_suppressed failed for alert {alert.id}: {e}"
                 )
-            logger.bind(category="alert_v2").info(
-                f"M2 alert SUPPRESSED (auto-block): {loser} {evaluation.best_line} "
-                f"@{alert_odds:.2f} — alerta v2 salvo no DB com suppressed=TRUE"
-            )
+            if shadow_suppressed:
+                logger.bind(category="alert_v2").info(
+                    f"M2 alert SUPPRESSED (auto-block): {loser} {evaluation.best_line} "
+                    f"@{alert_odds:.2f} — alerta v2 salvo no DB com suppressed=TRUE"
+                )
             return True  # alerta no DB pra shadow tracking
 
         # Send to M2 Telegram group

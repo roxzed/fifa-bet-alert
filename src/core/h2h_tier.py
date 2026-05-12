@@ -20,7 +20,7 @@ from datetime import datetime
 
 from sqlalchemy import and_, func, select
 
-from src.db.models import Alert, Match
+from src.db.models import Alert, AlertV2, Match
 
 
 # Mesma data-corte do SHADOW v3 (blocked_lines.py:34)
@@ -100,7 +100,7 @@ async def _fetch_h2h_pl(
     line: str,
     opponent: str,
 ) -> tuple[int, float]:
-    """Soma profit_flat e conta alertas pro combo (player, line, opp).
+    """Soma profit_flat e conta alertas M1 pro combo (player, line, opp).
 
     Considera tanto envs quanto sups (todos com profit_flat populado).
     Opponent eh o OUTRO jogador no Match.
@@ -123,5 +123,62 @@ async def _fetch_h2h_pl(
         ))
     )
     result = await alert_repo.execute_query(stmt)
+    row = result.one()
+    return int(row.n or 0), float(row.pl or 0.0)
+
+
+async def compute_h2h_tier_v2(
+    alert_v2_repo,
+    blocked_v2_repo,
+    player: str,
+    line: str,
+    opponent: str,
+) -> H2HTierResult:
+    """Versao M2 do tier H2H, usando alerts_v2 e blocked_lines_v2.
+
+    AlertV2 ja tem opponent_player — sem join com Match necessario.
+    Comportamento identico ao M1: tier E se SHADOW, tier D suprime.
+    """
+    state = "ACTIVE"
+    if blocked_v2_repo is not None:
+        try:
+            entry = await blocked_v2_repo.get(player, line, opponent)
+            if entry:
+                state = entry.state
+        except Exception:
+            state = "ACTIVE"
+
+    try:
+        n, pl = await _fetch_h2h_pl_v2(alert_v2_repo, player, line, opponent)
+    except Exception:
+        return H2HTierResult(tier="?", n=0, pl=0.0, roi=0.0, state=state)
+
+    return classify(n, pl, state)
+
+
+async def _fetch_h2h_pl_v2(
+    alert_v2_repo,
+    player: str,
+    line: str,
+    opponent: str,
+) -> tuple[int, float]:
+    """Soma profit_flat e conta alertas M2 pro combo (player, line, opp).
+
+    AlertV2 tem opponent_player direto — sem join com Match.
+    """
+    stmt = (
+        select(
+            func.coalesce(func.sum(AlertV2.profit_flat), 0.0).label("pl"),
+            func.count(AlertV2.id).label("n"),
+        )
+        .where(and_(
+            AlertV2.losing_player == player,
+            AlertV2.best_line == line,
+            AlertV2.opponent_player == opponent,
+            AlertV2.profit_flat.is_not(None),
+            AlertV2.sent_at >= CUTOFF_UTC,
+        ))
+    )
+    result = await alert_v2_repo.execute_query(stmt)
     row = result.one()
     return int(row.n or 0), float(row.pl or 0.0)
