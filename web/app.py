@@ -83,10 +83,15 @@ LINE_LABELS = {
     "over35": "Over 3.5", "over45": "Over 4.5",
 }
 
-# Cancelados sao definidos em src/core/cancelled_alerts.py (compartilhado com /results)
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.core.cancelled_alerts import CANCELLED_ALERT_IDS  # noqa: E402
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, ".."))
+try:
+    from src.core.cancelled_alerts import CANCELLED_ALERT_IDS  # noqa: E402
+except (ImportError, ModuleNotFoundError):
+    # Fallback quando src/ nao esta disponivel no build context do Docker web service
+    # Manter sincronizado com src/core/cancelled_alerts.py ao cancelar alertas
+    CANCELLED_ALERT_IDS: set[int] = {1436, 1447, 1479, 1483, 1755}
 
 
 def apply_filter(r: dict, sent_local: datetime | None) -> tuple[bool, str]:
@@ -154,6 +159,7 @@ FROM alerts a
 LEFT JOIN matches m ON a.match_id = m.id
 WHERE a.validated_at IS NOT NULL
   AND a.sent_at >= '2026-04-05'
+  AND a.suppressed IS NOT TRUE
 ORDER BY a.sent_at DESC
 """
 
@@ -390,8 +396,12 @@ def build_dataset(rows: list[dict]) -> dict:
     Hybrid approach:
     - Before FILTERS_DEPLOY_DATE (14/04): simulate filters on all alerts
     - After FILTERS_DEPLOY_DATE: alerts already passed production filters
+
+    stats     = filtered (o que o usuario apostou de fato)
+    stats_all = sem simulacao de filtro (base de comparacao para "Melhoria")
     """
-    alerts = []
+    all_alerts: list[dict] = []   # todos, sem simulacao de filtro
+    alerts: list[dict] = []       # somente os que passariam pelo filtro
 
     for r in rows:
         line = r["best_line"] or "over25"
@@ -405,19 +415,11 @@ def build_dataset(rows: list[dict]) -> dict:
         opp_team = r.get("team_away") if is_home else r.get("team_home")
         opponent = r.get("player_away") if is_home else r.get("player_home")
 
-        # Convert UTC to local timezone (same as Telegram bot)
         sent_utc = r["sent_at"]
         if sent_utc:
             sent_local = sent_utc.replace(tzinfo=timezone.utc).astimezone(TZ_LOCAL)
         else:
             sent_local = None
-
-        # Before filters deploy: simulate filters; after: already filtered
-        is_before_deploy = sent_local and sent_local.replace(tzinfo=None) < FILTERS_DEPLOY_DATE
-        if is_before_deploy:
-            passed, _ = apply_filter(r, sent_local)
-            if not passed:
-                continue  # skip alerts that would have been blocked
 
         alert = {
             "id": r["id"],
@@ -444,21 +446,33 @@ def build_dataset(rows: list[dict]) -> dict:
             "hour": sent_local.hour if sent_local else 0,
             "weekday": WEEKDAYS_PT.get(sent_local.weekday(), "?") if sent_local else "?",
         }
+
+        # stats_all inclui tudo (sem simulacao de filtro)
+        all_alerts.append(alert)
+
+        # stats inclui somente alertas que passariam pelos filtros pre-deploy
+        is_before_deploy = sent_local and sent_local.replace(tzinfo=None) < FILTERS_DEPLOY_DATE
+        if is_before_deploy:
+            passed_filter, _ = apply_filter(r, sent_local)
+            if not passed_filter:
+                continue
+
         alerts.append(alert)
 
-    # Cumulative P/L
-    chrono = sorted(alerts, key=lambda a: a["datetime"])
+    # Cumulative P/L (somente sobre alertas filtrados)
+    chrono = sorted(alerts, key=lambda a: (a["datetime"] is None, a["datetime"]))
     cum = 0
     for a in chrono:
         cum += a["pl"]
         a["cum_pl"] = round(cum, 2)
 
     stats = _aggregate(alerts)
+    stats_all = _aggregate(all_alerts)
     return {
         "alerts": alerts,
         "passed": alerts,
         "stats": stats,
-        "stats_all": stats,
+        "stats_all": stats_all,
         "updated": _get_updated(),
     }
 
@@ -497,10 +511,11 @@ def _aggregate(alerts: list[dict]) -> dict:
         return result
 
     # Cumulative P/L by day
-    chrono = sorted(alerts, key=lambda a: a["datetime"])
+    chrono = sorted(alerts, key=lambda a: (a["datetime"] is None, a["datetime"]))
     day_pl = defaultdict(float)
     for a in chrono:
-        day_pl[a["date"]] += a["pl"]
+        if a["date"]:
+            day_pl[a["date"]] += a["pl"]
     cum = 0
     cum_by_day = []
     for day in sorted(day_pl.keys(), key=lambda d: datetime.strptime(d, "%d/%m")):
