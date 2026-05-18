@@ -82,6 +82,10 @@ def format_alert(d: dict) -> str:
 
 def format_alert_v2(d: dict) -> str:
     """Format a Method 2 betting alert message."""
+    # H2H tier (S/A/B/C/D/?) — mesma lógica do M1
+    h2h_tier = d.get("h2h_tier")
+    tier_prefix = f"[{h2h_tier}] " if h2h_tier else ""
+
     camada = d.get("camada", "?")
     camada_desc = {
         "C1a": "H2H+Team direto",
@@ -115,7 +119,7 @@ def format_alert_v2(d: dict) -> str:
         prob_detail = f"\n4elem: {_pct(p4)} (n={n4}) | 3elem: {_pct(p3)} (n={n3})"
 
     return (
-        f"\U0001f4ca <b>M2 | {camada}</b> — {_esc(alert_label)} {_odds(alert_odds)}\n"
+        f"\U0001f4ca <b>M2 | {camada}</b> — {tier_prefix}{_esc(alert_label)} {_odds(alert_odds)}\n"
         f"Prob: <b>{_pct(prob)}</b> ({sample} jogos — {camada_desc})"
         f"{prob_detail}\n"
         f"\n"

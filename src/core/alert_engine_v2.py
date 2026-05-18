@@ -150,6 +150,21 @@ class AlertEngineV2:
             "bet365_url": bet365_url,
         }
 
+        # H2H tier M2 — sempre computa (alimenta GIRANDO check + mostra letra na msg)
+        tier_res = None
+        if evaluation.best_line:
+            try:
+                tier_res = await compute_h2h_tier_v2(
+                    self.alerts, self.blocked, loser, evaluation.best_line, winner
+                )
+                alert_data["h2h_tier"] = tier_res.tier
+                alert_data["h2h_tier_n"] = tier_res.n
+                alert_data["h2h_tier_roi"] = tier_res.roi
+                alert_data["h2h_tier_pl"] = tier_res.pl
+            except Exception as e:
+                logger.warning(f"M2 compute_h2h_tier_v2 falhou ({loser}/{evaluation.best_line}/vs.{winner}): {e}")
+                alert_data["h2h_tier"] = "?"
+
         # SHADOW protocol M2 granular — checa auto-block por (loser, line, opponent)
         shadow_suppressed = False
         if self.blocked is not None and evaluation.best_line:
@@ -164,19 +179,12 @@ class AlertEngineV2:
 
         # GIRANDO filter M2: tier D (ROI 0-5%, n>=3) suprime sem enviar
         girando_suppressed = False
-        if not shadow_suppressed and evaluation.best_line:
-            try:
-                tier_res = await compute_h2h_tier_v2(
-                    self.alerts, self.blocked, loser, evaluation.best_line, winner
-                )
-                if tier_res.tier == "D":
-                    girando_suppressed = True
-                    logger.bind(category="alert_v2").info(
-                        f"M2 GIRANDO suppressed: {loser} {evaluation.best_line} vs {winner} "
-                        f"tier=D ROI={tier_res.roi:+.1f}% n={tier_res.n} — salvo sem enviar"
-                    )
-            except Exception as e:
-                logger.warning(f"M2 compute_h2h_tier_v2 falhou ({loser}/{evaluation.best_line}/vs.{winner}): {e}")
+        if not shadow_suppressed and tier_res is not None and tier_res.tier == "D":
+            girando_suppressed = True
+            logger.bind(category="alert_v2").info(
+                f"M2 GIRANDO suppressed: {loser} {evaluation.best_line} vs {winner} "
+                f"tier=D ROI={tier_res.roi:+.1f}% n={tier_res.n} — salvo sem enviar"
+            )
 
         suppressed = shadow_suppressed or girando_suppressed
         if suppressed:
