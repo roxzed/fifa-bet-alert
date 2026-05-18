@@ -91,7 +91,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     # Fallback quando src/ nao esta disponivel no build context do Docker web service
     # Manter sincronizado com src/core/cancelled_alerts.py ao cancelar alertas
-    CANCELLED_ALERT_IDS: set[int] = {1436, 1447, 1479, 1483, 1755}
+    CANCELLED_ALERT_IDS: set[int] = {1436, 1447, 1479, 1483, 1755, 2228}
 
 
 def apply_filter(r: dict, sent_local: datetime | None) -> tuple[bool, str]:
