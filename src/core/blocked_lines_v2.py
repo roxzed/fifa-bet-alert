@@ -48,23 +48,31 @@ def _now_naive_utc() -> datetime:
 
 
 async def _fetch_pl_per_matchup(blocked_repo: BlockedLineV2Repository) -> list[dict]:
-    """Retorna [{'player', 'line', 'opponent', 'pl', 'n'}] desde CUTOFF_UTC, M2 only."""
-    stmt = (
-        select(
-            AlertV2.losing_player.label("player"),
-            AlertV2.best_line.label("line"),
-            AlertV2.opponent_player.label("opponent"),
-            func.sum(AlertV2.profit_flat).label("pl"),
-            func.count(AlertV2.id).label("n"),
-        )
-        .where(
-            AlertV2.sent_at >= CUTOFF_UTC,
-            AlertV2.profit_flat.is_not(None),
-            AlertV2.best_line.is_not(None),
-        )
-        .group_by(AlertV2.losing_player, AlertV2.best_line, AlertV2.opponent_player)
-    )
-    result = await blocked_repo.execute_query(stmt)
+    """Retorna [{'player', 'line', 'opponent', 'pl', 'n'}] desde CUTOFF_UTC, M2 only.
+
+    Deduplica por (match_id, best_line) via DISTINCT ON. Sem isso, polls
+    do OddsMonitor criavam multiplos registros do mesmo jogo, inflando
+    o PL e podendo acionar STRIKE1/2 incorretamente.
+    """
+    stmt = text("""
+        SELECT player, line, opponent,
+               COALESCE(SUM(pl), 0.0) AS pl,
+               COUNT(*) AS n
+        FROM (
+            SELECT DISTINCT ON (match_id, best_line)
+                losing_player AS player,
+                best_line AS line,
+                COALESCE(opponent_player, '') AS opponent,
+                profit_flat AS pl
+            FROM alerts_v2
+            WHERE sent_at >= :cutoff
+              AND profit_flat IS NOT NULL
+              AND best_line IS NOT NULL
+            ORDER BY match_id, best_line, sent_at ASC
+        ) deduped
+        GROUP BY player, line, opponent
+    """)
+    result = await blocked_repo.execute_query(stmt, {"cutoff": CUTOFF_UTC})
     rows = result.all()
     return [
         {
@@ -86,21 +94,25 @@ async def _shadow_progress(
     opponent: str,
     shadow_start_at: datetime,
 ) -> tuple[float, int]:
-    """Retorna (shadow_pl, shadow_n) — alertas v2 APOS shadow_start_at para esse matchup."""
-    stmt = (
-        select(
-            func.coalesce(func.sum(AlertV2.profit_flat), 0.0).label("pl"),
-            func.count(AlertV2.id).label("n"),
-        )
-        .where(
-            AlertV2.losing_player == player,
-            AlertV2.best_line == line,
-            AlertV2.opponent_player == opponent,
-            AlertV2.sent_at > shadow_start_at,
-            AlertV2.profit_flat.is_not(None),
-        )
-    )
-    result = await blocked_repo.execute_query(stmt)
+    """Retorna (shadow_pl, shadow_n) — alertas v2 APOS shadow_start_at para
+    esse matchup, deduplicados por match_id (1 entrada por jogo)."""
+    stmt = text("""
+        SELECT COALESCE(SUM(pl), 0.0) AS pl, COUNT(*) AS n
+        FROM (
+            SELECT DISTINCT ON (match_id, best_line) profit_flat AS pl
+            FROM alerts_v2
+            WHERE losing_player = :player
+              AND best_line = :line
+              AND COALESCE(opponent_player, '') = :opp
+              AND sent_at > :start
+              AND profit_flat IS NOT NULL
+            ORDER BY match_id, best_line, sent_at ASC
+        ) deduped
+    """)
+    result = await blocked_repo.execute_query(stmt, {
+        "player": player, "line": line, "opp": opponent or "",
+        "start": shadow_start_at,
+    })
     row = result.one()
     return float(row.pl or 0.0), int(row.n or 0)
 
@@ -142,25 +154,18 @@ async def recompute_all_states(
         key = f"{player}/{line}/vs.{opponent}"
 
         if state == "ACTIVE":
-            if block_count == 0 and pl_total <= STRIKE1_BLOCK_PL:
+            # 2026-05-18: PERMANENT path removido. Mesma filosofia do M1:
+            # combo pode ser bloqueado/desbloqueado multiplas vezes via SHADOW.
+            if pl_total <= STRIKE1_BLOCK_PL:
                 new_state = "SHADOW"
-                new_block_count = 1
+                new_block_count = block_count + 1
                 new_shadow_start_pl = pl_total
                 new_shadow_start_at = now
                 last_block_at = now
                 transitions["blocked_strike1"].append(f"{key} PL={pl_total:+.2f}u")
                 logger.warning(
                     f"M2 BLOCK strike1 {key}: PL={pl_total:+.2f}u <= "
-                    f"{STRIKE1_BLOCK_PL} -> SHADOW"
-                )
-            elif block_count == 1 and pl_total <= STRIKE2_BLOCK_PL:
-                new_state = "PERMANENT"
-                new_block_count = 2
-                last_block_at = now
-                transitions["blocked_strike2"].append(f"{key} PL={pl_total:+.2f}u")
-                logger.error(
-                    f"M2 BLOCK strike2 PERMANENT {key}: "
-                    f"PL={pl_total:+.2f}u <= {STRIKE2_BLOCK_PL} -> PERMANENT"
+                    f"{STRIKE1_BLOCK_PL} -> SHADOW (block_count={new_block_count})"
                 )
         elif state == "SHADOW":
             if shadow_start_at is None:

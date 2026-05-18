@@ -1,13 +1,15 @@
 """H2H tier classification — letra mostrada no alert do Telegram.
 
 Tier baseado em ROI historico do (player, line, opponent), com
-sample minimo de 3 alertas. Faixas decididas pelo owner em 2026-05-05:
+sample minimo de 3 alertas. Faixas decididas pelo owner em 2026-05-05,
+threshold do D ajustado 2026-05-18 (backtest mostrou que 2-5% eram
+quase todos GREEN):
 
   S  ROI >= 50%
   A  30% <= ROI < 50%
   B  15% <= ROI < 30%
-  C  5%  <= ROI < 15%
-  D  0%  <= ROI < 5%
+  C  2%  <= ROI < 15%
+  D  0%  <= ROI < 2%
   ?  n < 3 OU ROI < 0% e nao em SHADOW (sem letra util a mostrar)
   E  state em SHADOW/PERMANENT (alert nao chega no Telegram)
 
@@ -28,11 +30,14 @@ CUTOFF_UTC = datetime(2026, 4, 15, 1, 7, 0)
 MIN_SAMPLE = 3
 
 # Faixas de ROI (%). Ordem: maior threshold primeiro.
+# C boundary baixou de 5.0 -> 2.0 em 2026-05-18: backtest mostrou que
+# alertas D classificados como 2-5% deram ROI +132% (todos GREEN), eram
+# sobre-filtrados pela regra antiga.
 TIER_THRESHOLDS: list[tuple[str, float]] = [
     ("S", 50.0),
     ("A", 30.0),
     ("B", 15.0),
-    ("C", 5.0),
+    ("C", 2.0),
     ("D", 0.0),
 ]
 

@@ -68,6 +68,14 @@ async def _fetch_all_alerts(
     """Retorna [(player, line, opponent, sent_at, profit)] desde CUTOFF.
 
     Opponent eh o OUTRO jogador no match (nao o losing_player).
+
+    Deduplica por (match_id, best_line): pega apenas o primeiro alert por
+    jogo+linha. O OddsMonitor polla odds a cada 15s e cada poll com edge
+    cria um registro novo de alert. Sem dedup, um jogo de 8min vira ate
+    ~32 "alertas" no banco, inflando rolling/post_unblock/cliff metrics.
+    Bug evidenciado 2026-05-18: match 43556 (mko1919) gerou 19 polls que
+    contaram como -19u no _post_unblock_metrics e acionaram PERMANENT
+    incorretamente.
     """
     stmt = (
         select(
@@ -88,10 +96,15 @@ async def _fetch_all_alerts(
         .order_by(Alert.sent_at.asc())
     )
     result = await blocked_repo.execute_query(stmt)
+    seen: set[tuple[int, str]] = set()
     out = []
     for r in result.all():
         if r.line not in LINES_TRACKED:
             continue
+        key = (r.match_id, r.line)
+        if key in seen:
+            continue
+        seen.add(key)
         opp = r.away if r.home == r.player else r.home
         out.append((r.player, r.line, opp or "", r.sent_at, float(r.profit)))
     return out
@@ -203,7 +216,11 @@ async def recompute_all_states(
 
         if state == "ACTIVE":
             triggered = None
-            if block_count == 0:
+            # 2026-05-18: PERMANENT path removido. Combos podem ser bloqueados
+            # (SHADOW) e desbloqueados multiplas vezes — o protocolo se baseia
+            # em performance corrente, nao em historico de strikes. Filosofia
+            # do owner: "manter as tips por ROI".
+            if True:  # antes: if block_count == 0
                 # 1) PLAYER CLIFF: agregado, prioritario
                 if player in players_in_cliff:
                     triggered = "player_cliff"
@@ -211,15 +228,13 @@ async def recompute_all_states(
                 elif line_day_n >= LINE_CLIFF_N and line_day_pl <= LINE_CLIFF_PL:
                     triggered = "line_cliff"
                 # 3) Rolling: pl < -1.0u (estrito, n>=0, sem amostra minima)
-                #    Owner pediu sinal estrito 2026-04-29: rolling_pl < -1u
-                #    captura drains entre -1.01u e -1.49u que antes escapavam.
                 elif (rolling_n >= STRIKE1_BLOCK_N
                         and rolling_pl < STRIKE1_BLOCK_PL):
                     triggered = "rolling"
 
                 if triggered is not None:
                     new_state = "SHADOW"
-                    new_block_count = 1
+                    new_block_count = block_count + 1  # incrementa, sem ceiling
                     new_shadow_start_pl = rolling_pl
                     new_shadow_start_at = now
                     last_block_at_set = now
@@ -245,20 +260,6 @@ async def recompute_all_states(
                             f"{msg_key} via player day_PL="
                             f"{player_day_pl[player]:+.2f}u(n={player_day_n[player]})"
                         )
-            elif block_count == 1:
-                pu_pl, pu_n = _post_unblock_metrics(alerts, last_unblock_at)
-                if pu_n >= STRIKE2_BLOCK_N and pu_pl <= STRIKE2_BLOCK_PL:
-                    new_state = "PERMANENT"
-                    new_block_count = 2
-                    last_block_at_set = now
-                    transitions["blocked_strike2"].append(
-                        f"{player}/{line}/vs.{opp} post_unblock_PL="
-                        f"{pu_pl:+.2f}u(n={pu_n})"
-                    )
-                    logger.error(
-                        f"BLOCK STRIKE2 PERMANENT {player}/{line}/vs.{opp}: "
-                        f"post_unblock_PL={pu_pl:+.2f}u(n={pu_n})"
-                    )
         elif state == "SHADOW":
             shadow_pl, shadow_n = _shadow_metrics(alerts, shadow_start_at)
             # Timeout
