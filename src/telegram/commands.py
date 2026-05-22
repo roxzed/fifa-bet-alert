@@ -481,11 +481,12 @@ class BotCommands:
 
             # Filtrar suprimidos (auto-block) — eles NUNCA foram pra grupo nenhum
             # e nao devem aparecer no /results pra nao confundir.
-            if not is_v2:
-                alerts = [a for a in alerts if not getattr(a, "suppressed", False)]
-                if not alerts:
-                    await update.message.reply_text(f"Nenhum alerta em {date_label}.")
-                    return
+            # Aplicado tanto para M1 quanto M2 (alerts_v2 tambem tem suppressed=true
+            # via blocked_lines_v2 e GIRANDO filter — ver alert_engine_v2.py).
+            alerts = [a for a in alerts if not getattr(a, "suppressed", False)]
+            if not alerts:
+                await update.message.reply_text(f"Nenhum alerta em {date_label}.")
+                return
 
             # Se /results foi chamado no grupo FREE, mostra so os que foram pro FREE.
             if is_free:
