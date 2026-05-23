@@ -318,13 +318,7 @@ class AlertEngine:
         # SHADOW suppression (todos as linhas over bloqueadas pelo auto-block)
         shadow_suppressed = all_over_suppressed and best_line != "ml"
 
-        # GIRANDO filter REMOVIDO 2026-05-23 (audit out-of-sample).
-        # Backtest mostrou que GIRANDO (tier D supress) cortava sistematicamente
-        # alertas vencedores: 45 jogos suprimidos abril+maio com WR 77.8%
-        # (vs base 57%, Z=2.82, p=0.0024). PL hipotetico cortado: +22.72u.
-        # Maio Q2 sairia de -1.87u para +7.70u sem o filtro.
-        # Tier H2H continua sendo calculado e mostrado nas mensagens (letras
-        # [S/A/B/C/D]) para transparencia, mas tier=D nao suprime mais.
+        # TIER H2H — calculo sempre (para mostrar letra na msg e filtrar '?')
         h2h_tier_res = None
         if best_over is not None and not shadow_suppressed:
             try:
@@ -334,16 +328,35 @@ class AlertEngine:
             except Exception as e:
                 logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
 
-        suppressed = shadow_suppressed
+        # TIER FILTER (2026-05-23): suprimir tier '?' (n<3 OU ROI<0 em ACTIVE).
+        # Owner: enviar so alertas com tier classificado (D-S). Alertas em '?'
+        # continuam sendo salvos no DB com suppressed=true para o sistema
+        # acumular historico H2H. Quando combo virar tier D+, comeca a enviar.
+        # Backtest maio 2026: tier '?' tinha 542 alertas ROI -7.7% vs tier
+        # D-S com 373 alertas ROI +29.5%. SHADOW continua independente.
+        tier_unclassified_suppressed = (
+            h2h_tier_res is not None
+            and h2h_tier_res.tier == "?"
+            and not shadow_suppressed
+        )
+
+        suppressed = shadow_suppressed or tier_unclassified_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
             except Exception as e:
                 logger.warning(f"mark_suppressed failed for alert {alert.id}: {e}")
-            logger.bind(category="alert").info(
-                f"OVER alert SUPPRESSED (SHADOW auto-block): {loser} {best_line} "
-                f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
-            )
+            if shadow_suppressed:
+                logger.bind(category="alert").info(
+                    f"OVER alert SUPPRESSED (SHADOW auto-block): {loser} {best_line} "
+                    f"@{best_over['odds']:.2f} — salvo no DB com suppressed=TRUE"
+                )
+            elif tier_unclassified_suppressed:
+                logger.bind(category="alert").info(
+                    f"OVER alert SUPPRESSED (tier='?' n={h2h_tier_res.n} "
+                    f"ROI={h2h_tier_res.roi:+.1f}%): {loser} {best_line} "
+                    f"@{best_over['odds']:.2f} — salvo no DB para acumular historico"
+                )
 
         # 1) Enviar alerta OVER GOLS (se houver linhas com edge E nao suprimido)
         if over_lines and not suppressed:
