@@ -318,36 +318,32 @@ class AlertEngine:
         # SHADOW suppression (todos as linhas over bloqueadas pelo auto-block)
         shadow_suppressed = all_over_suppressed and best_line != "ml"
 
-        # GIRANDO filter: tier D (ROI 0-5%, n>=3) suprime sem enviar ao Telegram,
-        # salva no banco pra tracking. Sai automaticamente quando ROI muda de faixa.
-        girando_suppressed = False
+        # GIRANDO filter REMOVIDO 2026-05-23 (audit out-of-sample).
+        # Backtest mostrou que GIRANDO (tier D supress) cortava sistematicamente
+        # alertas vencedores: 45 jogos suprimidos abril+maio com WR 77.8%
+        # (vs base 57%, Z=2.82, p=0.0024). PL hipotetico cortado: +22.72u.
+        # Maio Q2 sairia de -1.87u para +7.70u sem o filtro.
+        # Tier H2H continua sendo calculado e mostrado nas mensagens (letras
+        # [S/A/B/C/D]) para transparencia, mas tier=D nao suprime mais.
         h2h_tier_res = None
         if best_over is not None and not shadow_suppressed:
             try:
                 h2h_tier_res = await compute_h2h_tier(
                     self.alerts, self.blocked, loser, best_over["line"], winner
                 )
-                if h2h_tier_res.tier == "D":
-                    girando_suppressed = True
-                    logger.bind(category="alert").info(
-                        f"GIRANDO suppressed: {loser} {best_over['line']} vs {winner} "
-                        f"tier=D ROI={h2h_tier_res.roi:+.1f}% n={h2h_tier_res.n} "
-                        f"— salvo no DB sem enviar ao Telegram"
-                    )
             except Exception as e:
-                logger.warning(f"compute_h2h_tier (girando check) falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
+                logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
 
-        suppressed = shadow_suppressed or girando_suppressed
+        suppressed = shadow_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
             except Exception as e:
                 logger.warning(f"mark_suppressed failed for alert {alert.id}: {e}")
-            if shadow_suppressed:
-                logger.bind(category="alert").info(
-                    f"OVER alert SUPPRESSED (auto-block): {loser} {best_line} "
-                    f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
-                )
+            logger.bind(category="alert").info(
+                f"OVER alert SUPPRESSED (SHADOW auto-block): {loser} {best_line} "
+                f"@{best_over['odds']:.2f} — alerta salvo no DB com suppressed=TRUE"
+            )
 
         # 1) Enviar alerta OVER GOLS (se houver linhas com edge E nao suprimido)
         if over_lines and not suppressed:
