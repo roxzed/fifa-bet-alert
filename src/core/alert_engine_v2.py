@@ -2,29 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from loguru import logger
 
 from src.core.h2h_tier import compute_h2h_tier_v2
-
-
-# Filtros calibrados em 2026-05-22 apos backtest sobre maio 2026.
-# Justificativa: M2 saiu de pico +24u (06/05) para flat (+0.6u) ate 22/05.
-# Backtest mostrou que 2 cortes cirurgicos recuperam +16.80u no mes.
-
-# Horarios BRT onde C2 historicamente sangra. 03h BRT teve 27 tips com
-# ROI -42.5% (-11.48u) em maio — fora da banda de variancia normal.
-M2_C2_BAD_HOURS_BRT: frozenset[int] = frozenset({3})
-
-# Combos H2H cronicamente negativos no M2 (player x opp x linha) que nao
-# foram pegos pelo blocked_lines_v2 por terem amostra pequena ou volatil.
-# 3 combos tohi4 que somaram -5.32u em 24 tips (ROI -22.2%) em maio.
-M2_HARD_BLOCKED_COMBOS: frozenset[tuple[str, str, str]] = frozenset({
-    ("tohi4", "Kavviro", "over15"),
-    ("tohi4", "Snow", "over15"),
-    ("tohi4", "Snow", "over25"),
-})
 
 
 class AlertEngineV2:
@@ -204,37 +186,7 @@ class AlertEngineV2:
                 f"tier=D ROI={tier_res.roi:+.1f}% n={tier_res.n} — salvo sem enviar"
             )
 
-        # M2 C2 BAD HOURS filter: 03h BRT sangrou -11.48u/27 tips em maio 2026
-        bad_hour_suppressed = False
-        if (not shadow_suppressed and not girando_suppressed
-                and evaluation.camada == "C2"):
-            kickoff_brt = kickoff
-            if isinstance(kickoff, datetime):
-                if kickoff.tzinfo is not None:
-                    kickoff_brt = kickoff.astimezone(timezone(timedelta(hours=-3)))
-                else:
-                    kickoff_brt = kickoff - timedelta(hours=3)
-                hour_brt = kickoff_brt.hour
-                if hour_brt in M2_C2_BAD_HOURS_BRT:
-                    bad_hour_suppressed = True
-                    logger.bind(category="alert_v2").info(
-                        f"M2 BAD_HOUR suppressed: {loser} {evaluation.best_line} vs "
-                        f"{winner} — C2 {hour_brt:02d}h BRT bloqueada (drainer historico)"
-                    )
-
-        # M2 HARD BLOCKED COMBOS: combos cronicamente negativos manual blocklist
-        hard_blocked_suppressed = False
-        combo_key = (loser, winner, evaluation.best_line or "")
-        if (not shadow_suppressed and not girando_suppressed and not bad_hour_suppressed
-                and combo_key in M2_HARD_BLOCKED_COMBOS):
-            hard_blocked_suppressed = True
-            logger.bind(category="alert_v2").info(
-                f"M2 HARD_BLOCKED suppressed: {loser} {evaluation.best_line} vs "
-                f"{winner} — combo na blocklist manual"
-            )
-
-        suppressed = (shadow_suppressed or girando_suppressed
-                      or bad_hour_suppressed or hard_blocked_suppressed)
+        suppressed = shadow_suppressed or girando_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
