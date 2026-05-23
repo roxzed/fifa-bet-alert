@@ -3,9 +3,11 @@
 Cascata de camadas (apos auditoria 25/04/2026 com Plinio):
   C1a: DESATIVADA — 3 alertas reais 0% WR (-3u). Sample insuficiente E direcao ruim.
   C1b: Cross-confirmation — 4elem >=3 (>=65%) AND 3elem (loser, opp, loser_team) >=5 (>=69%)
-  C2:  H2H geral (loser, opp) min 15 games (era 10), last 20, prob >=85%
-       Aumentado para 15 apos auditoria mostrar drains -11.71u em 61 alertas
-       quando sample H2H estava entre 6-14 jogos.
+  C2:  H2H geral (loser, opp) min 15 games, last 20, prob_shrunk >= 0.75
+       Recalibrado 2026-05-22 com shrinkage bayesiano (mu=0.57, K=20).
+       Antes usava hit_rate raw com threshold 0.85 — calibracao ruidosa
+       causou drawdown -17.70u em maio 2a quinzena. Backtest mostrou que
+       shrunk recupera +14u no mes.
 
 Linhas elegiveis: over25, over15 (era over45/35/25/15).
 over35: 9 alertas reais -1.12u ROI -12%. Removido.
@@ -34,6 +36,20 @@ LINES_ORDER = [
 MIN_ODDS = 1.65
 
 MIN_GAMES_C2 = 15  # era 10. Auditoria 25/04: 6-14 jogos = -11.71u em 61 alertas.
+
+# Recalibracao bayesiana C2 (2026-05-22).
+# Backtest maio mostrou que hit_rate raw em janela de 20 jogos eh muito
+# ruidosa: combos com prob_raw 85%+ tinham WR real ~55% (gap de -30pp).
+# Aplicar shrinkage para a media implicita do mercado (mu=0.57) com peso
+# K=20 jogos calibrou a prob com a WR real. Threshold operacional shrunk
+# 0.75 equivale a raw ~0.93 com sample=20.
+#
+# Backtest M2 maio (so C2 shrunk, C1b inalterado):
+#   Antes:  457 tips, +0.60u, ROI +0.1% (com -17.70u no drawdown C)
+#   Depois: 170 tips, +14.22u, ROI +8.4% (drawdown C virou +7.52u)
+C2_SHRINK_MU = 0.57       # WR implicita media do mercado
+C2_SHRINK_K = 20          # peso do prior (em "jogos equivalentes")
+C2_THRESHOLD_SHRUNK = 0.75  # threshold de prob_shrunk para disparar alerta
 
 # Bloqueio por (player, line) M2 — auditoria 25/04 identificou drains agudos.
 # Stormi over15: -5.94u em 10 (20% WR). Jekunam over15: -4.22u em 11 (36%).
@@ -208,30 +224,45 @@ class StatsEngineV2:
         rows: Sequence,
         odds_dict: dict[str, float | None],
     ) -> EvaluationV2 | None:
-        """C2: H2H geral (loser, opp). Min 15 jogos (era 10), last 20, prob >= 85%."""
+        """C2: H2H geral (loser, opp). Min 15 jogos, last 20.
+
+        Recalibrado 2026-05-22: hit_rate raw eh muito ruidoso. Aplica
+        shrinkage bayesiano para mu=0.57 com K=20 e exige prob_shrunk
+        >= 0.75 (equivale a raw ~0.93 com n=20). Mantem prob declarada
+        ao usuario como shrunk (honesto).
+        """
         if len(rows) < MIN_GAMES_C2:
             return None
 
         goals = [r[0] for r in rows]
         recent = goals[-20:]
+        n_recent = len(recent)
 
         for line, threshold in LINES_ORDER:
             odds_val = odds_dict.get(line)
             if not odds_val or odds_val < MIN_ODDS:
                 continue
-            prob = sum(1 for g in recent if g > threshold) / len(recent)
-            if prob >= 0.85:
+            hit_rate = sum(1 for g in recent if g > threshold) / n_recent
+            prob_shrunk = (
+                (C2_SHRINK_K * C2_SHRINK_MU + n_recent * hit_rate)
+                / (C2_SHRINK_K + n_recent)
+            )
+            if prob_shrunk >= C2_THRESHOLD_SHRUNK:
                 logger.info(
-                    f"M2 C2: {line} prob={prob:.0%} (n={len(recent)}/{len(rows)}) "
+                    f"M2 C2: {line} hit_rate={hit_rate:.0%} "
+                    f"prob_shrunk={prob_shrunk:.0%} (n={n_recent}/{len(rows)}) "
                     f"odds={odds_val:.2f}"
                 )
                 return EvaluationV2(
                     should_alert=True,
                     camada="C2",
                     best_line=line,
-                    prob=prob,
+                    prob=prob_shrunk,
                     odds=odds_val,
-                    sample_size=len(recent),
-                    reason=f"C2: H2H {len(rows)} jogos, {line} {prob:.0%}",
+                    sample_size=n_recent,
+                    reason=(
+                        f"C2: H2H {len(rows)} jogos, {line} "
+                        f"hit={hit_rate:.0%} shrunk={prob_shrunk:.0%}"
+                    ),
                 )
         return None
