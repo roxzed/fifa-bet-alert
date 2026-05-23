@@ -97,10 +97,18 @@ Este documento registra todas as mudanças significativas feitas no sistema entr
 - **Motivo:** Análise mostrou ?_neg deu ROI +40% em maio.
 - **STATUS:** REVERTIDO em `f0646f7`.
 
-#### `f0646f7` — feat(m1): suprimir TODOS alertas tier '?' (cobre n<3 e ?_neg) [ATUAL]
+#### `f0646f7` — feat(m1): suprimir TODOS alertas tier '?' (cobre n<3 e ?_neg) [⚠️ AJUSTADO]
 - **Arquivo:** `src/core/alert_engine.py`
-- **Mudança:** Volta a suprimir TODOS os tier '?'. Owner: "garantia de só enviar tier classificado".
-- **Garantia:** Alert ainda é criado no DB, validado normalmente, profit_flat preenchido. Histórico H2H acumula. Quando combo vira D-S, próximos chegam.
+- **Mudança:** Suprimia TODOS os tier '?'.
+- **STATUS:** Ajustado depois — análise mostrou que ?_neg dava ROI +40%. Não deveria ter sido cortado.
+
+### 24/05/2026 — Refinamento opção B
+
+#### `[ATUAL]` — fix(m1): voltar a suprimir SO ?_n<3, manter ?_neg
+- **Arquivo:** `src/core/alert_engine.py`
+- **Mudança:** Filtro restrito a `h2h_tier_res.n < 3`. Tier `?_neg` (n>=3 com ROI<0) volta a ser enviado.
+- **Motivo:** Backtest maio mostrou ?_neg deu ROI +40% (36 tips). Filtrar perde +14u/mês retroativo.
+- **Trade-off aceito:** regra menos limpa, mas otimizada pelo dado real.
 - **Estado atual do sistema.**
 
 ---
