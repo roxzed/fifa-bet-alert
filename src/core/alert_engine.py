@@ -328,20 +328,23 @@ class AlertEngine:
             except Exception as e:
                 logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
 
-        # TIER FILTER (refinado 2026-05-24): suprimir SO combos sem amostra (n<3).
-        # Owner: combos novos primeiro acumulam historico no DB, sem enviar.
-        # Quando atingem n>=3 com qualquer ROI (incluindo negativo), passam a enviar
-        # — analise maio mostrou que '?_neg' (n>=3 com ROI<0) deu ROI +40% real.
-        # Combos suprimidos sao validados normalmente — profit_flat eh preenchido
-        # e historico H2H acumula. Quando combo "virar tier", proximos chegam.
-        tier_no_sample_suppressed = (
+        # TIER FILTER (2026-05-24): suprimir TODOS os alertas com tier '?'.
+        # Owner: enviar so alertas com tier classificado (D/C/B/A/S).
+        # Cobre ambos os sub-casos:
+        #   - n<3 (combos sem amostra) — acumula historico
+        #   - n>=3 com ROI<0 (?_neg) — em recuperacao, espera classificar
+        #
+        # Importante: alertas '?' SAO criados no DB normalmente (linha acima:
+        # await self.alerts.create(...)), marcados suppressed=true, validados
+        # pelo Validator (preenche profit_flat/hit), e contam para o calculo
+        # de tier H2H. Assim combos "engatam" o mais rapido possivel.
+        tier_unclassified_suppressed = (
             h2h_tier_res is not None
             and h2h_tier_res.tier == "?"
-            and h2h_tier_res.n < 3       # apenas sem amostra
             and not shadow_suppressed
         )
 
-        suppressed = shadow_suppressed or tier_no_sample_suppressed
+        suppressed = shadow_suppressed or tier_unclassified_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
@@ -352,11 +355,11 @@ class AlertEngine:
                     f"OVER alert SUPPRESSED (SHADOW auto-block): {loser} {best_line} "
                     f"@{best_over['odds']:.2f} — salvo no DB com suppressed=TRUE"
                 )
-            elif tier_no_sample_suppressed:
+            elif tier_unclassified_suppressed:
                 logger.bind(category="alert").info(
-                    f"OVER alert SUPPRESSED (sem amostra n={h2h_tier_res.n}): "
-                    f"{loser} {best_line} @{best_over['odds']:.2f} "
-                    f"— salvo no DB para acumular historico H2H"
+                    f"OVER alert SUPPRESSED (tier='?' n={h2h_tier_res.n} "
+                    f"ROI={h2h_tier_res.roi:+.1f}%): {loser} {best_line} "
+                    f"@{best_over['odds']:.2f} — salvo no DB para acumular tier"
                 )
 
         # 1) Enviar alerta OVER GOLS (se houver linhas com edge E nao suprimido)
