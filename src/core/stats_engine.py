@@ -1080,18 +1080,18 @@ class StatsEngine:
                     reason="tight bloqueado: WR 49.8%, ROI -8.0% (309 alertas, auditoria 11/05)",
                 )
 
-            # O1.5: odds minima 1.75 (auditoria 11/05: breakeven matematico 1.73, ROI -0.4%).
+            # O1.5: odds minima 1.70 (era 1.75 — owner baixou 2026-05-24 para pegar
+            # entradas mais cedo. Breakeven matematico em 1.70 = 58.82% WR).
             # Adicional: loss_type deve ser medium ou blowout (qualquer variacao).
-            # tight ja bloqueado acima. tight_open: WR 56.5%, ROI 2.5% — marginal, manter.
             if line_name == "over15":
-                if odds < 1.75:
+                if odds < 1.70:
                     return LineEvaluation(
                         line=line_name, odds=odds, true_prob=tp,
                         true_prob_conservative=tp,
                         implied_prob=implied_probability(odds),
                         edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
                         should_alert=False,
-                        reason=f"O1.5 filtrado: odds={odds:.2f}<1.75 (breakeven matematico)",
+                        reason=f"O1.5 filtrado: odds={odds:.2f}<1.70",
                     )
                 if loser_goals_g1 < 2:
                     return LineEvaluation(
@@ -1103,16 +1103,17 @@ class StatsEngine:
                         reason=f"O1.5 filtrado: g1_goals={loser_goals_g1}<2",
                     )
 
-            # O2.5 e O3.5: odds mínima 1.80
+            # O2.5 e O3.5: odds minima 1.70 (era 1.80 — owner baixou 2026-05-24
+            # para pegar entradas mais cedo. Breakeven matematico em 1.70 = 58.82% WR).
             if line_name in ("over25", "over35"):
-                if odds < 1.80:
+                if odds < 1.70:
                     return LineEvaluation(
                         line=line_name, odds=odds, true_prob=tp,
                         true_prob_conservative=tp,
                         implied_prob=implied_probability(odds),
                         edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
                         should_alert=False,
-                        reason=f"{line_name} filtrado: odds={odds:.2f}<1.80",
+                        reason=f"{line_name} filtrado: odds={odds:.2f}<1.70",
                     )
 
             # Probabilidade de decisao: blend entre tp (Bayesiano, todas camadas)
