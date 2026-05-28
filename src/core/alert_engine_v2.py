@@ -150,7 +150,7 @@ class AlertEngineV2:
             "bet365_url": bet365_url,
         }
 
-        # H2H tier M2 — sempre computa (alimenta GIRANDO check + mostra letra na msg)
+        # H2H tier M2 — sempre computa (alimenta filtro tier '?_n<3' + mostra letra na msg)
         tier_res = None
         if evaluation.best_line:
             try:
@@ -177,16 +177,26 @@ class AlertEngineV2:
                     f"M2 is_suppressed check failed for {loser}/{evaluation.best_line}/vs.{winner}: {e}"
                 )
 
-        # GIRANDO filter M2: tier D (ROI 0-5%, n>=3) suprime sem enviar
-        girando_suppressed = False
-        if not shadow_suppressed and tier_res is not None and tier_res.tier == "D":
-            girando_suppressed = True
-            logger.bind(category="alert_v2").info(
-                f"M2 GIRANDO suppressed: {loser} {evaluation.best_line} vs {winner} "
-                f"tier=D ROI={tier_res.roi:+.1f}% n={tier_res.n} — salvo sem enviar"
-            )
+        # GIRANDO filter REMOVIDO 2026-05-28 (paridade com M1 de 23/05).
+        # Backtest no M1 mostrou que tier D suprimia alertas vencedores
+        # sistematicamente. Owner aplicou o mesmo padrao no M2.
+        # Tier H2H continua sendo calculado/mostrado nas mensagens, mas
+        # tier=D nao suprime mais.
 
-        suppressed = shadow_suppressed or girando_suppressed
+        # TIER FILTER (2026-05-28, paridade com M1 commit aa0bb1b):
+        # Suprimir SO combos sem amostra (n<3). Combos novos primeiro
+        # acumulam historico no DB, sem enviar. Quando atingem n>=3 com
+        # qualquer ROI (incluindo negativo), passam a enviar.
+        # Alertas suprimidos sao validados normalmente — profit_flat preenchido
+        # e historico H2H acumula. Assim combos "engatam" rapido em D-S.
+        tier_no_sample_suppressed = (
+            tier_res is not None
+            and tier_res.tier == "?"
+            and tier_res.n < 3
+            and not shadow_suppressed
+        )
+
+        suppressed = shadow_suppressed or tier_no_sample_suppressed
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
@@ -198,6 +208,12 @@ class AlertEngineV2:
                 logger.bind(category="alert_v2").info(
                     f"M2 alert SUPPRESSED (auto-block): {loser} {evaluation.best_line} "
                     f"@{alert_odds:.2f} — alerta v2 salvo no DB com suppressed=TRUE"
+                )
+            elif tier_no_sample_suppressed:
+                logger.bind(category="alert_v2").info(
+                    f"M2 alert SUPPRESSED (sem amostra n={tier_res.n}): {loser} "
+                    f"{evaluation.best_line} vs {winner} @{alert_odds:.2f} "
+                    f"— salvo no DB para acumular historico H2H"
                 )
             return True  # alerta no DB pra shadow tracking
 
