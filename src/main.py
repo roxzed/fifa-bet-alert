@@ -136,7 +136,9 @@ async def main() -> None:
     blocked_repo_v2 = BlockedLineV2Repository(sf)
     stats_engine_v2 = StatsEngineV2(
         match_repo=MatchRepository(sf),
-        blacklist=stats_engine.PLAYER_BLACKLIST,
+        # M2 nao herda blacklist do M1 (2026-05-29). Cada metodo tem dinamica
+        # propria — bloqueios M2 sao gerenciados pelo SHADOW protocol v2.
+        blacklist=None,
     )
     alert_v2_repo = AlertV2Repository(sf)
     alert_engine_v2 = None
@@ -202,7 +204,7 @@ async def main() -> None:
     game_watcher._health = health_monitor
 
     # --- Reporter ---
-    reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier)
+    reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier, session_factory=sf)
 
     # --- BotCommands ---
     bot_commands = BotCommands(
