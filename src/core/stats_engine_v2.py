@@ -63,6 +63,12 @@ C2_SHRINK_MU = 0.57       # WR implicita media do mercado
 C2_SHRINK_K = 10          # peso do prior (em "jogos equivalentes")
 C2_THRESHOLD_SHRUNK = 0.70  # threshold de prob_shrunk para disparar alerta
 
+# Edge gate C2 (2026-05-29): exigir edge real >= 5% (prob_shrunk - implied).
+# Maio 2026 mostrou edge realizado +0.2pp (basicamente zero) — sistema
+# disparava em combos onde prob_shrunk era apenas marginalmente acima da
+# implied. Adicionar edge gate forca alertas com vantagem matematica real.
+C2_MIN_EDGE = 0.05
+
 # Bloqueio por (player, line) M2 — auditoria 25/04 identificou drains agudos.
 # Stormi over15: -5.94u em 10 (20% WR). Jekunam over15: -4.22u em 11 (36%).
 # nekishka over15: -4.00u em 4 (0%). nikkitta over25: -2.29u em 4 (25%).
@@ -241,6 +247,10 @@ class StatsEngineV2:
         Recalibrado 2026-05-23 (v2): janela reduzida de 20 -> 10 jogos para
         capturar forma corrente do jogador. Janela 20 diluia sinal recente.
         Shrinkage bayesiano mu=0.57 K=10, threshold prob_shrunk >= 0.70.
+
+        Edge gate adicionado 2026-05-29: exige edge real >= 5%
+        (prob_shrunk - 1/odds). Combos onde prob_shrunk apenas marginalmente
+        acima da implied nao geram alerta — sem vantagem matematica real.
         """
         if len(rows) < MIN_GAMES_C2:
             return None
@@ -258,22 +268,33 @@ class StatsEngineV2:
                 (C2_SHRINK_K * C2_SHRINK_MU + n_recent * hit_rate)
                 / (C2_SHRINK_K + n_recent)
             )
-            if prob_shrunk >= C2_THRESHOLD_SHRUNK:
-                logger.info(
-                    f"M2 C2: {line} hit_rate={hit_rate:.0%} "
-                    f"prob_shrunk={prob_shrunk:.0%} (n={n_recent}/{len(rows)}) "
-                    f"odds={odds_val:.2f}"
+            if prob_shrunk < C2_THRESHOLD_SHRUNK:
+                continue
+            # Edge gate: exigir vantagem matematica real >= 5%
+            implied = 1.0 / odds_val
+            edge = prob_shrunk - implied
+            if edge < C2_MIN_EDGE:
+                logger.debug(
+                    f"M2 C2 SKIP (edge baixo): {line} prob_shrunk={prob_shrunk:.0%} "
+                    f"odds={odds_val:.2f} edge={edge:+.1%} < {C2_MIN_EDGE:.0%}"
                 )
-                return EvaluationV2(
-                    should_alert=True,
-                    camada="C2",
-                    best_line=line,
-                    prob=prob_shrunk,
-                    odds=odds_val,
-                    sample_size=n_recent,
-                    reason=(
-                        f"C2: H2H {len(rows)} jogos, {line} "
-                        f"hit={hit_rate:.0%}(n={n_recent}) shrunk={prob_shrunk:.0%}"
-                    ),
-                )
+                continue
+            logger.info(
+                f"M2 C2: {line} hit_rate={hit_rate:.0%} "
+                f"prob_shrunk={prob_shrunk:.0%} (n={n_recent}/{len(rows)}) "
+                f"odds={odds_val:.2f} edge={edge:+.1%}"
+            )
+            return EvaluationV2(
+                should_alert=True,
+                camada="C2",
+                best_line=line,
+                prob=prob_shrunk,
+                odds=odds_val,
+                sample_size=n_recent,
+                reason=(
+                    f"C2: H2H {len(rows)} jogos, {line} "
+                    f"hit={hit_rate:.0%}(n={n_recent}) shrunk={prob_shrunk:.0%} "
+                    f"edge={edge:+.1%}"
+                ),
+            )
         return None
