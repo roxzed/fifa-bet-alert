@@ -204,7 +204,7 @@ async def main() -> None:
     game_watcher._health = health_monitor
 
     # --- Reporter ---
-    reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier, session_factory=sf)
+    reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier)
 
     # --- BotCommands ---
     bot_commands = BotCommands(
