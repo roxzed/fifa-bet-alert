@@ -709,6 +709,17 @@ class AlertRepository(_BaseRepository):
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
+    async def exists_for_line(self, match_id: int, best_line: str) -> bool:
+        """Check if alert exists for (match_id, best_line) — para evitar dups."""
+        async with self._session() as session:
+            stmt = (
+                select(Alert.id)
+                .where(Alert.match_id == match_id, Alert.best_line == best_line)
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+
     async def get_all_by_match_id(self, match_id: int) -> Sequence[Alert]:
         """Return ALL alerts for a given match_id."""
         async with self._session() as session:
@@ -1407,6 +1418,17 @@ class AlertV2Repository(_BaseRepository):
             session.add(alert)
             await session.flush()
             return alert
+
+    async def exists_for_line(self, match_id: int, best_line: str) -> bool:
+        """Check if alert v2 exists for (match_id, best_line) — para evitar dups."""
+        async with self._session() as session:
+            stmt = (
+                select(AlertV2.id)
+                .where(AlertV2.match_id == match_id, AlertV2.best_line == best_line)
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
 
     async def mark_suppressed(self, alert_id: int) -> None:
         """Marca alerta v2 como suppressed=TRUE (auto-block SHADOW)."""

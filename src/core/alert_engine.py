@@ -190,6 +190,17 @@ class AlertEngine:
             )
             return (False, True)
 
+        # Dedupe robusto: se ja existe alert pra (match_id, best_line), pular.
+        # 2026-06-01: auditoria identificou 1.173 alerts duplicados em M1 por
+        # polls do OddsMonitor (a cada 15s). O flag suppressed_already_recorded
+        # nao cobre todos os casos. Esse check no DB garante zero dups.
+        if await self.alerts.exists_for_line(return_match.id, best_line):
+            logger.bind(category="alert").debug(
+                f"Skip duplicate alert create: match={return_match.id} line={best_line} "
+                f"(ja existe alert pra esse match+line)"
+            )
+            return (False, all_over_suppressed)
+
         if best_line == "over45":
             alert_odds = over45_odds
             alert_label = "Over 4.5"

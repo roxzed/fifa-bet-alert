@@ -148,19 +148,23 @@ _cache: dict = {"rows": [], "updated": None}
 _lock = threading.Lock()
 
 QUERY = """
-SELECT a.id, a.losing_player, a.best_line, a.sent_at,
-       a.over15_odds, a.over25_odds, a.over35_odds, a.over45_odds,
-       a.actual_goals, a.over15_hit, a.over25_hit, a.over35_hit, a.over45_hit,
-       a.profit_flat, a.edge, a.true_prob, a.star_rating,
-       a.game1_score, a.loss_type, a.loser_goals_g1,
-       m.player_home, m.player_away, m.team_home, m.team_away,
-       m.score_home, m.score_away
-FROM alerts a
-LEFT JOIN matches m ON a.match_id = m.id
-WHERE a.validated_at IS NOT NULL
-  AND a.sent_at >= '2026-04-05'
-  AND a.suppressed IS NOT TRUE
-ORDER BY a.sent_at DESC
+SELECT * FROM (
+    SELECT DISTINCT ON (a.match_id, a.best_line)
+           a.id, a.losing_player, a.best_line, a.sent_at,
+           a.over15_odds, a.over25_odds, a.over35_odds, a.over45_odds,
+           a.actual_goals, a.over15_hit, a.over25_hit, a.over35_hit, a.over45_hit,
+           a.profit_flat, a.edge, a.true_prob, a.star_rating,
+           a.game1_score, a.loss_type, a.loser_goals_g1,
+           m.player_home, m.player_away, m.team_home, m.team_away,
+           m.score_home, m.score_away
+    FROM alerts a
+    LEFT JOIN matches m ON a.match_id = m.id
+    WHERE a.validated_at IS NOT NULL
+      AND a.sent_at >= '2026-04-05'
+      AND a.suppressed IS NOT TRUE
+    ORDER BY a.match_id, a.best_line, a.sent_at ASC
+) dedup
+ORDER BY sent_at DESC
 """
 
 
@@ -184,18 +188,22 @@ def _fetch_data() -> list[dict]:
 # H2H granular fetch (admin only, NOT exposed in /api/data)
 # ---------------------------------------------------------------------------
 H2H_QUERY = """
-SELECT a.id, a.losing_player AS player, a.best_line AS line,
-       CASE WHEN m.player_home = a.losing_player
-            THEN m.player_away ELSE m.player_home END AS opp,
-       a.profit_flat AS prof, a.suppressed,
-       a.over15_odds, a.over25_odds, a.over35_odds, a.over45_odds,
-       a.true_prob, a.edge, a.star_rating, a.sent_at
-FROM alerts a
-JOIN matches m ON a.match_id = m.id
-WHERE a.sent_at >= '2026-04-15 01:07:00'
-  AND a.profit_flat IS NOT NULL
-  AND a.best_line IS NOT NULL
-ORDER BY a.sent_at ASC
+SELECT * FROM (
+    SELECT DISTINCT ON (a.match_id, a.best_line)
+           a.id, a.losing_player AS player, a.best_line AS line,
+           CASE WHEN m.player_home = a.losing_player
+                THEN m.player_away ELSE m.player_home END AS opp,
+           a.profit_flat AS prof, a.suppressed,
+           a.over15_odds, a.over25_odds, a.over35_odds, a.over45_odds,
+           a.true_prob, a.edge, a.star_rating, a.sent_at
+    FROM alerts a
+    JOIN matches m ON a.match_id = m.id
+    WHERE a.sent_at >= '2026-04-15 01:07:00'
+      AND a.profit_flat IS NOT NULL
+      AND a.best_line IS NOT NULL
+    ORDER BY a.match_id, a.best_line, a.sent_at ASC
+) dedup
+ORDER BY sent_at ASC
 """
 
 BLOCKED_QUERY = """

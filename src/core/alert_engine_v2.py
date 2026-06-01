@@ -94,6 +94,15 @@ class AlertEngineV2:
         else:
             g1_score = f"{score_away}-{score_home}"
 
+        # Dedupe: se ja existe alert v2 pra (match_id, best_line), pular.
+        # Evita polls do OddsMonitor criarem alerts duplicados.
+        if await self.alerts.exists_for_line(return_match.id, evaluation.best_line):
+            logger.debug(
+                f"M2 skip duplicate alert create: match={return_match.id} "
+                f"line={evaluation.best_line}"
+            )
+            return False
+
         # Save to DB
         alert = await self.alerts.create(
             match_id=return_match.id,
