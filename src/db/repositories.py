@@ -60,13 +60,15 @@ class _BaseRepository:
         finally:
             await session.close()
 
-    async def execute_query(self, stmt):
+    async def execute_query(self, stmt, params: dict | None = None):
         """Run an ad-hoc SQLAlchemy statement in an isolated session.
 
         Returns the raw Result object. Useful for complex queries that
         don't fit neatly into standard CRUD methods.
         """
         async with self._session() as session:
+            if params is not None:
+                return await session.execute(stmt, params)
             return await session.execute(stmt)
 
     async def save_model(self, instance):
