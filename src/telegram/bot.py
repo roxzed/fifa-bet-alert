@@ -556,12 +556,18 @@ class TelegramNotifier:
     async def send_watch(self, watch_data: dict, auto_delete_seconds: int = 600) -> int | None:
         """Send a silent pre-alert (watch) and schedule auto-deletion.
 
-        Sends to chat_id and group_chat_id (when configured), silent (no notification).
-        Schedules deletion of all sent messages after `auto_delete_seconds`.
-        Returns the main chat message_id, or None on failure.
+        2026-06-04: redirecionado pra DM admin apenas. Antes ia pros grupos VIP/M2.
+        Decisao do owner: watches sao ruido pros assinantes, mantem visibilidade
+        do estado do sistema so pra mim no DM.
+
+        Schedules deletion of the sent message after `auto_delete_seconds`.
+        Returns the message_id, or None on failure.
         """
         if self._paused:
             logger.debug("Alerts paused, skipping send_watch")
+            return None
+        if not self._admin_chat_id:
+            logger.debug("send_watch NO-OP: TELEGRAM_ADMIN_CHAT_ID vazio")
             return None
         from src.telegram.messages import format_watch_message
         text = _sanitize_text(format_watch_message(watch_data))
@@ -570,30 +576,17 @@ class TelegramNotifier:
 
         try:
             msg = await self.bot.send_message(
-                chat_id=self.chat_id,
+                chat_id=self._admin_chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
                 disable_notification=False,
             )
-            sent.append((self.chat_id, msg.message_id))
+            sent.append((self._admin_chat_id, msg.message_id))
             main_msg_id = msg.message_id
         except TelegramError as e:
-            logger.warning(f"Failed to send watch to main chat: {e}")
+            logger.warning(f"Failed to send watch to admin DM: {e}")
             return None
-
-        if self._group_chat_id:
-            try:
-                gmsg = await self.bot.send_message(
-                    chat_id=self._group_chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                    disable_notification=False,
-                )
-                sent.append((self._group_chat_id, gmsg.message_id))
-            except TelegramError as e:
-                logger.warning(f"Failed to send watch to group: {e}")
 
         logger.bind(category="watch").info(
             f"Watch sent: {watch_data.get('target_player')} "
