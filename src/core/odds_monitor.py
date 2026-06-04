@@ -127,7 +127,8 @@ class OddsMonitor:
         self._task_meta: dict[int, dict] = {}  # match_id → {game1_match, loser, ...}
         self._task_started: dict[int, float] = {}  # match_id → monotonic start time
         self._alert_v2_sent: dict[int, bool] = {}  # match_id → True se M2 alerta ja foi enviado
-        self._watch_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task
+        self._watch_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M1)
+        self._watch_tasks_v2: dict[int, asyncio.Task] = {}  # match_id → watch task (M2)
 
     async def start_monitoring(
         self,
@@ -247,13 +248,21 @@ class OddsMonitor:
             f"Monitoring {loser} (g1_goals={loser_goals_g1}) for return match {match_id}"
         )
 
-        # Agendar watch (pre-alerta) — fire and forget
+        # Agendar watch M1 (pre-alerta) — fire and forget
         if match_id not in self._watch_tasks:
             wtask = asyncio.create_task(
                 self._watch_loop(return_match, game1_match, loser, winner, loser_goals_g1),
                 name=f"watch_{match_id}",
             )
             self._watch_tasks[match_id] = wtask
+
+        # Agendar watch M2 (pre-alerta) — so se alert_engine_v2 disponivel
+        if self.alert_engine_v2 and match_id not in self._watch_tasks_v2:
+            wtask_v2 = asyncio.create_task(
+                self._watch_loop_v2(return_match, game1_match, loser, winner, loser_goals_g1),
+                name=f"watch_v2_{match_id}",
+            )
+            self._watch_tasks_v2[match_id] = wtask_v2
 
     async def _monitor_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
@@ -360,6 +369,18 @@ class OddsMonitor:
                         if o
                     )
                     logger.info(f"Bet365 odds for {loser} (match {match_id}): {lines_str}")
+
+                    # Alerta de gap: linhas esperadas ausentes na resposta da API
+                    missing = [
+                        f"O{l}" for l, o in
+                        [(1.5, over15_odds), (2.5, over25_odds)]
+                        if not o
+                    ]
+                    if missing and (over35_odds or over45_odds):
+                        logger.warning(
+                            f"[ODDS_GAP] {loser} match={match_id}: "
+                            f"{', '.join(missing)} ausentes na API — so veio {lines_str}"
+                        )
 
                     # Evaluate and alert PRIMEIRO — DB saves depois (reduz delay)
                     # Sem gate temporal: alerta dispara sempre que filtros estatisticos passarem
@@ -599,6 +620,95 @@ class OddsMonitor:
         finally:
             self._watch_tasks.pop(match_id, None)
 
+    async def _watch_loop_v2(
+        self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
+    ) -> None:
+        """Watch M2 (paralelo ao M1): pre-aviso baseado em StatsEngineV2.
+
+        Igual ao _watch_loop, mas usa alert_engine_v2.stats. Marcador 'M2'
+        no payload pra diferenciar visualmente. Vai pro DM admin (mesma
+        rota do send_watch atual).
+        """
+        match_id = return_match.id
+        kickoff = return_match.started_at
+        if kickoff is None:
+            logger.debug(f"WatchV2 {match_id}: sem kickoff, abortando")
+            return
+
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            seconds_until_send = (kickoff - now).total_seconds() - self._WATCH_LEAD_SECONDS
+            if seconds_until_send > 0:
+                await asyncio.sleep(seconds_until_send)
+
+            now2 = datetime.now(timezone.utc).replace(tzinfo=None)
+            if (kickoff - now2).total_seconds() < 0:
+                logger.info(f"WatchV2 {match_id}: kickoff ja passou, abortando")
+                return
+
+            stats_v2 = self.alert_engine_v2.stats
+            loser_was_home_g1 = (
+                (game1_match.player_home == loser)
+                if game1_match.player_home else None
+            )
+            candidate = await stats_v2.predict_watch_candidate(
+                return_match=return_match,
+                game1_match=game1_match,
+                losing_player=loser,
+                opponent_player=winner,
+                loser_goals_g1=loser_goals_g1,
+                loser_was_home_g1=loser_was_home_g1,
+            )
+            if candidate is None:
+                logger.debug(f"WatchV2 {match_id}: sem candidato M2, skip")
+                return
+
+            # Checar shadow M2 (blocked_lines_v2) — skip se suprimido
+            blocked_repo_v2 = getattr(self.alert_engine_v2, "blocked", None)
+            cand_line = candidate.get("line")
+            if blocked_repo_v2 is not None and cand_line:
+                try:
+                    is_supp = await blocked_repo_v2.is_suppressed(loser, cand_line, winner)
+                except Exception as e:
+                    logger.warning(f"WatchV2 {match_id}: is_suppressed falhou ({e})")
+                    is_supp = False
+                if is_supp:
+                    logger.info(
+                        f"WatchV2 {match_id}: skip — {loser}/{cand_line}/vs.{winner} "
+                        f"em SHADOW M2; pre-alerta nao seria honrado"
+                    )
+                    return
+
+            from zoneinfo import ZoneInfo
+            kickoff_brt = (
+                kickoff.replace(tzinfo=timezone.utc)
+                .astimezone(ZoneInfo("America/Sao_Paulo"))
+            )
+            watch_data = {
+                "method": "M2",
+                "camada": candidate.get("camada"),
+                "kickoff_str": kickoff_brt.strftime("%H:%M"),
+                "player_home": return_match.player_home,
+                "player_away": return_match.player_away,
+                "line_label": candidate["line_label"],
+                "target_player": candidate["target_player"],
+                "target_odds": candidate["target_odds"],
+                "lines": candidate.get("lines") or [],
+            }
+            notifier = self.alert_engine.notifier
+            await notifier.send_watch(
+                watch_data,
+                auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            )
+
+        except asyncio.CancelledError:
+            logger.debug(f"WatchV2 task {match_id} cancelled")
+            raise
+        except Exception as e:
+            logger.warning(f"WatchV2 loop error for match {match_id}: {e}")
+        finally:
+            self._watch_tasks_v2.pop(match_id, None)
+
     async def _fetch_loser_odds(self, return_match, loser: str):
         """Find bet365 FI for the match and return player goals odds for the loser.
 
@@ -703,6 +813,9 @@ class OddsMonitor:
         wtask = self._watch_tasks.pop(match_id, None)
         if wtask and not wtask.done():
             wtask.cancel()
+        wtask_v2 = self._watch_tasks_v2.pop(match_id, None)
+        if wtask_v2 and not wtask_v2.done():
+            wtask_v2.cancel()
 
     def stop_all(self) -> None:
         """Cancel all monitoring tasks."""
@@ -711,9 +824,13 @@ class OddsMonitor:
         for wtask in self._watch_tasks.values():
             if not wtask.done():
                 wtask.cancel()
+        for wtask_v2 in self._watch_tasks_v2.values():
+            if not wtask_v2.done():
+                wtask_v2.cancel()
         self._tasks.clear()
         self._task_started.clear()
         self._watch_tasks.clear()
+        self._watch_tasks_v2.clear()
         logger.info("All odds monitors stopped")
 
     @property

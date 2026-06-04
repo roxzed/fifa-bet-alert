@@ -166,8 +166,13 @@ def format_watch_message(d: dict) -> str:
 
     primary_odds = lines[0].get("target_odds", 0) or 0
 
+    method = d.get("method", "M1")
+    method_tag = f" [{method}]" if method != "M1" else ""
+    camada = d.get("camada")
+    camada_str = f" ({camada})" if camada else ""
+
     return (
-        f"🔔 <b>AVISO — {_esc(d.get('kickoff_str', '?'))}</b>\n"
+        f"🔔 <b>AVISO{method_tag} — {_esc(d.get('kickoff_str', '?'))}</b>{camada_str}\n"
         f"\n"
         f"Jogo: {_esc(d.get('player_home'))} vs {_esc(d.get('player_away'))}\n"
         f"Jogador alvo: <b>{target_player}</b>\n"

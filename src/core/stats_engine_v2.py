@@ -150,6 +150,68 @@ class StatsEngineV2:
 
         return EvaluationV2(should_alert=False, reason="Nenhuma camada atingida")
 
+    async def predict_watch_candidate(
+        self,
+        return_match,
+        game1_match,
+        losing_player: str,
+        opponent_player: str,
+        loser_goals_g1: int,
+        loser_was_home_g1: bool | None = None,
+    ) -> dict | None:
+        """Prediz se um G2 vai gerar alerta M2; retorna info do watch ou None.
+
+        Usa evaluate_opportunity com odds-alvo (1.75/1.80) para detectar
+        se C1b ou C2 disparariam. Retorna o candidato com prob mais alta.
+        """
+        # Times do G1 — pra C1b cross-confirmation
+        if game1_match.player_home == losing_player:
+            loser_team = game1_match.team_home or ""
+            opponent_team = game1_match.team_away or ""
+        else:
+            loser_team = game1_match.team_away or ""
+            opponent_team = game1_match.team_home or ""
+
+        target_odds = {"over15": 1.75, "over25": 1.80}
+        try:
+            evaluation = await self.evaluate_opportunity(
+                loser=losing_player,
+                opponent=opponent_player,
+                loser_team=loser_team,
+                opp_team=opponent_team,
+                odds_dict=target_odds,
+            )
+        except Exception as e:
+            logger.warning(
+                f"M2 predict_watch_candidate failed for {losing_player}: {e}"
+            )
+            return None
+
+        if not evaluation.should_alert:
+            return None
+
+        line_labels = {"over15": "over 1.5", "over25": "over 2.5"}
+        best_line = evaluation.best_line
+        target = target_odds.get(best_line, 1.80)
+        return {
+            "method": "M2",
+            "camada": evaluation.camada,
+            "line": best_line,
+            "line_label": line_labels.get(best_line, best_line),
+            "target_odds": target,
+            "target_player": losing_player,
+            "predicted_prob": float(evaluation.prob),
+            "lines": [
+                {
+                    "line": best_line,
+                    "line_label": line_labels.get(best_line, best_line),
+                    "target_odds": target,
+                    "predicted_tp": float(evaluation.prob),
+                    "camada": evaluation.camada,
+                }
+            ],
+        }
+
     def _try_c1a(
         self,
         rows: Sequence,
