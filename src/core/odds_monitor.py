@@ -113,7 +113,9 @@ class OddsMonitor:
     _MAX_MONITOR_SECONDS: int = 45 * 60  # 45 min máximo por partida
     _MAX_CONCURRENT_TASKS: int = 30      # máximo de tasks simultâneas
     _WATCH_LEAD_SECONDS: int = 90        # enviar watch T-90s antes do kickoff
-    _WATCH_AUTO_DELETE_SECONDS: int = 600  # apagar watch 10 min apos envio
+    _WATCH_AUTO_DELETE_SECONDS: int = 1200  # apagar watch 20 min apos envio
+    # 1200s cobre lead (90s) + duracao real do jogo (~13-14 min) + margem (~4-5min)
+    # Antes era 600s — apagava antes do jogo terminar em alguns casos.
 
     def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15,
                  alert_engine_v2=None) -> None:
