@@ -1149,6 +1149,168 @@ class BotCommands:
         except Exception as e:
             await update.message.reply_text(f"Erro: {e}")
 
+    async def cmd_enviarimagem(self, update: Update,
+                                context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/enviarimagem [DD/MM/YYYY] — gera imagem do resultado VIP e envia ao grupo FREE.
+
+        Sem argumento: usa o dia anterior (BRT).
+        Com argumento: usa a data informada (DD/MM/YYYY).
+        Marca todos os membros do grupo FREE (caption + overflow batches).
+        Apenas admin pode usar.
+        """
+        from src.config import settings
+        from datetime import datetime, timedelta, timezone
+        from src.core.cancelled_alerts import CANCELLED_ALERT_IDS
+        from src.core.daily_image import generate_daily_image
+        from src.db.models import FreeGroupMember, Alert
+        from sqlalchemy import select as sa_select, and_
+        from telegram.constants import ParseMode
+        import io as _io
+
+        admin_id = settings.telegram_admin_chat_id
+        if str(update.effective_user.id) != str(admin_id):
+            return
+
+        free_group_id = settings.telegram_free_group_id
+        if not free_group_id:
+            await update.message.reply_text(
+                "❌ TELEGRAM_FREE_GROUP_ID nao configurado."
+            )
+            return
+
+        # Parse data
+        args = context.args
+        if args:
+            try:
+                target_date = datetime.strptime(args[0], "%d/%m/%Y").date()
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Formato invalido. Use: /enviarimagem DD/MM/YYYY\n"
+                    "Exemplo: /enviarimagem 04/06/2026"
+                )
+                return
+        else:
+            now_brt = datetime.now(timezone.utc) - timedelta(hours=3)
+            target_date = (now_brt - timedelta(days=1)).date()
+
+        date_label = target_date.strftime("%d/%m/%Y")
+        await update.message.reply_text(f"⏳ Processando {date_label}...")
+
+        # Stats
+        if not self.session_factory:
+            await update.message.reply_text("❌ session_factory indisponivel.")
+            return
+        try:
+            day_start = datetime.combine(target_date, datetime.min.time())
+            day_end = day_start + timedelta(days=1)
+            async with self.session_factory() as session:
+                stmt = sa_select(Alert).where(and_(
+                    Alert.sent_at.is_not(None),
+                    Alert.suppressed.is_not(True),
+                    Alert.telegram_message_id.is_not(None),
+                ))
+                result = await session.execute(stmt)
+                all_alerts = result.scalars().all()
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro DB: {e}")
+            return
+
+        # Filtra por janela BRT (sent_at em UTC + 3h shift = BRT)
+        total = 0; greens = 0; reds = 0; profit = 0.0; cancelled = 0
+        for a in all_alerts:
+            sent = a.sent_at
+            if sent is None:
+                continue
+            sent_brt = sent - timedelta(hours=3)
+            if not (day_start <= sent_brt < day_end):
+                continue
+            if a.id in CANCELLED_ALERT_IDS:
+                cancelled += 1; continue
+            total += 1
+            if a.validated_at is None:
+                continue
+            pl = float(a.profit_flat) if a.profit_flat is not None else 0
+            profit += pl
+            if pl > 0: greens += 1
+            elif pl < 0: reds += 1
+        validated = greens + reds
+        roi = (profit / validated * 100) if validated > 0 else 0
+
+        if total == 0:
+            await update.message.reply_text(
+                f"⚠️ Nenhum alerta enviado em {date_label}. Abortando."
+            )
+            return
+
+        # Gera imagem
+        try:
+            img_bytes = await generate_daily_image(
+                date_label=date_label, pl=profit, alertas=total,
+                greens=greens, reds=reds, roi=roi,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Falha ao gerar imagem: {e}")
+            return
+
+        # Busca membros FREE
+        try:
+            async with self.session_factory() as session:
+                result = await session.execute(sa_select(FreeGroupMember))
+                members = result.scalars().all()
+        except Exception as e:
+            await update.message.reply_text(f"❌ Erro ao buscar membros: {e}")
+            return
+
+        tags = [
+            f'<a href="tg://user?id={m.user_id}">{m.first_name or "user"}</a>'
+            for m in members
+        ]
+        CAPTION_LIMIT = 1024; MSG_LIMIT = 4096
+        caption_parts = []; used = 0; remaining = list(tags)
+        for tag in tags:
+            needed = len(tag) + (1 if caption_parts else 0)
+            if used + needed > CAPTION_LIMIT: break
+            caption_parts.append(tag); used += needed; remaining = remaining[1:]
+        caption = " ".join(caption_parts)
+        overflow_batches = []; cur_parts = []; cur_len = 0
+        for tag in remaining:
+            needed = len(tag) + (1 if cur_parts else 0)
+            if cur_len + needed > MSG_LIMIT:
+                overflow_batches.append(" ".join(cur_parts))
+                cur_parts = [tag]; cur_len = len(tag)
+            else:
+                cur_parts.append(tag); cur_len += needed
+        if cur_parts: overflow_batches.append(" ".join(cur_parts))
+
+        # Envia
+        bot = self.notifier.bot
+        try:
+            photo_msg = await bot.send_photo(
+                chat_id=free_group_id,
+                photo=_io.BytesIO(img_bytes),
+                caption=caption or None,
+                parse_mode=ParseMode.HTML if caption else None,
+            )
+            for batch in overflow_batches:
+                await bot.send_message(
+                    chat_id=free_group_id, text=batch,
+                    parse_mode=ParseMode.HTML,
+                    reply_to_message_id=photo_msg.message_id,
+                    disable_web_page_preview=True,
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Falha ao enviar: {e}")
+            return
+
+        await update.message.reply_text(
+            f"✅ Enviado pro grupo FREE\n"
+            f"📅 {date_label}\n"
+            f"📊 {total} alertas | {greens}G/{reds}R | "
+            f"PL {profit:+.2f}u | ROI {roi:+.2f}%\n"
+            f"👥 {len(members)} membros marcados ({len(overflow_batches)+1} msg)\n"
+            f"🖼️ message_id={photo_msg.message_id}"
+        )
+
     def register_handlers(self, application: Application) -> None:
         """Register all command handlers with the bot application."""
         application.add_handler(CommandHandler("status", self.cmd_status))
@@ -1169,6 +1331,7 @@ class BotCommands:
         application.add_handler(CommandHandler("all", self.cmd_all))
         application.add_handler(CommandHandler("freecount", self.cmd_freecount))
         application.add_handler(CommandHandler("optin", self.cmd_optin))
+        application.add_handler(CommandHandler("enviarimagem", self.cmd_enviarimagem))
         # /all em legenda de foto/video/gif/document (CommandHandler ignora captions)
         media_filter = (
             filters.PHOTO
