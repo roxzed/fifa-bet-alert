@@ -204,7 +204,10 @@ async def main() -> None:
     game_watcher._health = health_monitor
 
     # --- Reporter ---
-    reporter = Reporter(AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier)
+    reporter = Reporter(
+        AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier,
+        alert_v2_repo=alert_v2_repo,
+    )
 
     # --- BotCommands ---
     bot_commands = BotCommands(
@@ -261,6 +264,11 @@ async def main() -> None:
     # Daily results at 23:50 (same format as /results command)
     scheduler.add_daily_task(
         reporter.send_daily_report, hour=23, minute=50, task_id="daily_report"
+    )
+
+    # Daily M2 results at 23:50 — texto puro pro grupo M2 (sem imagem)
+    scheduler.add_daily_task(
+        reporter.send_daily_report_v2, hour=23, minute=50, task_id="daily_report_v2"
     )
 
     # Weekly report on Sunday at 23:50

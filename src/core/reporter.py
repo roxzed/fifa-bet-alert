@@ -19,11 +19,13 @@ from src.core.cancelled_alerts import CANCELLED_ALERT_IDS
 class Reporter:
     """Generates and sends scheduled performance reports."""
 
-    def __init__(self, alert_repo, player_repo, method_stats_repo, notifier) -> None:
+    def __init__(self, alert_repo, player_repo, method_stats_repo, notifier, session_factory=None, alert_v2_repo=None) -> None:
         self.alerts = alert_repo
         self.players = player_repo
         self.method_stats = method_stats_repo
         self.notifier = notifier
+        self._sf = session_factory
+        self.alerts_v2 = alert_v2_repo
 
     async def send_daily_report(self) -> None:
         """Build and send the daily results in /results format."""
@@ -74,7 +76,53 @@ class Reporter:
             f"P/L {vip_msg['profit']:+.2f}u"
         )
 
-        # ----- Mandar tambem versao FREE no grupo FREE (subset) -----
+        # ----- Imagem de resultado + menções enviadas ao grupo FREE -----
+        if settings.telegram_free_group_id:
+            free_group_id = (
+                getattr(self.notifier, "_free_group_id", None)
+                or settings.telegram_free_group_id
+            )
+            try:
+                from src.core.daily_image import generate_daily_image
+                import io as _io
+                from telegram.constants import ParseMode
+
+                img_bytes = await generate_daily_image(
+                    date_label=date_label,
+                    pl=vip_msg["profit"],
+                    alertas=vip_msg["total"],
+                    greens=vip_msg["greens"],
+                    reds=vip_msg["losses"],
+                    roi=vip_msg["roi"],
+                )
+
+                # Busca membros e separa em caption + overflow
+                caption, overflow_batches = await self._build_mentions_split()
+
+                photo_msg = await self.notifier.bot.send_photo(
+                    chat_id=free_group_id,
+                    photo=_io.BytesIO(img_bytes),
+                    caption=caption or None,
+                    parse_mode=ParseMode.HTML if caption else None,
+                )
+                logger.info(f"Daily image sent to FREE group (caption={len(caption)} chars, overflow={len(overflow_batches)} batches)")
+
+                # Envia overflow como reply da foto para manter tudo agrupado
+                for batch_text in overflow_batches:
+                    try:
+                        await self.notifier.bot.send_message(
+                            chat_id=free_group_id,
+                            text=batch_text,
+                            parse_mode=ParseMode.HTML,
+                            reply_to_message_id=photo_msg.message_id,
+                            disable_web_page_preview=True,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Daily image overflow mention error: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to send daily image to FREE group: {e}")
+
+        # ----- Mandar tambem versao FREE (texto) no grupo FREE (subset) -----
         free_alerts = [a for a in alerts if getattr(a, "free_message_id", None)]
         if free_alerts and settings.telegram_free_group_id:
             free_msg = self._build_results_msg(
@@ -95,6 +143,204 @@ class Reporter:
             except Exception as e:
                 logger.warning(f"Failed to send FREE daily report: {e}")
 
+    async def _build_mentions_split(self) -> tuple[str, list[str]]:
+        """Retorna (caption, overflow_batches) com todas as menções do grupo free.
+
+        caption: primeira fatia que cabe em 1024 chars (limite Telegram caption).
+        overflow_batches: lista de strings de menção (cada uma <= 4096 chars)
+                          para enviar como reply da foto.
+        """
+        if not self._sf:
+            return "", []
+        from sqlalchemy import select
+        from src.db.models import FreeGroupMember
+
+        try:
+            async with self._sf() as session:
+                result = await session.execute(select(FreeGroupMember))
+                members = result.scalars().all()
+        except Exception as e:
+            logger.warning(f"_build_mentions_split DB error: {e}")
+            return "", []
+
+        if not members:
+            return "", []
+
+        tags = [
+            f'<a href="tg://user?id={m.user_id}">{m.first_name or "user"}</a>'
+            for m in members
+        ]
+
+        CAPTION_LIMIT = 1024
+        MSG_LIMIT = 4096
+
+        # Preenche caption com o máximo que cabe
+        caption_parts: list[str] = []
+        used = 0
+        remaining_tags = list(tags)
+        for tag in tags:
+            needed = len(tag) + (1 if caption_parts else 0)
+            if used + needed > CAPTION_LIMIT:
+                break
+            caption_parts.append(tag)
+            used += needed
+            remaining_tags = remaining_tags[1:]
+
+        caption = " ".join(caption_parts)
+
+        # Agrupa o restante em batches de até 4096 chars
+        overflow_batches: list[str] = []
+        current_parts: list[str] = []
+        current_len = 0
+        for tag in remaining_tags:
+            needed = len(tag) + (1 if current_parts else 0)
+            if current_len + needed > MSG_LIMIT:
+                overflow_batches.append(" ".join(current_parts))
+                current_parts = [tag]
+                current_len = len(tag)
+            else:
+                current_parts.append(tag)
+                current_len += needed
+        if current_parts:
+            overflow_batches.append(" ".join(current_parts))
+
+        return caption, overflow_batches
+
+    async def send_daily_report_v2(self) -> None:
+        """Envia /results do M2 no grupo M2 — formato texto, sem imagem."""
+        from src.config import settings
+
+        if self.alerts_v2 is None:
+            logger.warning("send_daily_report_v2 SKIP: alert_v2_repo nao configurado")
+            return
+
+        v2_group_id = (
+            getattr(self.notifier, "_v2_group_id", None)
+            or getattr(settings, "telegram_group_v2_id", "")
+        )
+        if not v2_group_id:
+            logger.info("send_daily_report_v2 SKIP: TELEGRAM_GROUP_V2_ID vazio")
+            return
+
+        try:
+            from zoneinfo import ZoneInfo
+            tz_local = ZoneInfo(settings.timezone)
+        except Exception:
+            tz_local = timezone(timedelta(hours=-3))
+
+        now_local = datetime.now(tz_local)
+        target_date = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = target_date.astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc = (target_date + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+        date_label = target_date.strftime("%d/%m/%Y")
+
+        alerts = await self.alerts_v2.get_results_by_date(start_utc, end_utc)
+        # Suprimidos (auto-block) nao foram enviados — fora do report
+        alerts = [a for a in alerts if not getattr(a, "suppressed", False)]
+
+        if not alerts:
+            try:
+                await self.notifier.bot.send_message(
+                    chat_id=v2_group_id,
+                    text=f"📋 <b>M2 RESULTADOS {date_label}</b>\n\nSem alertas hoje.",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send empty M2 report: {e}")
+            return
+
+        msg = self._build_results_msg_v2(alerts, date_label, tz_local)
+        try:
+            await self.notifier.bot.send_message(
+                chat_id=v2_group_id,
+                text=msg["text"],
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            logger.info(
+                f"Daily M2 results sent: {msg['greens']}G {msg['losses']}R, "
+                f"PL {msg['profit']:+.2f}u"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send M2 daily report: {e}")
+
+    def _build_results_msg_v2(self, alerts, date_label, tz_local) -> dict:
+        """Monta mensagem /results pro M2 — formato igual ao M1, com camada (C1b/C2)."""
+        from datetime import timezone as _tz
+
+        lines = []
+        total_profit = 0.0
+        greens = 0
+        total_validated = 0
+
+        for a in alerts:
+            sent_utc = a.sent_at
+            if sent_utc:
+                sent_local = sent_utc.replace(tzinfo=_tz.utc).astimezone(tz_local)
+                hora = sent_local.strftime("%H:%M")
+            else:
+                hora = "??:??"
+
+            player = a.losing_player or "?"
+            bl = a.best_line or "over25"
+            mercado_map = {"over15": "O1.5", "over25": "O2.5", "over35": "O3.5", "over45": "O4.5"}
+            mercado = mercado_map.get(bl, bl)
+
+            odds = getattr(a, f"{bl}_odds", None) or a.over25_odds
+            odds_str = f"@{odds:.2f}" if odds else "—"
+
+            camada = a.camada or "—"
+
+            gols = a.actual_goals
+            if gols is not None and a.hit is not None:
+                total_validated += 1
+                hit = bool(a.hit)
+                resultado = "🟢" if hit else "🔴"
+                if a.profit_flat is not None:
+                    total_profit += float(a.profit_flat)
+                elif odds:
+                    p = (odds - 1.0) if hit else -1.0
+                    total_profit += p
+                if hit:
+                    greens += 1
+            else:
+                gols = "—"
+                resultado = "⏳"
+
+            lines.append(
+                f"{hora} | {player:<12} | {mercado} | {odds_str:<6} | {camada:<3} | {gols} | {resultado}"
+            )
+
+        header = "Hora  | Jogador      | Linha | Odds   | Cam | G | R"
+        sep = "—" * 52
+
+        total = len(alerts)
+        losses = total_validated - greens
+        roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
+        roi_emoji = "📈" if total_profit >= 0 else "📉"
+
+        summary = (
+            f"\n{sep}\n"
+            f"<b>M2:</b> ✅ {greens}  ❌ {losses}  |  "
+            f"Net: <b>{total_profit:+.2f}u</b>  |  "
+            f"ROI: <b>{roi:+.1f}%</b> {roi_emoji}"
+        )
+        if total > total_validated:
+            summary += f"\n⏳ {total - total_validated} aguardando resultado"
+
+        text = (
+            f"📋 <b>M2 RESULTADOS {date_label}</b>\n\n"
+            f"<pre>{header}\n{sep}\n"
+            + "\n".join(lines)
+            + f"</pre>{summary}"
+        )
+        return {
+            "text": text,
+            "greens": greens,
+            "losses": losses,
+            "profit": total_profit,
+        }
+
     def _build_results_msg(self, alerts, date_label, tz_local, scope: str) -> dict:
         """Monta mensagem /results.
 
@@ -111,6 +357,7 @@ class Reporter:
         free_greens = 0
         free_validated = 0
         free_total = 0
+        cancelled_count_local = 0
 
         for a in alerts:
             sent_utc = a.sent_at
@@ -135,6 +382,8 @@ class Reporter:
 
             # Cancelado pelo owner: nao conta em PL/greens/validated
             is_cancelled = a.id in CANCELLED_ALERT_IDS
+            if is_cancelled:
+                cancelled_count_local += 1
 
             gols = a.actual_goals
             if is_cancelled:
@@ -169,9 +418,7 @@ class Reporter:
         header = "Hora  | Jogador      | Linha | Odds   | G | R"
         sep = "—" * 48
 
-        # Cancelados nao contam pra "aguardando resultado" nem pro total apostavel
-        cancelled_count = sum(1 for a in alerts if a.id in CANCELLED_ALERT_IDS)
-        total = len(alerts) - cancelled_count
+        total = len(alerts) - cancelled_count_local
         losses = total_validated - greens
         roi = (total_profit / total_validated * 100) if total_validated > 0 else 0
         roi_emoji = "📈" if total_profit >= 0 else "📉"
@@ -214,6 +461,8 @@ class Reporter:
             "greens": greens,
             "losses": losses,
             "profit": total_profit,
+            "total": total,
+            "roi": roi,
         }
 
     async def send_weekly_report(self) -> None:
