@@ -275,7 +275,7 @@ async def recompute_all_states(
                         f"TIMEOUT UNBLOCK {player}/{line}/vs.{opp}: "
                         f"{days_locked:.0f}d sem alertas"
                     )
-            # Unblock criteria
+            # Unblock criteria — caminho 1: shadow_pl (alerts pos-block)
             if (new_state == "SHADOW"
                     and shadow_n >= STRIKE1_UNBLOCK_MIN_N
                     and shadow_pl >= STRIKE1_UNBLOCK_PL):
@@ -288,6 +288,25 @@ async def recompute_all_states(
                 logger.info(
                     f"UNBLOCK {player}/{line}/vs.{opp}: "
                     f"shadow_PL={shadow_pl:+.2f}u(n={shadow_n})"
+                )
+
+            # Unblock criteria — caminho 2 (simetrico ao block): rolling_pl >= +1u
+            # 2026-06-06: critério adicional. Block usa rolling_pl < -1u, mas
+            # antes o unblock só olhava shadow_pl (post-block). Combos com
+            # historico positivo mas sem atividade pós-block ficavam presos
+            # indefinidamente (auditoria identificou ~89 combos travados, mesmo
+            # com rolling_pl >= +1u). Agora a regra é simetrica: se rolling
+            # voltou a +1u, libera. Cron de 5min re-bloqueia se cair pra -1u.
+            if new_state == "SHADOW" and rolling_pl >= STRIKE1_UNBLOCK_PL:
+                new_state = "ACTIVE"
+                new_last_unblock_at = now
+                transitions["unblocked"].append(
+                    f"{player}/{line}/vs.{opp} rolling_PL="
+                    f"{rolling_pl:+.2f}u(n={rolling_n}) [simetrico]"
+                )
+                logger.info(
+                    f"UNBLOCK SIMETRICO {player}/{line}/vs.{opp}: "
+                    f"rolling_PL={rolling_pl:+.2f}u(n={rolling_n})"
                 )
 
         if new_state == state and new_block_count == block_count:

@@ -189,6 +189,21 @@ async def recompute_all_states(
                     f">= {STRIKE1_UNBLOCK_PL}, n={shadow_n} >= {STRIKE1_UNBLOCK_MIN_N}"
                 )
 
+            # Unblock simetrico (2026-06-06): se PL total acumulado voltou a +1u,
+            # libera. Espelho do block que dispara em pl_total <= -1u. Resolve
+            # combos com historico positivo sem atividade pos-block que ficavam
+            # presos indefinidamente. Cron re-bloqueia se voltar a -1u.
+            if new_state == "SHADOW" and pl_total >= STRIKE1_UNBLOCK_PL:
+                new_state = "ACTIVE"
+                last_unblock_at = now
+                transitions["unblocked"].append(
+                    f"{key} pl_total={pl_total:+.2f}u [simetrico]"
+                )
+                logger.info(
+                    f"M2 UNBLOCK SIMETRICO {key}: "
+                    f"pl_total={pl_total:+.2f}u >= {STRIKE1_UNBLOCK_PL}"
+                )
+
         if new_state == state and new_block_count == block_count:
             transitions["no_change"].append(key)
             continue
