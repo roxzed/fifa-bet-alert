@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     regime_degraded_z: float = -2.0
     regime_warning_z: float = -1.5
 
+    # OpenAI (geração de imagem do daily report)
+    openai_api_key: str = ""
+
     # Timezone
     timezone: str = "America/Sao_Paulo"
 

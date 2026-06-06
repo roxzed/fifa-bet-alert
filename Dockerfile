@@ -24,6 +24,11 @@ LABEL description="FIFA Bet Alert - eSoccer betting signal system"
 
 WORKDIR /app
 
+# Install fonts for Pillow image generation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy pre-built Python packages from builder
 COPY --from=builder /install /usr/local
 
