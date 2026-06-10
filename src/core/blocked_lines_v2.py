@@ -37,6 +37,7 @@ from src.db.repositories import BlockedLineV2Repository
 
 CUTOFF_UTC = datetime(2026, 4, 15, 1, 7, 0)
 STRIKE1_BLOCK_PL = -1.0
+STRIKE1_BLOCK_MIN_N = 2  # 2026-06-10: exigir n>=2 antes de bloquear
 STRIKE1_UNBLOCK_PL = +1.0
 STRIKE1_UNBLOCK_MIN_N = 3
 STRIKE2_BLOCK_PL = -2.0
@@ -139,6 +140,7 @@ async def recompute_all_states(
         line = r["line"]
         opponent = r["opponent"]
         pl_total = r["pl"]
+        n_total = r["n"]
         existing = await blocked_repo.get(player, line, opponent)
         state = existing.state if existing else "ACTIVE"
         block_count = existing.block_count if existing else 0
@@ -156,18 +158,46 @@ async def recompute_all_states(
         if state == "ACTIVE":
             # 2026-05-18: PERMANENT path removido. Mesma filosofia do M1:
             # combo pode ser bloqueado/desbloqueado multiplas vezes via SHADOW.
-            if pl_total <= STRIKE1_BLOCK_PL:
+            # 2026-06-10: adicionar STRIKE1_BLOCK_MIN_N=2. Antes 1 single RED
+            # de -1u bloqueava direto, gerando 65 SHADOWs com n=1 (variancia
+            # pura, nao drainer real). Agora exige n>=2 antes de bloquear.
+            if pl_total <= STRIKE1_BLOCK_PL and n_total >= STRIKE1_BLOCK_MIN_N:
                 new_state = "SHADOW"
                 new_block_count = block_count + 1
                 new_shadow_start_pl = pl_total
                 new_shadow_start_at = now
                 last_block_at = now
-                transitions["blocked_strike1"].append(f"{key} PL={pl_total:+.2f}u")
+                transitions["blocked_strike1"].append(f"{key} PL={pl_total:+.2f}u(n={n_total})")
                 logger.warning(
-                    f"M2 BLOCK strike1 {key}: PL={pl_total:+.2f}u <= "
+                    f"M2 BLOCK strike1 {key}: PL={pl_total:+.2f}u(n={n_total}) <= "
                     f"{STRIKE1_BLOCK_PL} -> SHADOW (block_count={new_block_count})"
                 )
         elif state == "SHADOW":
+            # 2026-06-10: liberar SHADOWs antigos que tinham n=1 (regra antiga).
+            # Apos introduzir STRIKE1_BLOCK_MIN_N=2, esses combos ficam em estado
+            # inconsistente — block n=1 nao seria mais aceito hoje.
+            if n_total < STRIKE1_BLOCK_MIN_N:
+                new_state = "ACTIVE"
+                last_unblock_at = now
+                transitions["unblocked"].append(
+                    f"{key} pl={pl_total:+.2f}u n={n_total} [n<min, regra nova]"
+                )
+                logger.info(
+                    f"M2 UNBLOCK SAMPLE-FIX {key}: n={n_total} < "
+                    f"{STRIKE1_BLOCK_MIN_N} (regra atual nao bloquearia)"
+                )
+                # Pula resto da logica SHADOW (acabamos de unblock)
+                if new_state != state or new_block_count != block_count:
+                    await blocked_repo.upsert(
+                        player=player, line=line, opponent=opponent,
+                        state=new_state, block_count=new_block_count,
+                        shadow_start_pl=new_shadow_start_pl,
+                        shadow_start_at=new_shadow_start_at,
+                        last_block_at=last_block_at,
+                        last_unblock_at=last_unblock_at,
+                    )
+                continue
+
             if shadow_start_at is None:
                 logger.warning(f"M2 SHADOW {key} sem shadow_start — pulando recheck")
                 transitions["no_change"].append(f"{key} (corrupted)")
