@@ -201,6 +201,34 @@ class AlertEngine:
             )
             return (False, all_over_suppressed)
 
+        # ---- CAMINHO C (2026-06-10): filtros baseados em backtest 60 dias ----
+        # Backtest mostrou que duas faixas drenam consistentemente o ROI:
+        #
+        # 1) Yellow (star_rating < 3): ROI +2.94% historico, baixa rentabilidade
+        #    vs green (+5.95%) e red_special (+13.34%). Cortar yellow estabiliza
+        #    a media sem cortar muito volume relevante.
+        #
+        # 2) over15 com edge 15-20%: ROI -7.28% historico em 89 alerts. Faixa
+        #    morta especifica. over15 com edge 10-15% (+13.63%) e 20-30% (+2.56%)
+        #    nao sao afetadas — apenas a janela 15-20%.
+        if best_line != "ml":
+            stars = evaluation.star_rating_val or 0
+            edge_val = evaluation.edge_val or 0.0
+
+            if stars < 3:
+                logger.bind(category="alert").info(
+                    f"CAMINHO-C SKIP yellow: {loser} {best_line} stars={stars} "
+                    f"edge={edge_val*100:.1f}% — historico ROI +2.94%"
+                )
+                return (False, False)
+
+            if best_line == "over15" and 0.15 <= edge_val < 0.20:
+                logger.bind(category="alert").info(
+                    f"CAMINHO-C SKIP over15/edge15-20%: {loser} "
+                    f"edge={edge_val*100:.1f}% — historico ROI -7.28%"
+                )
+                return (False, False)
+
         if best_line == "over45":
             alert_odds = over45_odds
             alert_label = "Over 4.5"
