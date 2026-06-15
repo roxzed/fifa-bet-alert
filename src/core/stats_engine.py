@@ -960,53 +960,70 @@ class StatsEngine:
 
         # Bloqueios hard: nao alertar
         # 1. Streak >= 5
+        #
+        # 2026-06-15: BLOCK DIFERENCIADO POR LINHA. Backtest 7485 G2 mostrou
+        # que player em streak >=5 derrotas continua fazendo gols (avg 2.4
+        # gols/G2), so nao ganha. Como metodo eh "fazer gol":
+        #   over25 com streak 5+: ROI -11.7% (drena)
+        #   over15 com streak 5+: ROI +18.7% (continua bom)
+        # Decisao owner: liberar over15, bloquear over25/35/45.
+        streak_restricts_to_over15 = False
         if streak_val >= 5:
-            logger.info(
-                f"Streak de {streak_val} derrotas para {losing_player}: nao alertar"
-            )
-            return OpportunityEvaluation(
-                should_alert=False,
-                reason=f"Streak de {streak_val} derrotas consecutivas (penalidade maxima)",
-                best_line="over25",
-                implied_prob=0.0,
-                true_prob=tp25,
-                true_prob_conservative=tp25,
-                confidence_interval=(0.0, 1.0),
-                edge_val=0.0,
-                expected_value_val=0.0,
-                kelly_fraction_val=0.0,
-                star_rating_val=0,
-                p_base=p_base_25,
-                p_loss_type=p_loss_25,
-                p_player=eff_p25,
-                p_recent_form=p_form_25,
-                p_h2h=p_h2h_25,
-                p_y_post_win=p_ypw_25,
-                p_time_slot=p_time_25,
-                p_team=p_team_25,
-                p_market_adj=p_market_adj,
-                player_sample_size=n_player,
-                h2h_sample_size=n_h2h,
-                recent_form_sample=n_form,
-                global_sample_size=n_global,
-                loss_type_sample_size=n_loss,
-                team_sample_size=n_team,
-                loss_type=loss_type,
-                loss_margin=loss_margin,
-                p_g1_goals=g1_goals_factor,
-                loser_goals_g1=loser_goals_g1,
-                streak=streak_val,
-                streak_factor=streak_factor,
-                total_g1_goals=total_g1,
-                total_g1_factor=total_g1_factor,
-                game_pattern=game_pattern,
-                game_pattern_factor=game_pattern_factor,
-                player_flag=player_flag,
-                loser_g1_cat_factor=loser_g1_cat_factor,
-                total_g1_cat_factor=total_g1_cat_factor,
-                hour_period_factor=hour_period_factor,
-                home_away_g1_factor=home_away_g1_factor,
-            )
+            if over15_odds is not None and over15_odds >= 1.0:
+                streak_restricts_to_over15 = True
+                logger.info(
+                    f"Streak de {streak_val} derrotas para {losing_player}: "
+                    f"restrito a over1.5 (block over25/35/45 — penalidade parcial)"
+                )
+                # NAO retorna — segue o flow, restringira best_line abaixo
+            else:
+                logger.info(
+                    f"Streak de {streak_val} derrotas para {losing_player}: "
+                    f"nao alertar (over1.5_odds indisponivel)"
+                )
+                return OpportunityEvaluation(
+                    should_alert=False,
+                    reason=f"Streak de {streak_val} derrotas consecutivas (penalidade maxima)",
+                    best_line="over25",
+                    implied_prob=0.0,
+                    true_prob=tp25,
+                    true_prob_conservative=tp25,
+                    confidence_interval=(0.0, 1.0),
+                    edge_val=0.0,
+                    expected_value_val=0.0,
+                    kelly_fraction_val=0.0,
+                    star_rating_val=0,
+                    p_base=p_base_25,
+                    p_loss_type=p_loss_25,
+                    p_player=eff_p25,
+                    p_recent_form=p_form_25,
+                    p_h2h=p_h2h_25,
+                    p_y_post_win=p_ypw_25,
+                    p_time_slot=p_time_25,
+                    p_team=p_team_25,
+                    p_market_adj=p_market_adj,
+                    player_sample_size=n_player,
+                    h2h_sample_size=n_h2h,
+                    recent_form_sample=n_form,
+                    global_sample_size=n_global,
+                    loss_type_sample_size=n_loss,
+                    team_sample_size=n_team,
+                    loss_type=loss_type,
+                    loss_margin=loss_margin,
+                    p_g1_goals=g1_goals_factor,
+                    loser_goals_g1=loser_goals_g1,
+                    streak=streak_val,
+                    streak_factor=streak_factor,
+                    total_g1_goals=total_g1,
+                    total_g1_factor=total_g1_factor,
+                    game_pattern=game_pattern,
+                    game_pattern_factor=game_pattern_factor,
+                    player_flag=player_flag,
+                    loser_g1_cat_factor=loser_g1_cat_factor,
+                    total_g1_cat_factor=total_g1_cat_factor,
+                    hour_period_factor=hour_period_factor,
+                    home_away_g1_factor=home_away_g1_factor,
+                )
 
         # 2. Blacklist: penalidade forte ja aplicada (x0.92) no compute_true_prob
         if player_flag == "blacklist":
@@ -1209,6 +1226,9 @@ class StatsEngine:
         # Pick best EV among alertable lines; fallback to first available
         all_evals = [le15, le25, le35, le45, le_ml]
         candidates = [l for l in all_evals if l and l.should_alert]
+        # 2026-06-15: streak >= 5 restringe candidates a over15 (block diferenciado)
+        if streak_restricts_to_over15:
+            candidates = [l for l in candidates if l.line == "over15"]
         best = max(candidates, key=lambda l: l.ev_val) if candidates else (le25 or le35 or le15 or le45)
         if best is None:
             best = LineEvaluation(
