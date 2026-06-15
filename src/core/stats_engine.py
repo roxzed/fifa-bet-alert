@@ -494,10 +494,20 @@ class StatsEngine:
                 fetched[row.stat_key] = row
                 self._cache.put(row.stat_key, row)
 
-            # Cache None for keys not found (avoid re-querying)
+            # 2026-06-15 BUG FIX: nao cachear None.
+            #
+            # Antes: chaves nao encontradas eram cacheadas como None com TTL 5min.
+            # Isso causava bug pra players novos (ex: Dicca criado 03/06):
+            #   1. Watch T-90s antes do kickoff buscou stat (nao existia ainda)
+            #   2. Cache armazenou None com TTL 5min
+            #   3. Batch das 08:50 popula DB com stat real
+            #   4. Alert engine 90s depois busca cache stale -> retorna None
+            #   5. h2h_sample_size=0, p_h2h=default 50% (perde sinal real)
+            #
+            # Custo de re-fetch eh baixo (chaves missing sao raras em prod estavel),
+            # ganho eh capturar stats novas imediatamente.
             for k in missing_keys:
                 if k not in fetched:
-                    self._cache.put(k, None)
                     fetched[k] = None
 
             # Merge cached + fetched
