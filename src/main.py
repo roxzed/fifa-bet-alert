@@ -128,7 +128,8 @@ async def main() -> None:
 
     blocked_repo = BlockedLineRepository(sf)
     alert_engine = AlertEngine(
-        stats_engine, AlertRepository(sf), notifier, blocked_repo=blocked_repo
+        stats_engine, AlertRepository(sf), notifier, blocked_repo=blocked_repo,
+        match_repo=MatchRepository(sf),  # 2026-06-15: pro fallback tier H2H
     )
 
     # Method 2
@@ -146,6 +147,7 @@ async def main() -> None:
         alert_engine_v2 = AlertEngineV2(
             stats_engine_v2, alert_v2_repo, notifier,
             blocked_repo_v2=blocked_repo_v2,
+            match_repo=MatchRepository(sf),  # 2026-06-15: pro fallback tier H2H
         )
         logger.info(f"Method 2 enabled (group: {settings.telegram_group_v2_id})")
     else:

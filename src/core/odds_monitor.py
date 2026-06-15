@@ -585,7 +585,8 @@ class OddsMonitor:
                     continue
                 try:
                     tier_res = await compute_h2h_tier(
-                        alert_repo, blocked_repo, loser, ln_key, winner
+                        alert_repo, blocked_repo, loser, ln_key, winner,
+                        match_repo=getattr(self.alert_engine, "matches", None),
                     )
                     ln["h2h_tier"] = tier_res.tier
                 except Exception as e:
@@ -691,7 +692,8 @@ class OddsMonitor:
                     continue
                 try:
                     tier_res = await compute_h2h_tier_v2(
-                        alert_v2_repo, blocked_repo_v2, loser, ln_key, winner
+                        alert_v2_repo, blocked_repo_v2, loser, ln_key, winner,
+                        match_repo=getattr(self.alert_engine_v2, "matches", None),
                     )
                     ln["h2h_tier"] = tier_res.tier
                 except Exception as e:

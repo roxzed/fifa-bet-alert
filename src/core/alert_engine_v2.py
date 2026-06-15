@@ -16,13 +16,16 @@ class AlertEngineV2:
     """
 
     def __init__(
-        self, stats_engine_v2, alert_v2_repo, notifier_v2, blocked_repo_v2=None
+        self, stats_engine_v2, alert_v2_repo, notifier_v2, blocked_repo_v2=None,
+        match_repo=None,
     ) -> None:
         self.stats = stats_engine_v2
         self.alerts = alert_v2_repo
         self.notifier = notifier_v2
         # 2026-04-26: SHADOW protocol M2 — auto-block per (player, line)
         self.blocked = blocked_repo_v2
+        # 2026-06-15: pro fallback de tier H2H baseado em jogos
+        self.matches = match_repo
 
     async def evaluate_and_alert(
         self,
@@ -164,7 +167,8 @@ class AlertEngineV2:
         if evaluation.best_line:
             try:
                 tier_res = await compute_h2h_tier_v2(
-                    self.alerts, self.blocked, loser, evaluation.best_line, winner
+                    self.alerts, self.blocked, loser, evaluation.best_line, winner,
+                    match_repo=self.matches,
                 )
                 alert_data["h2h_tier"] = tier_res.tier
                 alert_data["h2h_tier_n"] = tier_res.n

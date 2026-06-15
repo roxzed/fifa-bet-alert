@@ -16,11 +16,12 @@ class AlertEngine:
     evaluates with StatsEngine, and sends alerts via Telegram.
     """
 
-    def __init__(self, stats_engine, alert_repo, notifier, blocked_repo=None) -> None:
+    def __init__(self, stats_engine, alert_repo, notifier, blocked_repo=None, match_repo=None) -> None:
         self.stats = stats_engine
         self.alerts = alert_repo
         self.notifier = notifier
         self.blocked = blocked_repo  # auto-block per (player, line) — opcional
+        self.matches = match_repo  # 2026-06-15: pro fallback de tier H2H (jogos)
         self._recalibrator = None  # injetado apos construcao
 
     def set_recalibrator(self, recalibrator) -> None:
@@ -362,7 +363,8 @@ class AlertEngine:
         if best_over is not None and not shadow_suppressed:
             try:
                 h2h_tier_res = await compute_h2h_tier(
-                    self.alerts, self.blocked, loser, best_over["line"], winner
+                    self.alerts, self.blocked, loser, best_over["line"], winner,
+                    match_repo=self.matches,
                 )
             except Exception as e:
                 logger.warning(f"compute_h2h_tier falhou ({loser}/{best_over['line']}/vs.{winner}): {e}")
