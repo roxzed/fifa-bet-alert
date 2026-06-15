@@ -2,16 +2,21 @@
 
 Tier baseado em ROI historico do (player, line, opponent), com
 sample minimo de 3 alertas. Faixas decididas pelo owner em 2026-05-05,
-threshold do D ajustado 2026-05-18 (backtest mostrou que 2-5% eram
-quase todos GREEN):
+threshold do D ajustado 2026-05-18, F adicionada 2026-06-15:
 
   S  ROI >= 50%
   A  30% <= ROI < 50%
   B  15% <= ROI < 30%
   C  2%  <= ROI < 15%
   D  0%  <= ROI < 2%
-  ?  n < 3 OU ROI < 0% e nao em SHADOW (sem letra util a mostrar)
+  F  ROI < 0% com n>=3 (tem dado, e o dado eh ruim) [2026-06-15]
+  ?  n < 3 (sample insuficiente — combo novo, sem dado pra avaliar)
   E  state em SHADOW/PERMANENT (alert nao chega no Telegram)
+
+2026-06-15: separamos "sem dado" (?) de "dado ruim" (F). Antes ambos
+mostravam ?, gerando confusao no alert do Telegram. Agora o usuario
+ve claramente: ? = combo novo (acumular sample), F = ja sabemos que
+historicamente perde.
 
 Janela: alertas desde CUTOFF_UTC (deploy do regime SHADOW v3).
 """
@@ -44,7 +49,7 @@ TIER_THRESHOLDS: list[tuple[str, float]] = [
 
 @dataclass
 class H2HTierResult:
-    tier: str          # "S" | "A" | "B" | "C" | "D" | "E" | "?"
+    tier: str          # "S" | "A" | "B" | "C" | "D" | "F" | "E" | "?"
     n: int
     pl: float
     roi: float
@@ -57,11 +62,13 @@ def classify(n: int, pl: float, state: str) -> H2HTierResult:
     if state in ("SHADOW", "PERMANENT"):
         return H2HTierResult(tier="E", n=n, pl=pl, roi=roi, state=state)
     if n < MIN_SAMPLE:
+        # Sample insuficiente — combo novo, ainda nao deu pra avaliar.
         return H2HTierResult(tier="?", n=n, pl=pl, roi=roi, state=state)
     if roi < 0:
-        # Negativo mas ainda ACTIVE (raro — prestes a virar E pelo SHADOW).
-        # Owner: nao mostrar letra para negativo.
-        return H2HTierResult(tier="?", n=n, pl=pl, roi=roi, state=state)
+        # 2026-06-15: tier F (negativo com sample suficiente). Antes era ?,
+        # mas isso confundia "sem dado" com "dado ruim". Agora ? eh so
+        # n<3, F eh ROI<0 com n>=3. Owner aprovou em 2026-06-15.
+        return H2HTierResult(tier="F", n=n, pl=pl, roi=roi, state=state)
     for letter, threshold in TIER_THRESHOLDS:
         if roi >= threshold:
             return H2HTierResult(tier=letter, n=n, pl=pl, roi=roi, state=state)
