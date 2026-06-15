@@ -202,26 +202,16 @@ class AlertEngine:
             )
             return (False, all_over_suppressed)
 
-        # ---- CAMINHO C (2026-06-10): filtros baseados em backtest 60 dias ----
-        # Backtest mostrou que duas faixas drenam consistentemente o ROI:
+        # ---- CAMINHO C (2026-06-10, ajustado 2026-06-15): filtro especifico ----
+        # Backtest 60 dias mostrou faixa morta em over15 com edge 15-20%:
+        # ROI -7.28% em 89 alerts. over15 com edge 10-15% (+13.63%) e 20-30%
+        # (+2.56%) nao sao afetadas — apenas essa janela especifica.
         #
-        # 1) Yellow (star_rating < 3): ROI +2.94% historico, baixa rentabilidade
-        #    vs green (+5.95%) e red_special (+13.34%). Cortar yellow estabiliza
-        #    a media sem cortar muito volume relevante.
-        #
-        # 2) over15 com edge 15-20%: ROI -7.28% historico em 89 alerts. Faixa
-        #    morta especifica. over15 com edge 10-15% (+13.63%) e 20-30% (+2.56%)
-        #    nao sao afetadas — apenas a janela 15-20%.
+        # 2026-06-15: REMOVIDO o block de yellow (stars<3). Owner avaliou que
+        # cortar yellow inteiro era excessivo — ROI +2.94% historico nao
+        # justifica cortar 547 alerts/60d. Voltou a permitir yellow.
         if best_line != "ml":
-            stars = evaluation.star_rating_val or 0
             edge_val = evaluation.edge_val or 0.0
-
-            if stars < 3:
-                logger.bind(category="alert").info(
-                    f"CAMINHO-C SKIP yellow: {loser} {best_line} stars={stars} "
-                    f"edge={edge_val*100:.1f}% — historico ROI +2.94%"
-                )
-                return (False, False)
 
             if best_line == "over15" and 0.15 <= edge_val < 0.20:
                 logger.bind(category="alert").info(

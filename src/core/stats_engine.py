@@ -248,10 +248,12 @@ class StatsEngine:
     # Jogadores permanentemente bloqueados (auditoria 2026-05-11).
     # Nao passam pelo stats engine — bloqueio incondicional antes de qualquer avaliacao.
     # Criterio: WR < 25% com 8+ alertas = padrao estrutural, nao variancia.
-    # Revange: WR 12.5%, 8 alertas, -6.31u. A1ose: WR 25%, 8 alertas, -4.19u.
+    # Revange: WR 12.5%, 8 alertas, -6.31u.
+    # 2026-06-15: A1ose REMOVIDO. Auditoria mostrou que A1ose enviados PL=-1.19u
+    # mas suppressed historicos teriam dado +0.69u. Block estava cortando lucro.
+    # Deixa SHADOW gerenciar via (player, line, opp) — mais cirurgico.
     PLAYER_PERMANENT_BLOCK: set[str] = {
         "Revange",
-        "A1ose",
     }
 
     # Jogadores isentos da blacklist dinamica — gerenciados pelo auto-block per (player, line).
