@@ -245,16 +245,12 @@ class StatsEngine:
     DYNAMIC_BLACKLIST_MIN_ALERTS: int = 8
     DYNAMIC_BLACKLIST_MAX_WR: float = 0.30
 
-    # Jogadores permanentemente bloqueados (auditoria 2026-05-11).
-    # Nao passam pelo stats engine — bloqueio incondicional antes de qualquer avaliacao.
-    # Criterio: WR < 25% com 8+ alertas = padrao estrutural, nao variancia.
-    # Revange: WR 12.5%, 8 alertas, -6.31u.
-    # 2026-06-15: A1ose REMOVIDO. Auditoria mostrou que A1ose enviados PL=-1.19u
-    # mas suppressed historicos teriam dado +0.69u. Block estava cortando lucro.
-    # Deixa SHADOW gerenciar via (player, line, opp) — mais cirurgico.
-    PLAYER_PERMANENT_BLOCK: set[str] = {
-        "Revange",
-    }
+    # 2026-06-17: PLAYER_PERMANENT_BLOCK ZERADO por decisao do Plinio.
+    # Filosofia atual: nada e permanente — tudo gerenciado pelo SHADOW granular
+    # (player, line, opponent). Revange removido daqui; combos ruins dele entram
+    # em SHADOW automatico se gerarem -1u ou +1u/n>=3 desbloqueia.
+    # Mantido como set vazio pra nao quebrar referencias externas.
+    PLAYER_PERMANENT_BLOCK: set[str] = set()
 
     # Jogadores isentos da blacklist dinamica — gerenciados pelo auto-block per (player, line).
     # Decidido 2026-04-25: hotShot e Kavviro saem do conditional+dynamic para serem
@@ -598,24 +594,8 @@ class StatsEngine:
         if match_time is None:
             match_time = datetime.now(timezone.utc)
 
-        # ── Bloqueio permanente: jogadores estruturalmente ruins (auditoria 2026-05-11) ──
-        if losing_player in self.PLAYER_PERMANENT_BLOCK:
-            logger.info(f"Jogador {losing_player} no PLAYER_PERMANENT_BLOCK: bloqueado")
-            loss_type_early = classify_loss(game1_score_winner, game1_score_loser)
-            return OpportunityEvaluation(
-                should_alert=False,
-                reason=f"PERMANENT_BLOCK: {losing_player} (padrao estrutural, nao variancia)",
-                best_line="over25",
-                implied_prob=0.0, true_prob=0.0, true_prob_conservative=0.0,
-                confidence_interval=(0.0, 1.0),
-                edge_val=0.0, expected_value_val=0.0, kelly_fraction_val=0.0, star_rating_val=0,
-                p_base=0.0, p_loss_type=0.0, p_player=0.0, p_recent_form=0.0,
-                p_h2h=0.0, p_y_post_win=0.0, p_time_slot=0.0, p_team=0.0, p_market_adj=0.0,
-                player_sample_size=0, h2h_sample_size=0, recent_form_sample=0,
-                global_sample_size=0, loss_type_sample_size=0, team_sample_size=0,
-                loss_type=loss_type_early, loss_margin=game1_score_winner - game1_score_loser,
-                player_flag="permanent_block",
-            )
+        # 2026-06-17: PLAYER_PERMANENT_BLOCK removido. Gerenciamento agora 100%
+        # via SHADOW granular por (player, line, opponent).
 
         # ── Blacklist dinâmica: atualiza cache e bloqueia jogadores ruins ──
         await self._refresh_dynamic_blacklist()
