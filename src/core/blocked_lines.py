@@ -281,6 +281,9 @@ async def recompute_all_states(
 
         rolling_pl, rolling_n = _rolling_metrics(alerts)
         line_day_pl, line_day_n = _today_brt_pl(alerts, today_brt)
+        post_unblock_pl, post_unblock_n = _post_unblock_metrics(
+            alerts, last_unblock_at
+        )
 
         if state == "ACTIVE":
             triggered = None
@@ -296,8 +299,14 @@ async def recompute_all_states(
                 elif line_day_n >= LINE_CLIFF_N and line_day_pl <= LINE_CLIFF_PL:
                     triggered = "line_cliff"
                 # 3) Rolling: pl < -1.0u (estrito, n>=0, sem amostra minima)
+                # 2026-06-17 fix: se ja desbloqueou antes (last_unblock_at != None),
+                # so rebloqueia se o rolling tem >=1 alerta POS-unblock. Senao o
+                # rolling so reflete drain pre-block, ja punido — rebloquear no
+                # mesmo tick do unblock vira loop (observado pos-deploy caminho 3:
+                # 17/35 combos foram desbloqueados e rebloqueados em 301s).
                 elif (rolling_n >= STRIKE1_BLOCK_N
-                        and rolling_pl < STRIKE1_BLOCK_PL):
+                        and rolling_pl < STRIKE1_BLOCK_PL
+                        and (last_unblock_at is None or post_unblock_n >= 1)):
                     triggered = "rolling"
 
                 if triggered is not None:
