@@ -51,6 +51,17 @@ STRIKE2_BLOCK_PL = -2.0         # post_unblock PL
 STRIKE2_BLOCK_N = 5             # post_unblock n minimo
 TIMEOUT_DAYS = 30
 
+# 2026-06-17: Unblock por historico de jogo (caminho 3).
+# Motivacao: combos em SHADOW sem alertas pos-block ficam presos por inercia.
+# Se o jogador real continua batendo a linha contra o mesmo opponent em jogos
+# que aconteceram apos o block, isso eh evidencia externa de que o combo nao
+# drena mais — libera. Critério conservador validado em and-se 2026-06-17:
+# - n>=6 e hr>=70% libera 47 combos com EV/u projetado +18.89u
+# - 75 combos com drain confirmado pelo historico ficam em SHADOW (regra discrimina)
+HISTORY_UNBLOCK_MIN_N = 6       # minimo jogos pos-block pra avaliar
+HISTORY_UNBLOCK_MIN_HR = 0.70   # hit rate minimo
+HISTORY_LINE_THRESH = {"over15": 2, "over25": 3, "over35": 4, "over45": 5}
+
 LINES_TRACKED = ("over15", "over25", "over35", "over45")
 
 
@@ -144,6 +155,63 @@ def _shadow_metrics(alerts, shadow_start_at) -> tuple[float, int]:
             pl += profit
             n += 1
     return pl, n
+
+
+async def _check_history_unblock(
+    blocked_repo: BlockedLineRepository,
+    player: str,
+    line: str,
+    opponent: str,
+    shadow_start_at: datetime | None,
+) -> tuple[bool, int, float]:
+    """Verifica se historico de jogo APOS o block sugere desbloqueio.
+
+    Busca matches G2 onde:
+      - is_return_match = TRUE
+      - started_at >= shadow_start_at
+      - players sao (player, opponent) em qualquer ordem
+      - player perdeu o G1 (via pair_match_id)
+      - score conhecido
+
+    Retorna (should_unblock, n_jogos, hit_rate).
+    Returns (False, 0, 0.0) se shadow_start_at e None ou nenhum jogo encontrado.
+    """
+    if shadow_start_at is None:
+        return (False, 0, 0.0)
+    thresh = HISTORY_LINE_THRESH.get(line)
+    if thresh is None or not opponent:
+        return (False, 0, 0.0)
+
+    from sqlalchemy import text
+    stmt = text("""
+        SELECT m2.player_home, m2.player_away, m2.score_home, m2.score_away
+        FROM matches m2
+        JOIN matches m1 ON m2.pair_match_id = m1.id
+        WHERE m2.is_return_match = TRUE
+          AND m2.started_at >= :start_at
+          AND m2.score_home IS NOT NULL AND m2.score_away IS NOT NULL
+          AND ((m2.player_home = :p AND m2.player_away = :o)
+            OR (m2.player_home = :o AND m2.player_away = :p))
+          AND ((m1.player_home = :p AND m1.score_home < m1.score_away)
+            OR (m1.player_away = :p AND m1.score_away < m1.score_home))
+    """)
+    result = await blocked_repo.execute_query(
+        stmt, {"start_at": shadow_start_at, "p": player, "o": opponent}
+    )
+    rows = result.all()
+    n = len(rows)
+    if n < HISTORY_UNBLOCK_MIN_N:
+        return (False, n, 0.0)
+    hits = 0
+    for r in rows:
+        if r.player_home == player:
+            pg = r.score_home
+        else:
+            pg = r.score_away
+        if pg is not None and pg >= thresh:
+            hits += 1
+    hr = hits / n if n else 0.0
+    return (hr >= HISTORY_UNBLOCK_MIN_HR, n, hr)
 
 
 async def recompute_all_states(
@@ -308,6 +376,37 @@ async def recompute_all_states(
                     f"UNBLOCK SIMETRICO {player}/{line}/vs.{opp}: "
                     f"rolling_PL={rolling_pl:+.2f}u(n={rolling_n})"
                 )
+
+            # Unblock criteria — caminho 3 (historico de jogo): se desde o
+            # block, o player jogou >=6 G2 contra esse opponent e bateu a
+            # linha em >=70% deles, libera. Resolve inercia: combos sem
+            # alertas pos-block ficavam presos indefinidamente mesmo quando
+            # o cenario do mundo real mudou.
+            # And-se 2026-06-17 mostrou: 47/233 combos liberariam, EV +18.89u
+            # projetado, 75 combos com drain confirmado ficam em SHADOW.
+            if new_state == "SHADOW":
+                try:
+                    should_unblock, n_games, hr = await _check_history_unblock(
+                        blocked_repo, player, line, opp, shadow_start_at
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"history unblock check falhou {player}/{line}/vs.{opp}: {e!r}"
+                    )
+                    should_unblock = False
+                    n_games, hr = 0, 0.0
+                if should_unblock:
+                    new_state = "ACTIVE"
+                    new_last_unblock_at = now
+                    transitions["unblocked"].append(
+                        f"{player}/{line}/vs.{opp} historico="
+                        f"{int(hr*n_games)}/{n_games}({hr*100:.1f}%) [historico]"
+                    )
+                    logger.info(
+                        f"UNBLOCK HISTORICO {player}/{line}/vs.{opp}: "
+                        f"{int(hr*n_games)}/{n_games} jogos pos-block "
+                        f"({hr*100:.1f}%) bateram a linha"
+                    )
 
         if new_state == state and new_block_count == block_count:
             transitions["no_change"].append(f"{player}/{line}/vs.{opp}")
