@@ -434,7 +434,9 @@ async def main() -> None:
 
     scheduler.add_interval_task(
         _hourly_blocked_recompute_v2,
-        seconds=1800,  # 30min, igual M1
+        seconds=300,  # 2026-06-17: alinhado ao M1 (era 1800s, comentario antigo).
+        # Com caminho 3 (unblock por historico) o cron precisa reagir mais rapido
+        # pra liberar combos quando o player joga novos G2 contra o opponent.
         task_id="hourly_blocked_recompute_v2",
     )
     scheduler.add_daily_task(
