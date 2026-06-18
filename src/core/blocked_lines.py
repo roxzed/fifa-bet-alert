@@ -62,6 +62,14 @@ HISTORY_UNBLOCK_MIN_N = 6       # minimo jogos pos-block pra avaliar
 HISTORY_UNBLOCK_MIN_HR = 0.70   # hit rate minimo
 HISTORY_LINE_THRESH = {"over15": 2, "over25": 3, "over35": 4, "over45": 5}
 
+# 2026-06-18: anti-oscilacao. Sem isso, caminho 3 desbloqueia → line_cliff/
+# player_cliff rebloqueia → caminho 3 desbloqueia → ... loop infinito.
+# Observado: dor1an/over25/vs.LaikingDast com block_count=129 (oscilou 129x).
+# Solucao: nao desbloquear (qualquer caminho) se ultimo block foi < N segundos.
+# Tambem nao rebloquear se ultimo unblock foi < N segundos.
+UNBLOCK_COOLDOWN_SECONDS = 1800     # 30 min apos block, nao desbloqueia
+REBLOCK_COOLDOWN_SECONDS = 1800     # 30 min apos unblock, nao rebloqueia (mesmo com cliff)
+
 LINES_TRACKED = ("over15", "over25", "over35", "over45")
 
 
@@ -285,13 +293,28 @@ async def recompute_all_states(
             alerts, last_unblock_at
         )
 
+        # 2026-06-18: cooldown anti-oscilacao. Se desbloqueou recentemente,
+        # nao rebloqueia ate passar REBLOCK_COOLDOWN_SECONDS — mesmo se cliff
+        # disparar. Quebra loop block↔unblock.
+        in_reblock_cooldown = (
+            last_unblock_at is not None
+            and (now - last_unblock_at).total_seconds() < REBLOCK_COOLDOWN_SECONDS
+        )
+        in_unblock_cooldown = (
+            shadow_start_at is not None
+            and (now - shadow_start_at).total_seconds() < UNBLOCK_COOLDOWN_SECONDS
+        )
+
         if state == "ACTIVE":
             triggered = None
             # 2026-05-18: PERMANENT path removido. Combos podem ser bloqueados
             # (SHADOW) e desbloqueados multiplas vezes — o protocolo se baseia
             # em performance corrente, nao em historico de strikes. Filosofia
             # do owner: "manter as tips por ROI".
-            if True:  # antes: if block_count == 0
+            if in_reblock_cooldown:
+                # Pula avaliacao de bloqueio enquanto em cooldown
+                pass
+            elif True:  # antes: if block_count == 0
                 # 1) PLAYER CLIFF: agregado, prioritario
                 if player in players_in_cliff:
                     triggered = "player_cliff"
@@ -352,6 +375,12 @@ async def recompute_all_states(
                         f"TIMEOUT UNBLOCK {player}/{line}/vs.{opp}: "
                         f"{days_locked:.0f}d sem alertas"
                     )
+            # 2026-06-18: anti-oscilacao. Se bloqueou ha < UNBLOCK_COOLDOWN, nao
+            # desbloqueia. Quebra loop onde cliff bloqueia 11:15 e caminho 3
+            # desbloqueia 11:20.
+            if in_unblock_cooldown:
+                continue
+
             # Unblock criteria — caminho 1: shadow_pl (alerts pos-block)
             if (new_state == "SHADOW"
                     and shadow_n >= STRIKE1_UNBLOCK_MIN_N

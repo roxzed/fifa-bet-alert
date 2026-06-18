@@ -363,24 +363,36 @@ async def main() -> None:
     # O relatorio admin so vai uma vez por dia, ao meio-dia BRT.
     from src.core.blocked_lines import recompute_all_states, build_hourly_report
 
+    # 2026-06-18: lock anti-reentrancia. Sem isso, deploys do Railway que sobrepoem
+    # processos novo+antigo durante restart faziam o cron rodar em paralelo,
+    # incrementando block_count via UPSERT sem proteção contra race. Observado:
+    # dor1an/over25/vs.LaikingDast com bc=129 (impossivel sem race).
+    _recompute_lock_m1 = asyncio.Lock()
+    _recompute_lock_m2 = asyncio.Lock()
+
     async def _hourly_blocked_recompute() -> None:
-        try:
-            transitions = await recompute_all_states(blocked_repo)
-            n_changes = sum(
-                len(v) for k, v in transitions.items() if k != "no_change"
-            )
-            if n_changes:
-                logger.info(
-                    f"Auto-block cron: strike1={transitions.get('blocked_strike1', [])}, "
-                    f"strike2={transitions.get('blocked_strike2', [])}, "
-                    f"unblocked={transitions.get('unblocked', [])}"
+        if _recompute_lock_m1.locked():
+            logger.warning("M1 recompute ja em execucao — pulando este ciclo")
+            return
+        async with _recompute_lock_m1:
+            try:
+                transitions = await recompute_all_states(blocked_repo)
+                n_changes = sum(
+                    len(v) for k, v in transitions.items() if k != "no_change"
                 )
-        except Exception as e:
-            logger.error(f"hourly_blocked_recompute failed: {e}")
+                if n_changes:
+                    logger.info(
+                        f"Auto-block cron: strike1={transitions.get('blocked_strike1', [])}, "
+                        f"strike2={transitions.get('blocked_strike2', [])}, "
+                        f"unblocked={transitions.get('unblocked', [])}"
+                    )
+            except Exception as e:
+                logger.error(f"hourly_blocked_recompute failed: {e}")
 
     async def _daily_blocked_report() -> None:
         try:
-            await recompute_all_states(blocked_repo)  # garante state atualizado
+            async with _recompute_lock_m1:
+                await recompute_all_states(blocked_repo)  # garante state atualizado
             text = await build_hourly_report(blocked_repo)
             await notifier.send_admin_message(text)
         except Exception as e:
@@ -410,23 +422,28 @@ async def main() -> None:
     )
 
     async def _hourly_blocked_recompute_v2() -> None:
-        try:
-            transitions = await recompute_v2(blocked_repo_v2)
-            n_changes = sum(
-                len(v) for k, v in transitions.items() if k != "no_change"
-            )
-            if n_changes:
-                logger.info(
-                    f"M2 auto-block cron: strike1={transitions.get('blocked_strike1', [])}, "
-                    f"strike2={transitions.get('blocked_strike2', [])}, "
-                    f"unblocked={transitions.get('unblocked', [])}"
+        if _recompute_lock_m2.locked():
+            logger.warning("M2 recompute ja em execucao — pulando este ciclo")
+            return
+        async with _recompute_lock_m2:
+            try:
+                transitions = await recompute_v2(blocked_repo_v2)
+                n_changes = sum(
+                    len(v) for k, v in transitions.items() if k != "no_change"
                 )
-        except Exception as e:
-            logger.error(f"hourly_blocked_recompute_v2 failed: {e}")
+                if n_changes:
+                    logger.info(
+                        f"M2 auto-block cron: strike1={transitions.get('blocked_strike1', [])}, "
+                        f"strike2={transitions.get('blocked_strike2', [])}, "
+                        f"unblocked={transitions.get('unblocked', [])}"
+                    )
+            except Exception as e:
+                logger.error(f"hourly_blocked_recompute_v2 failed: {e}")
 
     async def _daily_blocked_report_v2() -> None:
         try:
-            await recompute_v2(blocked_repo_v2)
+            async with _recompute_lock_m2:
+                await recompute_v2(blocked_repo_v2)
             text = await report_v2(blocked_repo_v2)
             await notifier.send_admin_message(text)
         except Exception as e:

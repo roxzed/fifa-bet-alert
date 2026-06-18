@@ -50,6 +50,10 @@ HISTORY_UNBLOCK_MIN_N = 6
 HISTORY_UNBLOCK_MIN_HR = 0.70
 HISTORY_LINE_THRESH = {"over15": 2, "over25": 3, "over35": 4, "over45": 5}
 
+# 2026-06-18: anti-oscilacao — mesmo do M1.
+UNBLOCK_COOLDOWN_SECONDS = 1800
+REBLOCK_COOLDOWN_SECONDS = 1800
+
 
 def _now_naive_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -246,6 +250,16 @@ async def recompute_all_states(
 
         key = f"{player}/{line}/vs.{opponent}"
 
+        # 2026-06-18: cooldowns anti-oscilacao
+        in_reblock_cooldown = (
+            existing_last_unblock_at is not None
+            and (now - existing_last_unblock_at).total_seconds() < REBLOCK_COOLDOWN_SECONDS
+        )
+        in_unblock_cooldown = (
+            shadow_start_at is not None
+            and (now - shadow_start_at).total_seconds() < UNBLOCK_COOLDOWN_SECONDS
+        )
+
         if state == "ACTIVE":
             # 2026-05-18: PERMANENT path removido. Mesma filosofia do M1:
             # combo pode ser bloqueado/desbloqueado multiplas vezes via SHADOW.
@@ -260,6 +274,8 @@ async def recompute_all_states(
                 pl_total <= STRIKE1_BLOCK_PL
                 and n_total >= STRIKE1_BLOCK_MIN_N
             )
+            if can_block and in_reblock_cooldown:
+                can_block = False  # anti-oscilacao
             if can_block and existing_last_unblock_at is not None:
                 post_pl, post_n = await _post_unblock_metrics(
                     blocked_repo, player, line, opponent, existing_last_unblock_at
@@ -278,6 +294,11 @@ async def recompute_all_states(
                     f"{STRIKE1_BLOCK_PL} -> SHADOW (block_count={new_block_count})"
                 )
         elif state == "SHADOW":
+            # 2026-06-18: anti-oscilacao. Bloqueou ha < UNBLOCK_COOLDOWN: nao
+            # desbloqueia ainda.
+            if in_unblock_cooldown:
+                transitions["no_change"].append(f"{key} (cooldown)")
+                continue
             # 2026-06-10: liberar SHADOWs antigos que tinham n=1 (regra antiga).
             # Apos introduzir STRIKE1_BLOCK_MIN_N=2, esses combos ficam em estado
             # inconsistente — block n=1 nao seria mais aceito hoje.
