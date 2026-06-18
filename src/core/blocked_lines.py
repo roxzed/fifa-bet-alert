@@ -62,13 +62,13 @@ HISTORY_UNBLOCK_MIN_N = 6       # minimo jogos pos-block pra avaliar
 HISTORY_UNBLOCK_MIN_HR = 0.70   # hit rate minimo
 HISTORY_LINE_THRESH = {"over15": 2, "over25": 3, "over35": 4, "over45": 5}
 
-# 2026-06-18: anti-oscilacao. Sem isso, caminho 3 desbloqueia → line_cliff/
-# player_cliff rebloqueia → caminho 3 desbloqueia → ... loop infinito.
-# Observado: dor1an/over25/vs.LaikingDast com block_count=129 (oscilou 129x).
-# Solucao: nao desbloquear (qualquer caminho) se ultimo block foi < N segundos.
-# Tambem nao rebloquear se ultimo unblock foi < N segundos.
-UNBLOCK_COOLDOWN_SECONDS = 1800     # 30 min apos block, nao desbloqueia
-REBLOCK_COOLDOWN_SECONDS = 1800     # 30 min apos unblock, nao rebloqueia (mesmo com cliff)
+# 2026-06-18: caminho 3 e ONE-SHOT por combo. So roda em combos que NUNCA
+# foram desbloqueados antes (last_unblock_at IS NULL) e que estao em SHADOW
+# ha pelo menos HISTORY_MIN_DAYS_LOCKED. Razao: caminho 3 era pra migrar
+# combos "esquecidos por inercia", nao competir com cliff/rolling/shadow_pl.
+# Antes: caminho 3 redisparava a cada ciclo → loop block↔unblock observado
+# em dor1an/over25/vs.LaikingDast (oscilou 129x).
+HISTORY_MIN_DAYS_LOCKED = 7
 
 LINES_TRACKED = ("over15", "over25", "over35", "over45")
 
@@ -293,28 +293,13 @@ async def recompute_all_states(
             alerts, last_unblock_at
         )
 
-        # 2026-06-18: cooldown anti-oscilacao. Se desbloqueou recentemente,
-        # nao rebloqueia ate passar REBLOCK_COOLDOWN_SECONDS — mesmo se cliff
-        # disparar. Quebra loop block↔unblock.
-        in_reblock_cooldown = (
-            last_unblock_at is not None
-            and (now - last_unblock_at).total_seconds() < REBLOCK_COOLDOWN_SECONDS
-        )
-        in_unblock_cooldown = (
-            shadow_start_at is not None
-            and (now - shadow_start_at).total_seconds() < UNBLOCK_COOLDOWN_SECONDS
-        )
-
         if state == "ACTIVE":
             triggered = None
             # 2026-05-18: PERMANENT path removido. Combos podem ser bloqueados
             # (SHADOW) e desbloqueados multiplas vezes — o protocolo se baseia
             # em performance corrente, nao em historico de strikes. Filosofia
             # do owner: "manter as tips por ROI".
-            if in_reblock_cooldown:
-                # Pula avaliacao de bloqueio enquanto em cooldown
-                pass
-            elif True:  # antes: if block_count == 0
+            if True:  # antes: if block_count == 0
                 # 1) PLAYER CLIFF: agregado, prioritario
                 if player in players_in_cliff:
                     triggered = "player_cliff"
@@ -375,12 +360,6 @@ async def recompute_all_states(
                         f"TIMEOUT UNBLOCK {player}/{line}/vs.{opp}: "
                         f"{days_locked:.0f}d sem alertas"
                     )
-            # 2026-06-18: anti-oscilacao. Se bloqueou ha < UNBLOCK_COOLDOWN, nao
-            # desbloqueia. Quebra loop onde cliff bloqueia 11:15 e caminho 3
-            # desbloqueia 11:20.
-            if in_unblock_cooldown:
-                continue
-
             # Unblock criteria — caminho 1: shadow_pl (alerts pos-block)
             if (new_state == "SHADOW"
                     and shadow_n >= STRIKE1_UNBLOCK_MIN_N
@@ -415,14 +394,24 @@ async def recompute_all_states(
                     f"rolling_PL={rolling_pl:+.2f}u(n={rolling_n})"
                 )
 
-            # Unblock criteria — caminho 3 (historico de jogo): se desde o
-            # block, o player jogou >=6 G2 contra esse opponent e bateu a
-            # linha em >=70% deles, libera. Resolve inercia: combos sem
-            # alertas pos-block ficavam presos indefinidamente mesmo quando
-            # o cenario do mundo real mudou.
-            # And-se 2026-06-17 mostrou: 47/233 combos liberariam, EV +18.89u
-            # projetado, 75 combos com drain confirmado ficam em SHADOW.
-            if new_state == "SHADOW":
+            # Unblock criteria — caminho 3 (historico de jogo): ONE-SHOT.
+            # So roda em combos esquecidos: nunca foram desbloqueados antes
+            # E estao em SHADOW ha >=7 dias. Depois do primeiro unblock, o
+            # metodo padrao (shadow_pl, rolling simetrico, cliff) toma conta
+            # — sem competicao. Sem isso, caminho 3 redisparava em cada ciclo
+            # gerando loop block↔unblock (observado dor1an com bc=129).
+            should_unblock = False
+            n_games, hr = 0, 0.0
+            days_locked = (
+                (now - shadow_start_at).total_seconds() / 86400
+                if shadow_start_at else 0
+            )
+            is_one_shot_candidate = (
+                new_state == "SHADOW"
+                and last_unblock_at is None
+                and days_locked >= HISTORY_MIN_DAYS_LOCKED
+            )
+            if is_one_shot_candidate:
                 try:
                     should_unblock, n_games, hr = await _check_history_unblock(
                         blocked_repo, player, line, opp, shadow_start_at
@@ -432,7 +421,6 @@ async def recompute_all_states(
                         f"history unblock check falhou {player}/{line}/vs.{opp}: {e!r}"
                     )
                     should_unblock = False
-                    n_games, hr = 0, 0.0
                 if should_unblock:
                     new_state = "ACTIVE"
                     new_last_unblock_at = now

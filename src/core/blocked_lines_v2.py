@@ -50,9 +50,8 @@ HISTORY_UNBLOCK_MIN_N = 6
 HISTORY_UNBLOCK_MIN_HR = 0.70
 HISTORY_LINE_THRESH = {"over15": 2, "over25": 3, "over35": 4, "over45": 5}
 
-# 2026-06-18: anti-oscilacao — mesmo do M1.
-UNBLOCK_COOLDOWN_SECONDS = 1800
-REBLOCK_COOLDOWN_SECONDS = 1800
+# 2026-06-18: caminho 3 ONE-SHOT — mesmo do M1.
+HISTORY_MIN_DAYS_LOCKED = 7
 
 
 def _now_naive_utc() -> datetime:
@@ -250,16 +249,6 @@ async def recompute_all_states(
 
         key = f"{player}/{line}/vs.{opponent}"
 
-        # 2026-06-18: cooldowns anti-oscilacao
-        in_reblock_cooldown = (
-            existing_last_unblock_at is not None
-            and (now - existing_last_unblock_at).total_seconds() < REBLOCK_COOLDOWN_SECONDS
-        )
-        in_unblock_cooldown = (
-            shadow_start_at is not None
-            and (now - shadow_start_at).total_seconds() < UNBLOCK_COOLDOWN_SECONDS
-        )
-
         if state == "ACTIVE":
             # 2026-05-18: PERMANENT path removido. Mesma filosofia do M1:
             # combo pode ser bloqueado/desbloqueado multiplas vezes via SHADOW.
@@ -274,8 +263,6 @@ async def recompute_all_states(
                 pl_total <= STRIKE1_BLOCK_PL
                 and n_total >= STRIKE1_BLOCK_MIN_N
             )
-            if can_block and in_reblock_cooldown:
-                can_block = False  # anti-oscilacao
             if can_block and existing_last_unblock_at is not None:
                 post_pl, post_n = await _post_unblock_metrics(
                     blocked_repo, player, line, opponent, existing_last_unblock_at
@@ -294,11 +281,6 @@ async def recompute_all_states(
                     f"{STRIKE1_BLOCK_PL} -> SHADOW (block_count={new_block_count})"
                 )
         elif state == "SHADOW":
-            # 2026-06-18: anti-oscilacao. Bloqueou ha < UNBLOCK_COOLDOWN: nao
-            # desbloqueia ainda.
-            if in_unblock_cooldown:
-                transitions["no_change"].append(f"{key} (cooldown)")
-                continue
             # 2026-06-10: liberar SHADOWs antigos que tinham n=1 (regra antiga).
             # Apos introduzir STRIKE1_BLOCK_MIN_N=2, esses combos ficam em estado
             # inconsistente — block n=1 nao seria mais aceito hoje.
@@ -360,12 +342,21 @@ async def recompute_all_states(
                     f"pl_total={pl_total:+.2f}u >= {STRIKE1_UNBLOCK_PL}"
                 )
 
-            # Caminho 3 (2026-06-17): unblock por historico de jogo.
-            # Espelho do M1: se desde o block o player jogou >=6 G2 contra o
-            # opponent e bateu a linha em >=70%, libera. Resolve inercia de
-            # combos sem atividade pos-block. And-se M2 mostrou 25/83 combos
-            # liberariam, EV/u projetado +10.39u.
-            if new_state == "SHADOW":
+            # Caminho 3 ONE-SHOT (2026-06-18 fix): so roda em combos que
+            # nunca foram desbloqueados antes E ja estao em SHADOW >= 7 dias.
+            # Depois do primeiro unblock, metodo padrao toma conta.
+            should_unblock = False
+            n_games, hr = 0, 0.0
+            days_locked = (
+                (now - shadow_start_at).total_seconds() / 86400
+                if shadow_start_at else 0
+            )
+            is_one_shot_candidate = (
+                new_state == "SHADOW"
+                and existing_last_unblock_at is None
+                and days_locked >= HISTORY_MIN_DAYS_LOCKED
+            )
+            if is_one_shot_candidate:
                 try:
                     should_unblock, n_games, hr = await _check_history_unblock(
                         blocked_repo, player, line, opponent, shadow_start_at
@@ -375,7 +366,6 @@ async def recompute_all_states(
                         f"M2 history unblock check falhou {key}: {e!r}"
                     )
                     should_unblock = False
-                    n_games, hr = 0, 0.0
                 if should_unblock:
                     new_state = "ACTIVE"
                     last_unblock_at = now
