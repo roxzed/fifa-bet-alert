@@ -622,6 +622,8 @@ class OddsMonitor:
                         match_repo=getattr(self.alert_engine, "matches", None),
                     )
                     ln["h2h_tier"] = tier_res.tier
+                    ln["h2h_roi"] = tier_res.roi
+                    ln["h2h_n"] = tier_res.n
                 except Exception as e:
                     logger.warning(
                         f"watch tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
@@ -752,6 +754,8 @@ class OddsMonitor:
                         match_repo=getattr(self.alert_engine_v2, "matches", None),
                     )
                     ln["h2h_tier"] = tier_res.tier
+                    ln["h2h_roi"] = tier_res.roi
+                    ln["h2h_n"] = tier_res.n
                 except Exception as e:
                     logger.warning(
                         f"WatchV2 tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"

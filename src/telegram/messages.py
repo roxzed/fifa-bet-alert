@@ -156,13 +156,20 @@ def format_watch_message(d: dict) -> str:
         odds = ln.get("target_odds", 0) or 0
         tp = ln.get("predicted_tp")
         tp_str = f" — TP {tp * 100:.0f}%" if isinstance(tp, (int, float)) else ""
-        # Tier H2H da linha + indicador SHADOW
+        # Tier H2H + ROI/n + indicador SHADOW
         tier = ln.get("h2h_tier")
+        roi = ln.get("h2h_roi")
+        n = ln.get("h2h_n")
         is_blocked = ln.get("is_blocked", False)
+        # ROI inline: " ROI +12.3% n=8"
+        if isinstance(roi, (int, float)) and n:
+            roi_str = f" ROI {roi:+.1f}% n={n}"
+        else:
+            roi_str = ""
         if is_blocked:
-            tier_str = f" [{tier or '?'} 🔒 SHADOW]"
+            tier_str = f" [{tier or '?'}{roi_str} 🔒 SHADOW]"
         elif tier:
-            tier_str = f" [{tier}]"
+            tier_str = f" [{tier}{roi_str}]"
         else:
             tier_str = ""
         # Marcar visualmente se linha nao qualifica (TP < WATCH_MIN_TP)
