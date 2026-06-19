@@ -156,11 +156,20 @@ def format_watch_message(d: dict) -> str:
         odds = ln.get("target_odds", 0) or 0
         tp = ln.get("predicted_tp")
         tp_str = f" — TP {tp * 100:.0f}%" if isinstance(tp, (int, float)) else ""
-        # Tier H2H da linha (se vier no payload)
+        # Tier H2H da linha + indicador SHADOW
         tier = ln.get("h2h_tier")
-        tier_str = f" [{tier}]" if tier else ""
+        is_blocked = ln.get("is_blocked", False)
+        if is_blocked:
+            tier_str = f" [{tier or '?'} 🔒 SHADOW]"
+        elif tier:
+            tier_str = f" [{tier}]"
+        else:
+            tier_str = ""
+        # Marcar visualmente se linha nao qualifica (TP < WATCH_MIN_TP)
+        qualified = ln.get("qualified", True)
+        marker = "   •" if qualified else "   ◦"
         body.append(
-            f"   • {_esc(ln.get('line_label'))} @ {odds:.2f}+{tp_str}{tier_str}"
+            f"{marker} {_esc(ln.get('line_label'))} @ {odds:.2f}+{tp_str}{tier_str}"
         )
     lines_block = "\n".join(body)
 

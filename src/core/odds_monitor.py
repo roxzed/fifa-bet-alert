@@ -608,7 +608,7 @@ class OddsMonitor:
                     )
                     return
 
-            # Calcular tier H2H pra cada linha prevista do candidate
+            # Calcular tier H2H + status SHADOW pra cada linha prevista
             alert_repo = getattr(self.alert_engine, "alerts", None)
             blocked_repo = getattr(self.alert_engine, "blocked", None)
             cand_lines = candidate.get("lines") or []
@@ -626,6 +626,14 @@ class OddsMonitor:
                     logger.warning(
                         f"watch tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
                     )
+                # 2026-06-19: indicar se combo esta em SHADOW agora
+                if blocked_repo is not None:
+                    try:
+                        ln["is_blocked"] = await blocked_repo.is_suppressed(
+                            loser, ln_key, winner
+                        )
+                    except Exception:
+                        ln["is_blocked"] = False
 
             # Montar payload e enviar
             from zoneinfo import ZoneInfo
@@ -730,7 +738,7 @@ class OddsMonitor:
                     )
                     return
 
-            # Calcular tier H2H V2 pra cada linha prevista
+            # Calcular tier H2H V2 + status SHADOW pra cada linha prevista
             from src.core.h2h_tier import compute_h2h_tier_v2
             alert_v2_repo = getattr(self.alert_engine_v2, "alerts", None)
             cand_lines = candidate.get("lines") or []
@@ -748,6 +756,14 @@ class OddsMonitor:
                     logger.warning(
                         f"WatchV2 tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
                     )
+                # 2026-06-19: indicar se combo esta em SHADOW M2 agora
+                if blocked_repo_v2 is not None:
+                    try:
+                        ln["is_blocked"] = await blocked_repo_v2.is_suppressed(
+                            loser, ln_key, winner
+                        )
+                    except Exception:
+                        ln["is_blocked"] = False
 
             from zoneinfo import ZoneInfo
             kickoff_brt = (

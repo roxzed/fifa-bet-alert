@@ -1385,7 +1385,11 @@ class StatsEngine:
             logger.warning(f"predict_watch_candidate failed for {losing_player}: {e}")
             return None
 
-        candidates = []
+        # 2026-06-19: incluir TODAS as 3 linhas (over15/25/35) no payload
+        # mesmo que TP < WATCH_MIN_TP, pra o usuario ver status completo.
+        # Apenas usa `qualified` flag pra decidir se vale ou nao enviar o watch
+        # (continua exigindo >=1 linha qualified).
+        all_evaluated = []  # (le, tgt, qualified)
         for le, tgt in [
             (evaluation.line_over15, over15_target),
             (evaluation.line_over25, 1.80),
@@ -1394,17 +1398,23 @@ class StatsEngine:
             if le is None or le.odds is None or le.odds <= 0:
                 continue
             reason_lower = (le.reason or "").lower()
-            if any(tok in reason_lower for tok in ("blacklist", "filtrado", "bloqueado")):
-                continue
-            if le.true_prob_conservative >= self.WATCH_MIN_TP:
-                candidates.append((le, tgt))
+            filtered = any(tok in reason_lower for tok in (
+                "blacklist", "filtrado", "bloqueado"
+            ))
+            qualified = (
+                not filtered
+                and le.true_prob_conservative >= self.WATCH_MIN_TP
+            )
+            all_evaluated.append((le, tgt, qualified))
 
-        if not candidates:
+        qualified_lines = [(le, tgt) for le, tgt, q in all_evaluated if q]
+        if not qualified_lines:
             return None
 
-        best, target = max(candidates, key=lambda x: x[0].true_prob_conservative)
+        best, target = max(qualified_lines, key=lambda x: x[0].true_prob_conservative)
 
         line_labels = {"over15": "over 1.5", "over25": "over 2.5", "over35": "over 3.5"}
+        # Retorna TODAS as linhas avaliadas, ordenadas por TP
         all_lines = [
             {
                 "line": le.line,
@@ -1412,9 +1422,10 @@ class StatsEngine:
                 "target_odds": tgt,
                 "predicted_tp": le.true_prob_conservative,
                 "would_alert_at_target": le.should_alert,
+                "qualified": qualified,
             }
-            for le, tgt in sorted(
-                candidates, key=lambda x: x[0].true_prob_conservative, reverse=True
+            for le, tgt, qualified in sorted(
+                all_evaluated, key=lambda x: x[0].true_prob_conservative, reverse=True
             )
         ]
         return {
