@@ -293,13 +293,28 @@ async def recompute_all_states(
             alerts, last_unblock_at
         )
 
+        # 2026-06-18 fix definitivo anti-oscilacao:
+        # Nenhum combo pode mudar de estado sem EVIDENCIA NOVA pos-ultima-transicao.
+        # - Pra bloquear (ACTIVE→SHADOW): exige alerta novo pos-unblock do combo
+        # - Pra desbloquear (SHADOW→ACTIVE): exige alerta novo pos-block (shadow_n)
+        # Sem isso, cliff/rolling/simetrico julgam o mesmo historico repetidamente
+        # e geram loop SHADOW↔ACTIVE.
+        has_fresh_evidence_for_block = (
+            last_unblock_at is None or post_unblock_n >= 1
+        )
+
         if state == "ACTIVE":
             triggered = None
             # 2026-05-18: PERMANENT path removido. Combos podem ser bloqueados
             # (SHADOW) e desbloqueados multiplas vezes — o protocolo se baseia
             # em performance corrente, nao em historico de strikes. Filosofia
             # do owner: "manter as tips por ROI".
-            if True:  # antes: if block_count == 0
+            if not has_fresh_evidence_for_block:
+                # Combo foi desbloqueado mas nenhum alerta novo chegou ainda.
+                # Cliffs e rolling so refletiriam drain pre-block ja punido.
+                # Espera ate ter alerta novo pra avaliar.
+                pass
+            elif True:  # antes: if block_count == 0
                 # 1) PLAYER CLIFF: agregado, prioritario
                 if player in players_in_cliff:
                     triggered = "player_cliff"
@@ -307,14 +322,8 @@ async def recompute_all_states(
                 elif line_day_n >= LINE_CLIFF_N and line_day_pl <= LINE_CLIFF_PL:
                     triggered = "line_cliff"
                 # 3) Rolling: pl < -1.0u (estrito, n>=0, sem amostra minima)
-                # 2026-06-17 fix: se ja desbloqueou antes (last_unblock_at != None),
-                # so rebloqueia se o rolling tem >=1 alerta POS-unblock. Senao o
-                # rolling so reflete drain pre-block, ja punido — rebloquear no
-                # mesmo tick do unblock vira loop (observado pos-deploy caminho 3:
-                # 17/35 combos foram desbloqueados e rebloqueados em 301s).
                 elif (rolling_n >= STRIKE1_BLOCK_N
-                        and rolling_pl < STRIKE1_BLOCK_PL
-                        and (last_unblock_at is None or post_unblock_n >= 1)):
+                        and rolling_pl < STRIKE1_BLOCK_PL):
                     triggered = "rolling"
 
                 if triggered is not None:
@@ -382,16 +391,21 @@ async def recompute_all_states(
             # indefinidamente (auditoria identificou ~89 combos travados, mesmo
             # com rolling_pl >= +1u). Agora a regra é simetrica: se rolling
             # voltou a +1u, libera. Cron de 5min re-bloqueia se cair pra -1u.
-            if new_state == "SHADOW" and rolling_pl >= STRIKE1_UNBLOCK_PL:
+            # 2026-06-18 fix: exige shadow_n >= 1 (alerta novo pos-block).
+            # Sem isso, rolling positivo de alertas pre-block desbloqueia,
+            # cliff rebloqueia, loop. Agora so libera com evidencia nova.
+            if (new_state == "SHADOW"
+                    and rolling_pl >= STRIKE1_UNBLOCK_PL
+                    and shadow_n >= 1):
                 new_state = "ACTIVE"
                 new_last_unblock_at = now
                 transitions["unblocked"].append(
                     f"{player}/{line}/vs.{opp} rolling_PL="
-                    f"{rolling_pl:+.2f}u(n={rolling_n}) [simetrico]"
+                    f"{rolling_pl:+.2f}u(n={rolling_n}) shadow_n={shadow_n} [simetrico]"
                 )
                 logger.info(
                     f"UNBLOCK SIMETRICO {player}/{line}/vs.{opp}: "
-                    f"rolling_PL={rolling_pl:+.2f}u(n={rolling_n})"
+                    f"rolling_PL={rolling_pl:+.2f}u(n={rolling_n}) shadow_n={shadow_n}"
                 )
 
             # Unblock criteria — caminho 3 (historico de jogo): ONE-SHOT.

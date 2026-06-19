@@ -331,15 +331,20 @@ async def recompute_all_states(
             # libera. Espelho do block que dispara em pl_total <= -1u. Resolve
             # combos com historico positivo sem atividade pos-block que ficavam
             # presos indefinidamente. Cron re-bloqueia se voltar a -1u.
-            if new_state == "SHADOW" and pl_total >= STRIKE1_UNBLOCK_PL:
+            # 2026-06-18 fix: exige shadow_n >= 1 (alerta novo pos-block).
+            # Sem isso, pl_total positivo de alertas pre-block desbloqueia,
+            # cliff/rolling rebloqueia, loop.
+            if (new_state == "SHADOW"
+                    and pl_total >= STRIKE1_UNBLOCK_PL
+                    and shadow_n >= 1):
                 new_state = "ACTIVE"
                 last_unblock_at = now
                 transitions["unblocked"].append(
-                    f"{key} pl_total={pl_total:+.2f}u [simetrico]"
+                    f"{key} pl_total={pl_total:+.2f}u shadow_n={shadow_n} [simetrico]"
                 )
                 logger.info(
                     f"M2 UNBLOCK SIMETRICO {key}: "
-                    f"pl_total={pl_total:+.2f}u >= {STRIKE1_UNBLOCK_PL}"
+                    f"pl_total={pl_total:+.2f}u shadow_n={shadow_n}"
                 )
 
             # Caminho 3 ONE-SHOT (2026-06-18 fix): so roda em combos que
