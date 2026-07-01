@@ -376,7 +376,23 @@ class AlertEngine:
             and not shadow_suppressed
         )
 
-        suppressed = shadow_suppressed or tier_no_sample_suppressed
+        # TIER F DRAIN SUPPRESSION (2026-07-01): suprimir F com PL <= -2u.
+        # Auditoria dos ultimos 7 dias mostrou tier F com ROI -19.4% pos-impl
+        # (47 alertas, WR 42.6%). Regressao a media parou de funcionar pros
+        # combos drainers reais. Filtra so os com evidencia absoluta (PL <= -2u),
+        # preservando F com azar pontual (pode regredir).
+        tier_f_drain_suppressed = (
+            h2h_tier_res is not None
+            and h2h_tier_res.tier == "F"
+            and h2h_tier_res.pl <= -2.0
+            and not shadow_suppressed
+        )
+
+        suppressed = (
+            shadow_suppressed
+            or tier_no_sample_suppressed
+            or tier_f_drain_suppressed
+        )
         if suppressed:
             try:
                 await self.alerts.mark_suppressed(alert.id)
@@ -386,6 +402,12 @@ class AlertEngine:
                 logger.bind(category="alert").info(
                     f"OVER alert SUPPRESSED (SHADOW auto-block): {loser} {best_line} "
                     f"@{best_over['odds']:.2f} — salvo no DB com suppressed=TRUE"
+                )
+            elif tier_f_drain_suppressed:
+                logger.bind(category="alert").info(
+                    f"OVER alert SUPPRESSED (tier F drain PL={h2h_tier_res.pl:+.2f}u "
+                    f"n={h2h_tier_res.n}): {loser} {best_line} @{best_over['odds']:.2f} "
+                    f"— salvo no DB, F drainer confirmado"
                 )
             elif tier_no_sample_suppressed:
                 logger.bind(category="alert").info(
