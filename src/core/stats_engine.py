@@ -1102,15 +1102,16 @@ class StatsEngine:
                         should_alert=False,
                         reason=f"O1.5 filtrado: odds={odds:.2f}<1.70",
                     )
-                if loser_goals_g1 < 2:
-                    return LineEvaluation(
-                        line=line_name, odds=odds, true_prob=tp,
-                        true_prob_conservative=tp,
-                        implied_prob=implied_probability(odds),
-                        edge_val=0.0, ev_val=0.0, kelly_val=0.0, stars=0,
-                        should_alert=False,
-                        reason=f"O1.5 filtrado: g1_goals={loser_goals_g1}<2",
-                    )
+                # 2026-07-02: filtro loser_goals_g1<2 REMOVIDO.
+                # Auditoria 3008 matches: nos jogos onde stats engine identificou
+                # opportunity, hit rate Over 1.5 por g1_goals:
+                #   g1=0: 82.5% (n=211, CI 76.8-87.0%)
+                #   g1=1: 80.5% (n=539, CI 77.0-83.6%)
+                #   g1=2: 74.6% (n=1033)
+                #   g1=3: 72.2% (n=864)
+                # Casos g1<2 tem hit rate MAIOR que g1=2-3. O filtro estava
+                # cortando os melhores casos (~750 matches). Custo estimado:
+                # +314u de PL perdido na janela desde 15/04.
 
             # O2.5 e O3.5: odds minima 1.70 (era 1.80 — owner baixou 2026-05-24
             # para pegar entradas mais cedo. Breakeven matematico em 1.70 = 58.82% WR).
