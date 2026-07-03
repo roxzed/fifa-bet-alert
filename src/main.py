@@ -463,6 +463,100 @@ async def main() -> None:
         task_id="daily_blocked_report_v2",
     )
 
+    # --- Notificador de INICIO DE RODADA G2 (2026-07-03) ---
+    # Owner pediu aviso 10min antes da primeira G2 de uma nova sessao/rodada.
+    # Detecta: proximo G2 upcoming em 8-12min E gap >= 20min desde ultimo G2.
+    _notified_round_kickoffs: set[str] = set()
+    _round_notifier_match_repo = MatchRepository(sf)
+
+    async def _round_start_notifier() -> None:
+        from datetime import datetime, timezone, timedelta
+        from sqlalchemy import text
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            # Proximo G2 upcoming em 5-15min (janela larga pra 3min cron pegar)
+            stmt = text("""
+                SELECT id, player_home, player_away, started_at
+                FROM matches
+                WHERE is_return_match = TRUE
+                  AND started_at IS NOT NULL
+                  AND started_at BETWEEN :lo AND :hi
+                ORDER BY started_at ASC
+                LIMIT 1
+            """)
+            result = await _round_notifier_match_repo.execute_query(
+                stmt, {
+                    "lo": now + timedelta(minutes=5),
+                    "hi": now + timedelta(minutes=15),
+                }
+            )
+            row = result.first()
+            if not row:
+                return
+
+            kickoff_key = row.started_at.isoformat()
+            if kickoff_key in _notified_round_kickoffs:
+                return  # ja notificado
+
+            # Verificar se e' inicio de rodada: gap >= 20min desde ultimo G2
+            stmt_prev = text("""
+                SELECT MAX(started_at) AS last_kickoff
+                FROM matches
+                WHERE is_return_match = TRUE
+                  AND started_at < :ref
+                  AND started_at >= :window_start
+            """)
+            result_prev = await _round_notifier_match_repo.execute_query(
+                stmt_prev, {
+                    "ref": row.started_at,
+                    "window_start": row.started_at - timedelta(minutes=30),
+                }
+            )
+            prev = result_prev.first()
+            last_kickoff = prev.last_kickoff if prev else None
+
+            if last_kickoff is not None:
+                gap_min = (row.started_at - last_kickoff).total_seconds() / 60
+                if gap_min < 20:
+                    return  # nao e' inicio de rodada — mesma sessao rolando
+
+            # E' inicio de rodada — enviar notificacao
+            from zoneinfo import ZoneInfo
+            kickoff_brt = (
+                row.started_at.replace(tzinfo=timezone.utc)
+                .astimezone(ZoneInfo("America/Sao_Paulo"))
+            )
+            minutes_until = int((row.started_at - now).total_seconds() / 60)
+            msg = (
+                f"🎮 <b>NOVA RODADA — em ~{minutes_until} min</b>\n"
+                f"\n"
+                f"Primeiro G2 kickoff: <b>{kickoff_brt.strftime('%H:%M')}</b> BRT\n"
+                f"Jogo: {row.player_home} vs {row.player_away}\n"
+                f"\n"
+                f"⚠️ Fique atento ao Telegram para os alertas."
+            )
+            await notifier.send_admin_message(msg)
+            _notified_round_kickoffs.add(kickoff_key)
+            logger.info(
+                f"Round start notified: kickoff={kickoff_brt.strftime('%H:%M BRT')} "
+                f"({row.player_home} vs {row.player_away})"
+            )
+
+            # Limpar set: manter so kickoffs de <6h atras (evita crescer infinito)
+            cutoff = now - timedelta(hours=6)
+            to_remove = {k for k in _notified_round_kickoffs
+                         if datetime.fromisoformat(k) < cutoff}
+            _notified_round_kickoffs.difference_update(to_remove)
+
+        except Exception as e:
+            logger.warning(f"round_start_notifier failed: {e}")
+
+    scheduler.add_interval_task(
+        _round_start_notifier,
+        seconds=180,  # 3min
+        task_id="round_start_notifier",
+    )
+
     scheduler.start()
 
     # Retry imediato no startup para nao perder pares detectados antes do primeiro ciclo
