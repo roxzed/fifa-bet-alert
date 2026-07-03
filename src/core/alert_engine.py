@@ -399,15 +399,14 @@ class AlertEngine:
             and not shadow_suppressed
         )
 
-        # TIER F DRAIN SUPPRESSION (2026-07-01): suprimir F com PL <= -2u.
-        # Auditoria dos ultimos 7 dias mostrou tier F com ROI -19.4% pos-impl
-        # (47 alertas, WR 42.6%). Regressao a media parou de funcionar pros
-        # combos drainers reais. Filtra so os com evidencia absoluta (PL <= -2u),
-        # preservando F com azar pontual (pode regredir).
+        # TIER F FULL SUPPRESSION (2026-07-03): suprimir TODOS os F.
+        # Owner decidiu bloquear qualquer F, nao so PL <= -2u como era antes.
+        # Nota: F por definicao tem PL<0 (roi<0 com n>=3), entao qualquer
+        # combo classificado F sera suprimido. F com PL positivo nao existe
+        # matematicamente — se pl>=0, combo vira D/C/B/A/S.
         tier_f_drain_suppressed = (
             h2h_tier_res is not None
             and h2h_tier_res.tier == "F"
-            and h2h_tier_res.pl <= -2.0
             and not shadow_suppressed
         )
 
