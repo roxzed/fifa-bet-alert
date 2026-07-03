@@ -167,6 +167,29 @@ class AlertEngine:
                 if is_supp:
                     suppressed_lines.add(ln)
 
+        # 2026-07-03: COERENCIA MONOTONICIDADE.
+        # Se over_N passa o SHADOW (ACTIVE), over_M com M<N do mesmo combo
+        # herda a liberacao. Matematicamente P(gols>=N-1) >= P(gols>=N), logo
+        # SHADOW de linha baixa e' incoerente quando linha alta esta ACTIVE.
+        # Caso classico: dor1an/mko1919 chegou watcher com over15[A], over25[
+        # SHADOW], over35[A] — se 3.5 pode alertar (probabilidade menor), 2.5
+        # (probabilidade maior) NUNCA deveria estar bloqueado.
+        LINE_HIERARCHY = ["over15", "over25", "over35", "over45"]
+        lines_with_edge = {ol["line"] for ol in over_lines}
+        override_liberated: set[str] = set()
+        for i, high in enumerate(LINE_HIERARCHY):
+            if high in lines_with_edge and high not in suppressed_lines:
+                # linha alta livre → destravar todas as mais baixas do mesmo combo
+                for lower in LINE_HIERARCHY[:i]:
+                    if lower in suppressed_lines and lower in lines_with_edge:
+                        override_liberated.add(lower)
+        if override_liberated:
+            logger.info(
+                f"MONOTONICITY OVERRIDE {loser} vs {winner}: liberadas "
+                f"{sorted(override_liberated)} pois linha alta esta ACTIVE"
+            )
+            suppressed_lines -= override_liberated
+
         non_suppressed_over = [ol for ol in over_lines if ol["line"] not in suppressed_lines]
 
         # Best over: prioriza linhas NAO suprimidas. Se todas suprimidas, cai
