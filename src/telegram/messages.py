@@ -141,8 +141,35 @@ def format_watch_message(d: dict) -> str:
     Required keys: kickoff_str, player_home, player_away, target_player.
     Lines: list of dicts {line_label, target_odds, predicted_tp}; falls back
     to single line via legacy keys (line_label, target_odds) when absent.
+
+    2026-07-13: modo single_line_only pra cliente VIP — mostra so uma linha
+    (a melhor por TP, ja filtrada de SHADOW/F em send_watch), sem jargao
+    tecnico (sem tier, sem ROI, sem n).
     """
     target_player = _esc(d.get("target_player"))
+
+    # Modo simplificado pra VIP: uma linha so, formato limpo
+    if d.get("single_line_only"):
+        odds = d.get("target_odds", 0) or 0
+        line_label = _esc(d.get("line_label", "?"))
+        method = d.get("method", "M1")
+        method_tag = f" [{method}]" if method != "M1" else ""
+        return (
+            f"🔔 <b>PRÉ-ALERTA{method_tag} — {_esc(d.get('kickoff_str', '?'))}</b>\n"
+            f"\n"
+            f"⚽ {_esc(d.get('player_home'))} vs {_esc(d.get('player_away'))}\n"
+            f"🎯 Alvo: <b>{target_player}</b>\n"
+            f"\n"
+            f"📊 Linha provável:\n"
+            f"   ✅ {line_label} @ {odds:.2f}+\n"
+            f"\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"⚠️ <b>AINDA NÃO É APOSTA</b>\n"
+            f"Aguarde o ALERTA CONFIRMADO do grupo.\n"
+            f"\n"
+            f"📱 Já pode abrir o jogo na bet365."
+        )
+
     lines = d.get("lines") or []
     if not lines:
         lines = [{

@@ -556,9 +556,9 @@ class TelegramNotifier:
     async def send_watch(self, watch_data: dict, auto_delete_seconds: int = 600) -> int | None:
         """Send a silent pre-alert (watch) and schedule auto-deletion.
 
-        2026-06-04: redirecionado pra DM admin apenas. Antes ia pros grupos VIP/M2.
-        Decisao do owner: watches sao ruido pros assinantes, mantem visibilidade
-        do estado do sistema so pra mim no DM.
+        2026-07-13: redirecionado pro grupo VIP (TELEGRAM_CHAT_ID). Antes ia
+        so pra DM admin. Owner decidiu reativar pros assinantes com formato
+        simplificado (so a linha provavel de virar alerta, sem jargao tecnico).
 
         Schedules deletion of the sent message after `auto_delete_seconds`.
         Returns the message_id, or None on failure.
@@ -566,30 +566,54 @@ class TelegramNotifier:
         if self._paused:
             logger.debug("Alerts paused, skipping send_watch")
             return None
-        if not self._admin_chat_id:
-            logger.debug("send_watch NO-OP: TELEGRAM_ADMIN_CHAT_ID vazio")
+        if not self._chat_id:
+            logger.debug("send_watch NO-OP: TELEGRAM_CHAT_ID vazio")
             return None
+
+        # Filtrar linhas SHADOW e tier F antes de decidir a linha exibida
+        lines = watch_data.get("lines") or []
+        eligible = [
+            l for l in lines
+            if not l.get("is_blocked")
+            and l.get("h2h_tier") != "F"
+            and l.get("qualified", True)
+        ]
+        if not eligible:
+            logger.info(
+                f"send_watch: nenhuma linha elegivel apos filtro (SHADOW/F/qualified) "
+                f"pra {watch_data.get('target_player')} — pulando"
+            )
+            return None
+
+        # Melhor linha por TP prevista
+        best = max(eligible, key=lambda l: l.get("predicted_tp") or 0)
+        watch_data = {**watch_data,
+                      "line_label": best.get("line_label", "?"),
+                      "target_odds": best.get("target_odds", 0),
+                      "predicted_tp": best.get("predicted_tp"),
+                      "single_line_only": True}
+
         from src.telegram.messages import format_watch_message
         text = _sanitize_text(format_watch_message(watch_data))
 
-        sent: list[tuple[str, int]] = []  # (chat_id, message_id)
+        sent: list[tuple[str, int]] = []
 
         try:
             msg = await self.bot.send_message(
-                chat_id=self._admin_chat_id,
+                chat_id=self._chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
                 disable_notification=False,
             )
-            sent.append((self._admin_chat_id, msg.message_id))
+            sent.append((self._chat_id, msg.message_id))
             main_msg_id = msg.message_id
         except TelegramError as e:
-            logger.warning(f"Failed to send watch to admin DM: {e}")
+            logger.warning(f"Failed to send watch to VIP group: {e}")
             return None
 
         logger.bind(category="watch").info(
-            f"Watch sent: {watch_data.get('target_player')} "
+            f"Watch sent (VIP): {watch_data.get('target_player')} "
             f"{watch_data.get('line_label')} @ {watch_data.get('target_odds')}"
         )
 
