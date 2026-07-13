@@ -74,10 +74,12 @@ def evaluate_h2h_lines(
 
     recent = goals_recent_first[:recent_window]
     qualified: list[LineEvalV3] = []
+    detalhes: list[str] = []  # diagnóstico por linha ("por que não alertou")
     for line, threshold in M3_LINES:
         hits = sum(1 for g in goals_recent_first if g > threshold)
         rate = hits / n
         recent_hits = sum(1 for g in recent if g > threshold)
+        detalhes.append(f"{line} {rate:.0%} {hits}/{n} rec{recent_hits}/{len(recent)}")
         ok = rate >= min_prob and recent_hits >= recent_min_hits
         if ok:
             qualified.append(
@@ -95,7 +97,9 @@ def evaluate_h2h_lines(
 
     if not qualified:
         return EvaluationV3(
-            should_alert=False, n_h2h=n, reason="nenhuma linha passou taxa+recencia"
+            should_alert=False,
+            n_h2h=n,
+            reason=f"nenhuma linha passou (n={n}): " + "; ".join(detalhes),
         )
     return EvaluationV3(should_alert=True, lines=qualified, n_h2h=n)
 

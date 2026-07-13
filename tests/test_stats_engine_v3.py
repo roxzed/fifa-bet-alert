@@ -28,6 +28,11 @@ def test_taxa_alta_mas_recencia_ruim_reprova():
     ev = evaluate_h2h_lines(goals, **KW)
     lines = {line_eval.line for line_eval in ev.lines}
     assert "over25" not in lines
+    # Nenhuma linha qualifica aqui → reason traz os números por linha (diagnóstico)
+    assert ev.should_alert is False
+    assert "n=20" in ev.reason
+    assert "over25 85% 17/20 rec4/7" in ev.reason
+    assert "over35 65% 13/20 rec0/7" in ev.reason
 
 
 def test_recencia_boa_mas_taxa_baixa_reprova():
