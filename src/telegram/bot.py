@@ -570,7 +570,7 @@ class TelegramNotifier:
             logger.debug("send_watch NO-OP: TELEGRAM_CHAT_ID vazio")
             return None
 
-        # Filtrar linhas SHADOW e tier F antes de decidir a linha exibida
+        # Filtrar linhas SHADOW e tier F antes de exibir
         lines = watch_data.get("lines") or []
         eligible = [
             l for l in lines
@@ -585,13 +585,12 @@ class TelegramNotifier:
             )
             return None
 
-        # Melhor linha por TP prevista
-        best = max(eligible, key=lambda l: l.get("predicted_tp") or 0)
+        # Ordenar por TP descendente (linha mais provavel primeiro)
+        eligible.sort(key=lambda l: l.get("predicted_tp") or 0, reverse=True)
         watch_data = {**watch_data,
-                      "line_label": best.get("line_label", "?"),
-                      "target_odds": best.get("target_odds", 0),
-                      "predicted_tp": best.get("predicted_tp"),
-                      "single_line_only": True}
+                      "lines_eligible": eligible,
+                      "single_line_only": False,
+                      "vip_clean_mode": True}
 
         from src.telegram.messages import format_watch_message
         text = _sanitize_text(format_watch_message(watch_data))

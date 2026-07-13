@@ -148,7 +148,38 @@ def format_watch_message(d: dict) -> str:
     """
     target_player = _esc(d.get("target_player"))
 
-    # Modo simplificado pra VIP: uma linha so, formato limpo
+    # Modo VIP clean: N linhas elegiveis (ja filtradas de SHADOW/F em send_watch)
+    if d.get("vip_clean_mode"):
+        method = d.get("method", "M1")
+        method_tag = f" [{method}]" if method != "M1" else ""
+        eligible = d.get("lines_eligible") or []
+        if not eligible:
+            eligible = [{
+                "line_label": d.get("line_label"),
+                "target_odds": d.get("target_odds", 0),
+            }]
+        lines_txt = "\n".join(
+            f"   ✅ {_esc(l.get('line_label','?'))} @ {(l.get('target_odds',0) or 0):.2f}+"
+            for l in eligible
+        )
+        header_label = "Linha provável" if len(eligible) == 1 else "Linhas prováveis"
+        return (
+            f"🔔 <b>PRÉ-ALERTA{method_tag} — {_esc(d.get('kickoff_str', '?'))}</b>\n"
+            f"\n"
+            f"⚽ {_esc(d.get('player_home'))} vs {_esc(d.get('player_away'))}\n"
+            f"🎯 Alvo: <b>{target_player}</b>\n"
+            f"\n"
+            f"📊 {header_label}:\n"
+            f"{lines_txt}\n"
+            f"\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"⚠️ <b>AINDA NÃO É APOSTA</b>\n"
+            f"Aguarde o ALERTA CONFIRMADO do grupo.\n"
+            f"\n"
+            f"📱 Já pode abrir o jogo na bet365."
+        )
+
+    # Legado: single_line_only (obsoleto, mantido pra compat)
     if d.get("single_line_only"):
         odds = d.get("target_odds", 0) or 0
         line_label = _esc(d.get("line_label", "?"))
