@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     telegram_api_id: str = ""  # my.telegram.org → API development tools (Telethon sync)
     telegram_api_hash: str = ""
 
+    # Method 3 (frequencia H2H pura) — alertas no privado do owner
+    telegram_m3_chat_id: str = ""  # vazio = M3 desligado
+    m3_min_prob: float = 0.60      # taxa minima na janela H2H
+    m3_h2h_window: int = 20        # janela principal de H2H
+    m3_recent_window: int = 7      # janela de recencia
+    m3_recent_min_hits: int = 5    # hits minimos na janela de recencia
+    m3_min_h2h: int = 10           # amostra minima de H2H
+
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"
 
