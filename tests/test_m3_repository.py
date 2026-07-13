@@ -100,3 +100,35 @@ async def test_h2h_player_goals_respeita_limit(tmp_path):
     assert len(goals) == 20
     assert goals[0] == 24  # o mais recente
     await db.close()
+
+
+async def test_alert_v3_create_dedupe_e_validate(tmp_path):
+    from src.db.repositories import AlertV3Repository
+
+    db = await _make_db(tmp_path)
+    repo = AlertV3Repository(db.session_factory)
+
+    alert = await repo.create(
+        match_id=1,
+        losing_player="Sena",
+        opponent_player="Bosko",
+        game1_score="1-3",
+        line="over25",
+        odds=1.85,
+        rate=0.70,
+        hits=14,
+        n_h2h=20,
+        recent_hits=5,
+    )
+    assert alert.id is not None
+    assert await repo.exists_for_line(1, "over25") is True
+    assert await repo.exists_for_line(1, "over35") is False
+
+    await repo.update_telegram_message_id(alert.id, 777)
+    validated = await repo.validate(alert.id, actual_goals=3, hit=True, profit_flat=0.85)
+    assert validated.hit is True
+    assert validated.telegram_message_id == 777
+
+    rows = await repo.get_all_by_match_id(1)
+    assert len(rows) == 1
+    await db.close()

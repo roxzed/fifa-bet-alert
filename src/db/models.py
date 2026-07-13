@@ -587,6 +587,55 @@ class AlertV2(Base):
         )
 
 
+# ---------------------------------------------------------------------------
+# AlertV3 (Method 3)
+# ---------------------------------------------------------------------------
+class AlertV3(Base):
+    """Alerta do Method 3 — UMA row por linha de over qualificada."""
+
+    __tablename__ = "alerts_v3"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    match_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("matches.id"), nullable=False
+    )
+    losing_player: Mapped[str] = mapped_column(String, nullable=False)
+    opponent_player: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    game1_score: Mapped[str] = mapped_column(String, nullable=False)
+
+    line: Mapped[str] = mapped_column(String, nullable=False)  # over15..over45
+    odds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rate: Mapped[float] = mapped_column(Float, nullable=False)  # taxa janela 20
+    hits: Mapped[int] = mapped_column(Integer, nullable=False)
+    n_h2h: Mapped[int] = mapped_column(Integer, nullable=False)
+    recent_hits: Mapped[int] = mapped_column(Integer, nullable=False)  # dos ultimos 7
+
+    telegram_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    actual_goals: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    hit: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    profit_flat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    match: Mapped["Match"] = relationship("Match", foreign_keys=[match_id])
+
+    __table_args__ = (
+        Index("ix_alerts_v3_match_id", "match_id"),
+        Index("ix_alerts_v3_losing_player", "losing_player"),
+        Index("ix_alerts_v3_line", "line"),
+        Index("ix_alerts_v3_sent_at", "sent_at"),
+        Index("ix_alerts_v3_validated_at", "validated_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AlertV3(id={self.id}, match_id={self.match_id}, "
+            f"loser={self.losing_player!r}, line={self.line!r})>"
+        )
+
+
 class FreeGroupMember(Base):
     __tablename__ = "free_group_members"
 
