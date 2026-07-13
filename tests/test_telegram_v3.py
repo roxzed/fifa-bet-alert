@@ -1,5 +1,6 @@
 """Testes dos envios Telegram do Metodo 3."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from src.telegram.bot import TelegramNotifier
@@ -47,6 +48,8 @@ def test_format_watch_v3_mostra_taxas_de_todas_as_linhas():
     assert "M3" in text
     assert "Over 2.5" in text and "70%" in text and "14/20" in text and "5/7" in text
     assert "Over 1.5" in text
+    # Pre-aviso NUNCA mostra odds (mercado fechado), mesmo com odds no payload
+    assert "1.85" not in text and "1.62" not in text and "@" not in text
 
 
 def test_format_alert_v3_inclui_odds():
@@ -73,6 +76,15 @@ async def test_send_watch_v3_envia_e_agenda_delete():
     msg_id = await notifier.send_watch_v3(_data(), auto_delete_seconds=0.01)
     assert msg_id == 99
     assert notifier.bot.send_message.await_args.kwargs["chat_id"] == "6034412176"
+    # Aguardar a task de auto-delete agendada rodar e verificar o delete real
+    delete_tasks = [
+        t for t in asyncio.all_tasks() if t.get_name().startswith("m3_watch_delete_")
+    ]
+    assert delete_tasks, "task de auto-delete nao foi agendada"
+    await asyncio.gather(*delete_tasks)
+    notifier.bot.delete_message.assert_awaited_once_with(
+        chat_id="6034412176", message_id=99
+    )
 
 
 async def test_edit_alert_v3_result_adiciona_green_red():

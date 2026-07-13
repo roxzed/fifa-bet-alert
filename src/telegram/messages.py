@@ -441,7 +441,12 @@ def format_watch_v3(d: dict) -> str:
     ph = _esc(d.get("player_home"))
     pa = _esc(d.get("player_away"))
     target = _esc(d.get("target_player"))
-    lines_txt = "\n".join(f"• {_m3_line_stats(ln)}" for ln in d.get("lines", []))
+    # Pré-aviso NUNCA mostra odds (mercado fechado) — descarta a chave mesmo
+    # se o caller mandar linhas com odds no payload.
+    lines_txt = "\n".join(
+        f"• {_m3_line_stats({k: v for k, v in ln.items() if k != 'odds'})}"
+        for ln in d.get("lines", [])
+    )
     return (
         f"🔬 <b>[M3] PRÉ-AVISO</b> — volta às {_esc(d.get('kickoff_str', '?'))}\n"
         f"{ph} vs {pa}\n"
