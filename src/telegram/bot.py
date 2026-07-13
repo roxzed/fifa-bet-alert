@@ -566,7 +566,7 @@ class TelegramNotifier:
         if self._paused:
             logger.debug("Alerts paused, skipping send_watch")
             return None
-        if not self._chat_id:
+        if not self.chat_id:
             logger.debug("send_watch NO-OP: TELEGRAM_CHAT_ID vazio")
             return None
 
@@ -599,13 +599,13 @@ class TelegramNotifier:
 
         try:
             msg = await self.bot.send_message(
-                chat_id=self._chat_id,
+                chat_id=self.chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
                 disable_notification=False,
             )
-            sent.append((self._chat_id, msg.message_id))
+            sent.append((self.chat_id, msg.message_id))
             main_msg_id = msg.message_id
         except TelegramError as e:
             logger.warning(f"Failed to send watch to VIP group: {e}")
