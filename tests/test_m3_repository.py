@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from src.db.models import Base
-from src.db.repositories import MatchRepository
+from src.db.repositories import AlertV3Repository, MatchRepository
 
 
 class Database:
@@ -47,7 +47,7 @@ async def _make_db(tmp_path):
     return db
 
 
-async def _add_match(repo, home, away, sh, sa, when, status="ended"):
+async def _add_match(repo, home, away, sh, sa, when, status="ended", is_return_match=False):
     return await repo.create(
         league="Esoccer Battle - 8 mins play",
         player_home=home,
@@ -56,6 +56,7 @@ async def _add_match(repo, home, away, sh, sa, when, status="ended"):
         score_away=sa,
         status=status,
         started_at=when,
+        is_return_match=is_return_match,
     )
 
 
@@ -103,8 +104,6 @@ async def test_h2h_player_goals_respeita_limit(tmp_path):
 
 
 async def test_alert_v3_create_dedupe_e_validate(tmp_path):
-    from src.db.repositories import AlertV3Repository
-
     db = await _make_db(tmp_path)
     repo = AlertV3Repository(db.session_factory)
 
@@ -131,4 +130,47 @@ async def test_alert_v3_create_dedupe_e_validate(tmp_path):
 
     rows = await repo.get_all_by_match_id(1)
     assert len(rows) == 1
+    await db.close()
+
+
+async def test_get_unvalidated_return_matches_v3(tmp_path):
+    db = await _make_db(tmp_path)
+    match_repo = MatchRepository(db.session_factory)
+    alert_repo = AlertV3Repository(db.session_factory)
+    base = datetime(2026, 7, 1, 12, 0)
+
+    # Volta com alerta v3 NAO validado -> deve retornar
+    m1 = await _add_match(repo=match_repo, home="Sena", away="Bosko", sh=2, sa=1,
+                          when=base, is_return_match=True)
+    await alert_repo.create(
+        match_id=m1.id,
+        losing_player="Sena",
+        opponent_player="Bosko",
+        game1_score="1-3",
+        line="over25",
+        rate=0.70,
+        hits=14,
+        n_h2h=20,
+        recent_hits=5,
+    )
+
+    # Volta com alerta v3 JA validado -> nao deve retornar
+    m2 = await _add_match(repo=match_repo, home="Bosko", away="llulle", sh=3, sa=0,
+                          when=base + timedelta(hours=1), is_return_match=True)
+    validated = await alert_repo.create(
+        match_id=m2.id,
+        losing_player="llulle",
+        opponent_player="Bosko",
+        game1_score="0-2",
+        line="over15",
+        rate=0.80,
+        hits=16,
+        n_h2h=20,
+        recent_hits=6,
+    )
+    await alert_repo.validate(validated.id, actual_goals=0, hit=False, profit_flat=-1.0)
+
+    matches = await match_repo.get_unvalidated_return_matches_v3()
+
+    assert [m.id for m in matches] == [m1.id]
     await db.close()

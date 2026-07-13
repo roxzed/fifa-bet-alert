@@ -365,19 +365,20 @@ class MatchRepository(_BaseRepository):
             return result.scalars().all()
 
     async def get_unvalidated_return_matches_v3(self) -> list[Match]:
-        """Return return matches with unvalidated M3 alerts."""
+        """Return return matches that have at least one unvalidated M3 alert."""
         async with self._session() as session:
             stmt = (
                 select(Match)
                 .join(AlertV3, AlertV3.match_id == Match.id)
                 .where(
-                    Match.status == "ended",
-                    Match.score_home.is_not(None),
-                    AlertV3.hit.is_(None),
+                    Match.is_return_match == True,  # noqa: E712
+                    AlertV3.validated_at.is_(None),
                 )
                 .distinct()
+                .order_by(Match.started_at.asc())
             )
-            return list((await session.execute(stmt)).scalars().all())
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def get_ended_since(
         self, start: datetime, end: datetime
@@ -1755,7 +1756,7 @@ class AlertV3Repository(_BaseRepository):
         alert_id: int,
         actual_goals: int,
         hit: bool,
-        profit_flat: float | None,
+        profit_flat: float | None = None,
     ) -> Optional[AlertV3]:
         """Record post-game result for an alert V3."""
         async with self._session() as session:
