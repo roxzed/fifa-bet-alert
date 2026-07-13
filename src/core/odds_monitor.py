@@ -271,26 +271,10 @@ class OddsMonitor:
             self._watch_tasks[match_id] = wtask
             logger.info(f"Watch M1 task criada pra match {match_id} ({loser} vs {winner})")
 
-        # Agendar watch M2 (pre-alerta) — so se alert_engine_v2 disponivel
-        if self.alert_engine_v2 and match_id not in self._watch_tasks_v2:
-            wtask_v2 = asyncio.create_task(
-                self._watch_loop_v2(return_match, game1_match, loser, winner, loser_goals_g1),
-                name=f"watch_v2_{match_id}",
-            )
-
-            def _on_watch_v2_done(t: asyncio.Task, mid=match_id, ls=loser, wn=winner) -> None:
-                if t.cancelled():
-                    logger.info(f"Watch M2 {mid} cancelled ({ls} vs {wn})")
-                    return
-                exc = t.exception()
-                if exc:
-                    logger.error(
-                        f"Watch M2 {mid} ({ls} vs {wn}) MORREU com excecao: {exc!r}"
-                    )
-
-            wtask_v2.add_done_callback(_on_watch_v2_done)
-            self._watch_tasks_v2[match_id] = wtask_v2
-            logger.info(f"Watch M2 task criada pra match {match_id} ({loser} vs {winner})")
+        # Watch M2 DESLIGADO (decisao do owner 2026-07-13): o pre-aviso ia pro
+        # grupo VIP junto com o do M1 apos o redesign do send_watch. Somente o
+        # M1 tem watcher; o alerta live do M2 segue normal. Pra reativar,
+        # restaurar o agendamento de _watch_loop_v2 aqui (git blame desta linha).
 
     async def _monitor_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
