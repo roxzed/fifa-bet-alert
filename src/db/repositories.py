@@ -432,6 +432,35 @@ class MatchRepository(_BaseRepository):
             result = await session.execute(stmt, {"loser": loser, "opponent": opponent})
             return result.fetchall()
 
+    async def get_h2h_player_goals(
+        self, player: str, opponent: str, limit: int = 20
+    ) -> list[int]:
+        """Gols do `player` nos últimos `limit` H2H contra `opponent`.
+
+        Qualquer jogo entre os dois (ida ou volta, ganhando ou perdendo),
+        apenas encerrados com placar. Mais recente primeiro. Base do M3.
+        """
+        async with self._session() as session:
+            stmt = (
+                select(Match)
+                .where(
+                    Match.status == "ended",
+                    Match.score_home.is_not(None),
+                    Match.score_away.is_not(None),
+                    or_(
+                        and_(Match.player_home == player, Match.player_away == opponent),
+                        and_(Match.player_home == opponent, Match.player_away == player),
+                    ),
+                )
+                .order_by(Match.started_at.desc())
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+        return [
+            (m.score_home if m.player_home == player else m.score_away) or 0
+            for m in rows
+        ]
+
     async def update_result(
         self,
         match_id: int,
