@@ -146,11 +146,11 @@ def test_odds_adaptive_interval():
     assert _adaptive_poll_interval(5.0) == 15
     assert _adaptive_poll_interval(8.0) == 15
 
-    # Very close / past kickoff (<=3 min) — 2s desde 2026-04-28 (corte de latencia)
-    assert _adaptive_poll_interval(2.5) == 2
-    assert _adaptive_poll_interval(2.0) == 2
-    assert _adaptive_poll_interval(0.0) == 2
-    assert _adaptive_poll_interval(-1.0) == 2
+    # Very close / past kickoff (<=3 min) — 3s desde 2026-05-05 (rate limit 429)
+    assert _adaptive_poll_interval(2.5) == 3
+    assert _adaptive_poll_interval(2.0) == 3
+    assert _adaptive_poll_interval(0.0) == 3
+    assert _adaptive_poll_interval(-1.0) == 3
 
     # Unknown
     assert _adaptive_poll_interval(None) == 15
