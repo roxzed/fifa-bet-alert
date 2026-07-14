@@ -1111,11 +1111,15 @@ class OddsMonitor:
                 if engine is None or (gid, metodo) in self._predictive_sent:
                     continue
                 try:
+                    # O proprio _emit_watch_mN marca (gid, metodo) em
+                    # _predictive_sent quando (e so quando) envia de fato —
+                    # fonte unica de verdade. Nao marcamos aqui: um emit que
+                    # retorna False (sem candidato/suprimido) NAO deve travar
+                    # o watch real que possa chegar depois via API.
                     if metodo == "m3":
                         await emit(synth, game1_match, loser, winner)
                     else:
                         await emit(synth, game1_match, loser, winner, loser_goals_g1)
-                    self._predictive_sent.add((gid, metodo))
                 except Exception as e:
                     logger.warning(f"WatchPreditivo {gid} {metodo} erro: {e}")
         except asyncio.CancelledError:
