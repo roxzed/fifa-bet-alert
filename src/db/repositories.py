@@ -15,15 +15,16 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import AsyncGenerator, Dict, List, Optional, Sequence
 
+from loguru import logger
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
-from loguru import logger
 
 from src.db.models import (
     Alert,
     AlertV2,
+    AlertV3,
     BlockedLine,
     BlockedLineV2,
     League,
@@ -363,6 +364,22 @@ class MatchRepository(_BaseRepository):
             result = await session.execute(stmt)
             return result.scalars().all()
 
+    async def get_unvalidated_return_matches_v3(self) -> list[Match]:
+        """Return return matches that have at least one unvalidated M3 alert."""
+        async with self._session() as session:
+            stmt = (
+                select(Match)
+                .join(AlertV3, AlertV3.match_id == Match.id)
+                .where(
+                    Match.is_return_match == True,  # noqa: E712
+                    AlertV3.validated_at.is_(None),
+                )
+                .distinct()
+                .order_by(Match.started_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
     async def get_ended_since(
         self, start: datetime, end: datetime
     ) -> Sequence[Match]:
@@ -431,6 +448,35 @@ class MatchRepository(_BaseRepository):
             """)
             result = await session.execute(stmt, {"loser": loser, "opponent": opponent})
             return result.fetchall()
+
+    async def get_h2h_player_goals(
+        self, player: str, opponent: str, limit: int = 20
+    ) -> list[int]:
+        """Gols do `player` nos últimos `limit` H2H contra `opponent`.
+
+        Qualquer jogo entre os dois (ida ou volta, ganhando ou perdendo),
+        apenas encerrados com placar. Mais recente primeiro. Base do M3.
+        """
+        async with self._session() as session:
+            stmt = (
+                select(Match)
+                .where(
+                    Match.status == "ended",
+                    Match.score_home.is_not(None),
+                    Match.score_away.is_not(None),
+                    or_(
+                        and_(Match.player_home == player, Match.player_away == opponent),
+                        and_(Match.player_home == opponent, Match.player_away == player),
+                    ),
+                )
+                .order_by(Match.started_at.desc())
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+        return [
+            (m.score_home if m.player_home == player else m.score_away) or 0
+            for m in rows
+        ]
 
     async def update_result(
         self,
@@ -1667,6 +1713,81 @@ class AlertV2Repository(_BaseRepository):
             return alert.over15_odds
         else:
             return alert.over25_odds
+
+
+# ---------------------------------------------------------------------------
+# AlertV3Repository (Method 3)
+# ---------------------------------------------------------------------------
+class AlertV3Repository(_BaseRepository):
+    """CRUD and querying for the alerts_v3 table (Method 3)."""
+
+    async def create(self, **kwargs) -> AlertV3:
+        """Create a new alert V3 record."""
+        async with self._session() as session:
+            alert = AlertV3(**kwargs)
+            session.add(alert)
+            await session.flush()
+            return alert
+
+    async def exists_for_line(self, match_id: int, line: str) -> bool:
+        """Check if alert V3 exists for (match_id, line) — para evitar dups."""
+        async with self._session() as session:
+            stmt = (
+                select(AlertV3.id)
+                .where(AlertV3.match_id == match_id, AlertV3.line == line)
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+
+    async def get_all_by_match_id(self, match_id: int) -> Sequence[AlertV3]:
+        """Return all alerts V3 for a given match_id."""
+        async with self._session() as session:
+            stmt = (
+                select(AlertV3)
+                .where(AlertV3.match_id == match_id)
+                .order_by(AlertV3.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+    async def validate(
+        self,
+        alert_id: int,
+        actual_goals: int,
+        hit: bool,
+        profit_flat: float | None = None,
+    ) -> Optional[AlertV3]:
+        """Record post-game result for an alert V3."""
+        async with self._session() as session:
+            stmt = select(AlertV3).where(AlertV3.id == alert_id)
+            result = await session.execute(stmt)
+            alert = result.scalar_one_or_none()
+            if alert:
+                alert.actual_goals = actual_goals
+                alert.hit = hit
+                if profit_flat is not None:
+                    alert.profit_flat = profit_flat
+                alert.validated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                await session.flush()
+            return alert
+
+    async def update_telegram_message_id(self, alert_id: int, message_id: int) -> None:
+        """Save the Telegram message_id so we can edit the message later."""
+        async with self._session() as session:
+            stmt = (
+                update(AlertV3)
+                .where(AlertV3.id == alert_id)
+                .values(telegram_message_id=message_id)
+            )
+            await session.execute(stmt)
+
+    async def get_validated_since(self, since: datetime) -> Sequence[AlertV3]:
+        """Return alertas V3 validados com validated_at >= since (relatorio diario)."""
+        async with self._session() as session:
+            stmt = select(AlertV3).where(AlertV3.validated_at >= since)
+            result = await session.execute(stmt)
+            return result.scalars().all()
 
 
 # ---------------------------------------------------------------------------

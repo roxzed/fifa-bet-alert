@@ -421,3 +421,56 @@ def format_system_status(d: dict) -> str:
         f"   • Regime: {regime_emoji} {regime}\n"
         f"   • Cold start: {'✅ Completo' if cold_done else '⏳ Em andamento'}"
     )
+
+
+def _m3_line_stats(ln: dict) -> str:
+    """'Over 2.5 — 70% (14/20) | ult.7: 5/7' (+ odd quando presente)."""
+    rate = ln.get("rate", 0) or 0
+    base = (
+        f"{_esc(ln.get('line_label', '?'))} — {rate:.0%} "
+        f"({ln.get('hits', 0)}/{ln.get('n', 0)}) "
+        f"| ult.{ln.get('recent_n', 0)}: {ln.get('recent_hits', 0)}/{ln.get('recent_n', 0)}"
+    )
+    if ln.get("odds"):
+        base += f" @ {ln['odds']:.2f}"
+    return base
+
+
+def format_watch_v3(d: dict) -> str:
+    """Pré-aviso M3 (T-90s, sem odds — mercado fechado). Privado do owner."""
+    ph = _esc(d.get("player_home"))
+    pa = _esc(d.get("player_away"))
+    target = _esc(d.get("target_player"))
+    # Pré-aviso NUNCA mostra odds (mercado fechado) — descarta a chave mesmo
+    # se o caller mandar linhas com odds no payload.
+    lines_txt = "\n".join(
+        f"• {_m3_line_stats({k: v for k, v in ln.items() if k != 'odds'})}"
+        for ln in d.get("lines", [])
+    )
+    return (
+        f"🔬 <b>[M3] PRÉ-AVISO</b> — volta às {_esc(d.get('kickoff_str', '?'))}\n"
+        f"{ph} vs {pa}\n"
+        f"🎯 Alvo: <b>{target}</b> (perdeu o G1)\n"
+        f"\n"
+        f"{lines_txt}\n"
+        f"\n"
+        f"<i>Aguardando mercado abrir no live…</i>"
+    )
+
+
+def format_alert_v3(d: dict) -> str:
+    """Alerta M3 live com odds reais. Privado do owner."""
+    ph = _esc(d.get("player_home"))
+    pa = _esc(d.get("player_away"))
+    target = _esc(d.get("target_player"))
+    lines_txt = "\n".join(f"• {_m3_line_stats(ln)}" for ln in d.get("lines", []))
+    url = d.get("bet365_url") or "https://www.bet365.bet.br/#/IP/B151/"
+    return (
+        f"🧪 <b>[M3] ALERTA</b>\n"
+        f"{ph} vs {pa}\n"
+        f"🎯 <b>{target}</b> (perdeu G1 {_esc(d.get('game1_score', '?'))})\n"
+        f"\n"
+        f"{lines_txt}\n"
+        f"\n"
+        f"\U0001f517 <a href=\"{url}\">bet365</a>"
+    )

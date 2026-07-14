@@ -87,6 +87,7 @@ async def main() -> None:
         v2_group_id=settings.telegram_group_v2_id,
         admin_chat_id=settings.telegram_admin_chat_id,
         free_group_id=settings.telegram_free_group_id,
+        m3_chat_id=settings.telegram_m3_chat_id,
     )
 
     # Avisa o admin quando a BetsAPI responde 429 (rate limit).
@@ -117,14 +118,18 @@ async def main() -> None:
     # --- Core modules ---
     from src.core.alert_engine import AlertEngine
     from src.core.alert_engine_v2 import AlertEngineV2
+    from src.core.alert_engine_v3 import AlertEngineV3
     from src.core.game_watcher import GameWatcher
     from src.core.health_monitor import HealthMonitor
     from src.core.odds_monitor import OddsMonitor
     from src.core.pair_matcher import PairMatcher
     from src.core.reporter import Reporter
     from src.core.stats_engine_v2 import StatsEngineV2
+    from src.core.stats_engine_v3 import StatsEngineV3
     from src.core.validator import Validator
     from src.core.validator_v2 import ValidatorV2
+    from src.core.validator_v3 import ValidatorV3
+    from src.db.repositories import AlertV3Repository
 
     blocked_repo = BlockedLineRepository(sf)
     alert_engine = AlertEngine(
@@ -153,11 +158,23 @@ async def main() -> None:
     else:
         logger.info("Method 2 disabled (TELEGRAM_GROUP_V2_ID not set)")
 
+    # Method 3 (frequencia H2H pura — privado do owner)
+    alert_v3_repo = None
+    alert_engine_v3 = None
+    if settings.telegram_m3_chat_id:
+        stats_engine_v3 = StatsEngineV3(match_repo=MatchRepository(sf))
+        alert_v3_repo = AlertV3Repository(sf)
+        alert_engine_v3 = AlertEngineV3(stats_engine_v3, alert_v3_repo, notifier)
+        logger.info(f"Method 3 enabled (chat: {settings.telegram_m3_chat_id})")
+    else:
+        logger.info("Method 3 disabled (TELEGRAM_M3_CHAT_ID not set)")
+
     odds_monitor = OddsMonitor(
         api, OddsRepository(sf), alert_engine,
         match_repo=MatchRepository(sf),
         poll_interval=settings.odds_poll_interval_seconds,
         alert_engine_v2=alert_engine_v2,
+        alert_engine_v3=alert_engine_v3,
     )
     pair_matcher = PairMatcher(
         api, MatchRepository(sf), odds_monitor,
@@ -193,6 +210,10 @@ async def main() -> None:
             api, MatchRepository(sf), alert_v2_repo, notifier,
         )
 
+    validator_v3 = None
+    if alert_engine_v3:
+        validator_v3 = ValidatorV3(MatchRepository(sf), alert_v3_repo, notifier)
+
     # --- MELHORIA 5: Health Monitor ---
     health_monitor = HealthMonitor(
         stats_engine=stats_engine,
@@ -209,6 +230,7 @@ async def main() -> None:
     reporter = Reporter(
         AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier,
         alert_v2_repo=alert_v2_repo,
+        alert_v3_repo=alert_v3_repo,
     )
 
     # --- BotCommands ---
@@ -272,6 +294,12 @@ async def main() -> None:
     scheduler.add_daily_task(
         reporter.send_daily_report_v2, hour=23, minute=50, task_id="daily_report_v2"
     )
+
+    # Daily M3 results at 23:50 — so roda se M3 estiver ligado
+    if alert_engine_v3:
+        scheduler.add_daily_task(
+            reporter.send_daily_report_v3, hour=23, minute=50, task_id="daily_report_v3"
+        )
 
     # Weekly report on Sunday at 23:50
     scheduler.add_weekly_task(
@@ -645,6 +673,10 @@ async def main() -> None:
         tasks_to_run.append(
             _supervised_task("ValidatorV2", validator_v2.start, poll_interval=60)
         )
+    if validator_v3:
+        tasks_to_run.append(
+            _supervised_task("ValidatorV3", validator_v3.start, poll_interval=60)
+        )
 
     try:
         await asyncio.gather(*tasks_to_run)
@@ -659,6 +691,8 @@ async def main() -> None:
         validator.stop()
         if validator_v2:
             validator_v2.stop()
+        if validator_v3:
+            validator_v3.stop()
         scheduler.shutdown()
         await api.close()
 

@@ -150,7 +150,7 @@ class TelegramNotifier:
 
     def __init__(self, token: str, chat_id: str, group_chat_id: str = "",
                  v2_group_id: str = "", admin_chat_id: str = "",
-                 free_group_id: str = "") -> None:
+                 free_group_id: str = "", m3_chat_id: str = "") -> None:
         self.bot = Bot(token=token)
         self.chat_id = chat_id
         self._group_chat_id = group_chat_id
@@ -161,10 +161,13 @@ class TelegramNotifier:
         # Sem fallback: se admin_chat_id vazio, send_admin_message NO-OP.
         # Mensagens admin/status NUNCA podem cair no grupo dos apostadores.
         self._admin_chat_id = admin_chat_id
+        # Chat privado do owner pro Metodo 3 (watch/alerta). Vazio = M3 NO-OP.
+        self._m3_chat_id = m3_chat_id
         self._paused = False
         self._breaker = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         self._breaker_v2 = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         self._breaker_free = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
+        self._breaker_m3 = _CircuitBreaker(failure_threshold=5, cooldown_seconds=60.0)
         # Mapeia chat_message_id -> group_message_id para editar resultado no grupo
         self._group_msg_map: dict[int, int] = {}
 
@@ -651,6 +654,116 @@ class TelegramNotifier:
         except TelegramError as e:
             self._breaker_v2.record_failure()
             logger.error(f"Failed to send M2 message: {e}")
+            return None
+
+    # --- Method 3 (M3) — privado do owner ---
+
+    async def send_watch_v3(self, watch_data: dict, auto_delete_seconds: float = 300) -> int | None:
+        """Pré-aviso M3 no privado do owner. Auto-delete após 5 min."""
+        if not self._m3_chat_id or self._paused:
+            return None
+        if not self._breaker_m3.allow_request():
+            logger.warning("M3 breaker OPEN — skip send_watch_v3")
+            return None
+        from src.telegram.messages import format_watch_v3
+        text = _sanitize_text(format_watch_v3(watch_data))
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._m3_chat_id, text=text,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
+            self._breaker_m3.record_success()
+        except TelegramError as e:
+            self._breaker_m3.record_failure()
+            logger.error(f"Failed to send M3 watch: {e}")
+            return None
+        logger.bind(category="watch_v3").info(
+            f"M3 watch sent: {watch_data.get('target_player')}"
+        )
+
+        async def _delete_later() -> None:
+            await asyncio.sleep(auto_delete_seconds)
+            try:
+                await self.bot.delete_message(chat_id=self._m3_chat_id, message_id=msg.message_id)
+            except TelegramError as e:
+                logger.debug(f"M3 watch auto-delete falhou ({msg.message_id}): {e}")
+
+        asyncio.create_task(_delete_later(), name=f"m3_watch_delete_{msg.message_id}")
+        return msg.message_id
+
+    async def send_alert_v3(self, alert_data: dict) -> int | None:
+        """Alerta M3 live no privado do owner."""
+        if not self._m3_chat_id or self._paused:
+            return None
+        if not self._breaker_m3.allow_request():
+            logger.warning("M3 breaker OPEN — skip send_alert_v3")
+            return None
+        from src.telegram.messages import format_alert_v3
+        text = _sanitize_text(format_alert_v3(alert_data))
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._m3_chat_id, text=text,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
+            self._breaker_m3.record_success()
+            logger.bind(category="alert_v3").info(
+                f"M3 alert sent: {alert_data.get('target_player')} "
+                f"linhas={[ln['line'] for ln in alert_data.get('lines', [])]}"
+            )
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_m3.record_failure()
+            logger.error(f"Failed to send M3 alert: {e}")
+            return None
+
+    async def edit_alert_v3_result(
+        self, message_id: int, alert_data: dict, results: list[dict]
+    ) -> bool:
+        """Edita alerta M3 com GREEN/RED por linha."""
+        if not self._m3_chat_id:
+            return False
+        from src.telegram.messages import format_alert_v3
+        result_lines = "\n".join(
+            f"{'✅ GREEN' if r['hit'] else '❌ RED'} — {r['line_label']} "
+            f"({r['actual_goals']} gols)"
+            for r in results
+        )
+        full_text = _sanitize_text(format_alert_v3(alert_data) + "\n\n" + result_lines)
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self._m3_chat_id, message_id=message_id, text=full_text,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
+            self._breaker_m3.record_success()
+            return True
+        except TelegramError as e:
+            self._breaker_m3.record_failure()
+            logger.warning(f"Failed to edit M3 message {message_id}: {e}")
+            return False
+
+    async def send_message_v3_raw(self, text: str) -> int | None:
+        """Send a raw message to the M3 privado (relatorios)."""
+        if not self._m3_chat_id:
+            return None
+        if not self._breaker_m3.allow_request():
+            logger.warning(
+                f"M3 circuit breaker OPEN — skipping send_message_v3_raw "
+                f"(retry in {self._breaker_m3.seconds_until_retry:.0f}s)"
+            )
+            return None
+        text = _sanitize_text(text)
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._m3_chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_m3.record_success()
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_m3.record_failure()
+            logger.error(f"Failed to send M3 raw message: {e}")
             return None
 
     @staticmethod
