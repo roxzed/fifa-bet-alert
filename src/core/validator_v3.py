@@ -1,7 +1,8 @@
 """Method 3 — validação pós-jogo: GREEN/RED por linha + edição da mensagem.
 
-Mesmo espírito do ValidatorV2 (loop de polling, task nomeada, cancelamento
-via flag + task.cancel()) mas operando sobre alerts_v3 (uma row por linha,
+Mesmo espírito do ValidatorV2 (loop de polling BLOQUEANTE rodado sob
+_supervised_task no main.py, com crash-restart automático; `stop()` apenas
+sinaliza uma flag síncrona) mas operando sobre alerts_v3 (uma row por linha,
 sem `best_line`/`camada`) e editando a mensagem única do privado do owner.
 """
 
@@ -19,32 +20,25 @@ _THRESHOLDS = {"over15": 1.5, "over25": 2.5, "over35": 3.5, "over45": 4.5}
 class ValidatorV3:
     """Valida alertas M3 (uma row por linha) apos o termino dos jogos de volta."""
 
-    def __init__(self, match_repo, alert_v3_repo, notifier, poll_seconds: int = 60) -> None:
+    def __init__(self, match_repo, alert_v3_repo, notifier) -> None:
         self.matches = match_repo
         self.alerts = alert_v3_repo
         self.notifier = notifier
-        self.poll_seconds = poll_seconds
-        self._task: asyncio.Task | None = None
         self._running = False
 
-    async def start(self) -> None:
+    async def start(self, poll_interval: int = 60) -> None:
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="validator_v3")
         logger.info("ValidatorV3 started")
-
-    async def stop(self) -> None:
-        self._running = False
-        if self._task:
-            self._task.cancel()
-
-    async def _loop(self) -> None:
         while self._running:
             try:
                 for match in await self.matches.get_unvalidated_return_matches_v3():
                     await self.validate_match(match)
             except Exception as e:
                 logger.error(f"ValidatorV3 cycle error: {e}")
-            await asyncio.sleep(self.poll_seconds)
+            await asyncio.sleep(poll_interval)
+
+    def stop(self) -> None:
+        self._running = False
 
     async def validate_match(self, match) -> None:
         """Valida (GREEN/RED por linha) e edita a mensagem M3 de um jogo de volta."""
