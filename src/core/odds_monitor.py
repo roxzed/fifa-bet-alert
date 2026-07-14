@@ -914,8 +914,6 @@ class OddsMonitor:
         Diferente do M1/M2, nao tem predict_watch_candidate — usa direto
         alert_engine_v3.stats.evaluate() (mesma logica do eval live).
         """
-        from src.core.stats_engine_v3 import M3_LINE_LABELS
-
         match_id = return_match.id
         kickoff = return_match.started_at
         if kickoff is None:
@@ -939,42 +937,7 @@ class OddsMonitor:
                 )
                 return
 
-            evaluation = await self.alert_engine_v3.stats.evaluate(loser, winner)
-            if not evaluation.should_alert:
-                return  # stats.evaluate ja loga o motivo em INFO
-
-            from zoneinfo import ZoneInfo
-            kickoff_brt = (
-                kickoff.replace(tzinfo=timezone.utc)
-                .astimezone(ZoneInfo("America/Sao_Paulo"))
-            )
-            watch_data = {
-                "kickoff_str": kickoff_brt.strftime("%H:%M"),
-                "player_home": return_match.player_home,
-                "player_away": return_match.player_away,
-                "target_player": loser,
-                "lines": [
-                    {
-                        "line": le.line,
-                        "line_label": M3_LINE_LABELS[le.line],
-                        "rate": le.rate,
-                        "hits": le.hits,
-                        "n": le.n,
-                        "recent_hits": le.recent_hits,
-                        "recent_n": le.recent_n,
-                    }
-                    for le in evaluation.lines
-                ],
-            }
-            notifier = self.alert_engine.notifier
-            logger.info(
-                f"WatchV3 {match_id} ENVIANDO: {loser} vs {winner} | "
-                f"linhas={[le.line for le in evaluation.lines]}"
-            )
-            await notifier.send_watch_v3(
-                watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
-            )
-            logger.info(f"WatchV3 {match_id} ENVIADO com sucesso ({loser} vs {winner})")
+            await self._emit_watch_m3(return_match, game1_match, loser, winner)
 
         except asyncio.CancelledError:
             logger.info(f"WatchV3 task {match_id} cancelled ({loser} vs {winner})")
@@ -986,6 +949,66 @@ class OddsMonitor:
             )
         finally:
             self._watch_v3_tasks.pop(match_id, None)
+
+    async def _emit_watch_m3(
+        self, return_match, game1_match, loser: str, winner: str
+    ) -> bool:
+        """Avalia stats H2H puras (StatsEngineV3) e envia watch silencioso via DM do owner.
+
+        Chamado pelo _watch_loop_v3 apos o guard de kickoff (kickoff garantido
+        != None e ainda nao passado). Extraido do _watch_loop_v3 em 2026-07-14
+        (refatoracao pura, sem mudanca de comportamento). Diferente do
+        _emit_watch_m1/_emit_watch_m2, nao tem predict_watch_candidate — usa
+        direto alert_engine_v3.stats.evaluate() (mesma logica do eval live).
+
+        Retorna True se o watch foi efetivamente enviado (send_watch_v3
+        chamado com sucesso), False se abortou antes (should_alert False).
+        """
+        from src.core.stats_engine_v3 import M3_LINE_LABELS
+
+        # gid: identificador so pra logs. return_match.id pode ser None no
+        # caso de match sintetico futuro (ver src/core/synthetic_match.py),
+        # nesse caso cai pro game1_id.
+        gid = getattr(return_match, "game1_id", None) or return_match.id
+        kickoff = return_match.started_at
+
+        evaluation = await self.alert_engine_v3.stats.evaluate(loser, winner)
+        if not evaluation.should_alert:
+            return False  # stats.evaluate ja loga o motivo em INFO
+
+        from zoneinfo import ZoneInfo
+        kickoff_brt = (
+            kickoff.replace(tzinfo=timezone.utc)
+            .astimezone(ZoneInfo("America/Sao_Paulo"))
+        )
+        watch_data = {
+            "kickoff_str": kickoff_brt.strftime("%H:%M"),
+            "player_home": return_match.player_home,
+            "player_away": return_match.player_away,
+            "target_player": loser,
+            "lines": [
+                {
+                    "line": le.line,
+                    "line_label": M3_LINE_LABELS[le.line],
+                    "rate": le.rate,
+                    "hits": le.hits,
+                    "n": le.n,
+                    "recent_hits": le.recent_hits,
+                    "recent_n": le.recent_n,
+                }
+                for le in evaluation.lines
+            ],
+        }
+        notifier = self.alert_engine.notifier
+        logger.info(
+            f"WatchV3 {gid} ENVIANDO: {loser} vs {winner} | "
+            f"linhas={[le.line for le in evaluation.lines]}"
+        )
+        await notifier.send_watch_v3(
+            watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
+        )
+        logger.info(f"WatchV3 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+        return True
 
     async def _fetch_loser_odds(self, return_match, loser: str):
         """Find bet365 FI for the match and return player goals odds for the loser.
