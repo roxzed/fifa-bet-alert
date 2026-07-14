@@ -270,6 +270,7 @@ class PairMatcher:
 
         # Remove from pending if it was there
         self._pending.pop(game1_match.id, None)
+        self.odds_monitor.cancel_predictive_watch(game1_match.id)
 
         # Start monitoring odds for the return match
         await self.odds_monitor.start_monitoring(
@@ -314,6 +315,15 @@ class PairMatcher:
                 "added_at": datetime.now(timezone.utc),
             }
             logger.debug(f"Added game1={game1_match.id} to pending pair queue")
+
+            # Fallback preditivo: se a API nao expuser a volta a tempo, o watch
+            # sai pelo horario previsto. No-op se desabilitado.
+            try:
+                self.odds_monitor.schedule_predictive_watch(
+                    game1_match, loser, winner, loser_goals_g1
+                )
+            except Exception as e:
+                logger.warning(f"schedule_predictive_watch falhou p/ game1={game1_match.id}: {e}")
 
     async def retry_pending(self) -> None:
         """Retry finding return matches for pending games. Called periodically by APScheduler.
@@ -508,6 +518,10 @@ class PairMatcher:
             f"Pair linked: game1={game1_match.id} -> game2={return_match.id} "
             f"(loser={loser}, {time_between} min apart)"
         )
+
+        # Cancela o preditivo pendente: a volta casou por candidatos pre-buscados
+        # (pop do _pending eh feito pelo caller retry_pending apos o retorno)
+        self.odds_monitor.cancel_predictive_watch(game1_match.id)
 
         await self.odds_monitor.start_monitoring(
             return_match=return_match,

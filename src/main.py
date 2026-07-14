@@ -176,6 +176,18 @@ async def main() -> None:
         alert_engine_v2=alert_engine_v2,
         alert_engine_v3=alert_engine_v3,
     )
+
+    # --- Watch preditivo: estima offset historico da volta (G1 -> G2) ---
+    from src.core.return_offset import estimate_return_offset_minutes
+    if settings.watch_predictive_enabled:
+        odds_monitor._predictive_offset_min = await estimate_return_offset_minutes(
+            MatchRepository(sf),
+            fallback_min=settings.watch_return_offset_fallback_min,
+        )
+        logger.info(f"Watch preditivo ON (offset={odds_monitor._predictive_offset_min:.1f}min)")
+    else:
+        logger.info("Watch preditivo OFF (WATCH_PREDICTIVE_ENABLED=false)")
+
     pair_matcher = PairMatcher(
         api, MatchRepository(sf), odds_monitor,
         session_factory=sf,
