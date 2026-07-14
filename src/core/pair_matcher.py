@@ -477,13 +477,21 @@ class PairMatcher:
             # players_ok>0 com rejeicoes = volta esta na API mas filtrada;
             # players_ok=0 = volta ainda nao apareceu na API (upcoming/inplay).
             if _players_ok > 0:
-                _janela = f"[{_anchor_kind}+{int((min_time-anchor).total_seconds()/60)}"
-                _janela += f"..+{int((max_time-anchor).total_seconds()/60)}min]"
+                _now_abs = datetime.now(timezone.utc)
+                # Horarios absolutos dos candidatos com jogadores certos (UTC HH:MM)
+                _cand_times = sorted(
+                    _utc(e.scheduled_time).strftime("%H:%M")
+                    for e in candidates
+                    if {e.home_name.lower().strip(), e.away_name.lower().strip()} == players
+                    and _utc(e.scheduled_time) is not None
+                )
                 logger.info(
                     f"Pair {game1_match.id} ({loser} vs {winner}): NAO casou — "
-                    f"{_players_ok} candidato(s) com jogadores certos, "
-                    f"rejeitados: {_rejected_time} por horario, {_rejected_teams} por times "
-                    f"| janela {_janela} deltas_reais={_rejected_deltas}min"
+                    f"{_players_ok} cand jogadores certos, rej: {_rejected_time} horario "
+                    f"{_rejected_teams} times | anchor({_anchor_kind})="
+                    f"{anchor.strftime('%H:%M')} now={_now_abs.strftime('%H:%M')} "
+                    f"janela={min_time.strftime('%H:%M')}-{max_time.strftime('%H:%M')} "
+                    f"cand_horarios={_cand_times}"
                 )
             return False
 
