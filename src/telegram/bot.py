@@ -556,12 +556,18 @@ class TelegramNotifier:
             logger.warning(f"Failed to edit M2 message {message_id}: {e}")
             return False
 
-    async def send_watch(self, watch_data: dict, auto_delete_seconds: int = 600) -> int | None:
+    async def send_watch(
+        self, watch_data: dict, auto_delete_seconds: int = 600, to_admin: bool = False
+    ) -> int | None:
         """Send a silent pre-alert (watch) and schedule auto-deletion.
 
         2026-07-13: redirecionado pro grupo VIP (TELEGRAM_CHAT_ID). Antes ia
         so pra DM admin. Owner decidiu reativar pros assinantes com formato
         simplificado (so a linha provavel de virar alerta, sem jargao tecnico).
+
+        2026-07-14: `to_admin=True` envia pro DM do owner (TELEGRAM_ADMIN_CHAT_ID)
+        em vez do grupo VIP — usado pelo watch M2, que o owner quer receber pelo
+        bot no privado (nao no grupo VIP).
 
         Schedules deletion of the sent message after `auto_delete_seconds`.
         Returns the message_id, or None on failure.
@@ -569,8 +575,10 @@ class TelegramNotifier:
         if self._paused:
             logger.debug("Alerts paused, skipping send_watch")
             return None
-        if not self.chat_id:
-            logger.debug("send_watch NO-OP: TELEGRAM_CHAT_ID vazio")
+        target_chat = self._admin_chat_id if to_admin else self.chat_id
+        dest_label = "DM admin" if to_admin else "VIP"
+        if not target_chat:
+            logger.debug(f"send_watch NO-OP: chat destino ({dest_label}) vazio")
             return None
 
         # Filtrar linhas SHADOW e tier F antes de exibir
@@ -602,20 +610,20 @@ class TelegramNotifier:
 
         try:
             msg = await self.bot.send_message(
-                chat_id=self.chat_id,
+                chat_id=target_chat,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
                 disable_notification=False,
             )
-            sent.append((self.chat_id, msg.message_id))
+            sent.append((target_chat, msg.message_id))
             main_msg_id = msg.message_id
         except TelegramError as e:
-            logger.warning(f"Failed to send watch to VIP group: {e}")
+            logger.warning(f"Failed to send watch to {dest_label}: {e}")
             return None
 
         logger.bind(category="watch").info(
-            f"Watch sent (VIP): {watch_data.get('target_player')} "
+            f"Watch sent ({dest_label}): {watch_data.get('target_player')} "
             f"{watch_data.get('line_label')} @ {watch_data.get('target_odds')}"
         )
 

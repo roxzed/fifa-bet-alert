@@ -274,10 +274,28 @@ class OddsMonitor:
             self._watch_tasks[match_id] = wtask
             logger.info(f"Watch M1 task criada pra match {match_id} ({loser} vs {winner})")
 
-        # Watch M2 DESLIGADO (decisao do owner 2026-07-13): o pre-aviso ia pro
-        # grupo VIP junto com o do M1 apos o redesign do send_watch. Somente o
-        # M1 tem watcher; o alerta live do M2 segue normal. Pra reativar,
-        # restaurar o agendamento de _watch_loop_v2 aqui (git blame desta linha).
+        # Watch M2 (pre-alerta) — reativado 2026-07-14 no DM do owner (nao no VIP).
+        # O owner quer receber o pre-aviso M2 pelo bot no privado; _watch_loop_v2
+        # envia com to_admin=True. So agenda se alert_engine_v2 disponivel.
+        if self.alert_engine_v2 and match_id not in self._watch_tasks_v2:
+            wtask_v2 = asyncio.create_task(
+                self._watch_loop_v2(return_match, game1_match, loser, winner, loser_goals_g1),
+                name=f"watch_v2_{match_id}",
+            )
+
+            def _on_watch_v2_done(t: asyncio.Task, mid=match_id, ls=loser, wn=winner) -> None:
+                if t.cancelled():
+                    logger.info(f"Watch M2 {mid} cancelled ({ls} vs {wn})")
+                    return
+                exc = t.exception()
+                if exc:
+                    logger.error(
+                        f"Watch M2 {mid} ({ls} vs {wn}) MORREU com excecao: {exc!r}"
+                    )
+
+            wtask_v2.add_done_callback(_on_watch_v2_done)
+            self._watch_tasks_v2[match_id] = wtask_v2
+            logger.info(f"Watch M2 task criada pra match {match_id} ({loser} vs {winner}) — DM")
 
         # Agendar watch M3 (pre-aviso T-90s, so stats H2H) — fire and forget
         if self.alert_engine_v3 and match_id not in self._watch_v3_tasks:
@@ -827,6 +845,7 @@ class OddsMonitor:
             await notifier.send_watch(
                 watch_data,
                 auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+                to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
             )
             logger.info(f"Watch M2 {match_id} ENVIADO com sucesso ({loser} vs {winner})")
 

@@ -13,6 +13,7 @@ def _make_notifier() -> TelegramNotifier:
     notifier = TelegramNotifier(
         token="123:fake-token",
         chat_id="-1003721105906",
+        admin_chat_id="6034412176",
     )
     # Mock do Bot pra nao tocar na API real
     notifier.bot = MagicMock()
@@ -61,6 +62,32 @@ async def test_send_watch_noop_sem_chat_id():
     notifier.chat_id = ""
 
     msg_id = await notifier.send_watch(_watch_data(), auto_delete_seconds=300)
+
+    assert msg_id is None
+    notifier.bot.send_message.assert_not_awaited()
+
+
+async def test_send_watch_to_admin_vai_pro_dm():
+    """to_admin=True (watch M2) deve enviar pro DM admin, nao pro grupo VIP."""
+    notifier = _make_notifier()
+
+    msg_id = await notifier.send_watch(
+        _watch_data(), auto_delete_seconds=300, to_admin=True
+    )
+
+    assert msg_id == 42
+    kwargs = notifier.bot.send_message.await_args.kwargs
+    assert kwargs["chat_id"] == "6034412176"  # DM do owner, nao o VIP
+
+
+async def test_send_watch_to_admin_noop_sem_admin_chat():
+    """to_admin=True sem admin_chat_id configurado deve ser NO-OP."""
+    notifier = _make_notifier()
+    notifier._admin_chat_id = ""
+
+    msg_id = await notifier.send_watch(
+        _watch_data(), auto_delete_seconds=300, to_admin=True
+    )
 
     assert msg_id is None
     notifier.bot.send_message.assert_not_awaited()
