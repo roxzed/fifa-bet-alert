@@ -118,19 +118,22 @@ class OddsMonitor:
     # Antes era 600s — apagava antes do jogo terminar em alguns casos.
 
     def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15,
-                 alert_engine_v2=None) -> None:
+                 alert_engine_v2=None, alert_engine_v3=None) -> None:
         self.api = api_client
         self.odds_repo = odds_repo
         self.alert_engine = alert_engine
         self.alert_engine_v2 = alert_engine_v2  # Method 2 (opcional)
+        self.alert_engine_v3 = alert_engine_v3  # Method 3 (opcional)
         self.match_repo = match_repo  # PROBLEMA 9 fix: acesso direto ao repo
         self.poll_interval = poll_interval  # default, overridden by adaptive logic
         self._tasks: dict[int, asyncio.Task] = {}
         self._task_meta: dict[int, dict] = {}  # match_id → {game1_match, loser, ...}
         self._task_started: dict[int, float] = {}  # match_id → monotonic start time
         self._alert_v2_sent: dict[int, bool] = {}  # match_id → True se M2 alerta ja foi enviado
+        self._alert_v3_sent: dict[int, bool] = {}  # match_id → True se M3 alerta ja foi enviado
         self._watch_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M1)
         self._watch_tasks_v2: dict[int, asyncio.Task] = {}  # match_id → watch task (M2)
+        self._watch_v3_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M3)
 
     async def start_monitoring(
         self,
@@ -275,6 +278,27 @@ class OddsMonitor:
         # grupo VIP junto com o do M1 apos o redesign do send_watch. Somente o
         # M1 tem watcher; o alerta live do M2 segue normal. Pra reativar,
         # restaurar o agendamento de _watch_loop_v2 aqui (git blame desta linha).
+
+        # Agendar watch M3 (pre-aviso T-90s, so stats H2H) — fire and forget
+        if self.alert_engine_v3 and match_id not in self._watch_v3_tasks:
+            w3task = asyncio.create_task(
+                self._watch_loop_v3(return_match, game1_match, loser, winner),
+                name=f"watch_v3_{match_id}",
+            )
+
+            def _on_watch_v3_done(t: asyncio.Task, mid=match_id, ls=loser, wn=winner) -> None:
+                if t.cancelled():
+                    logger.info(f"Watch M3 {mid} cancelled ({ls} vs {wn})")
+                    return
+                exc = t.exception()
+                if exc:
+                    logger.error(
+                        f"Watch M3 {mid} ({ls} vs {wn}) MORREU com excecao: {exc!r}"
+                    )
+
+            w3task.add_done_callback(_on_watch_v3_done)
+            self._watch_v3_tasks[match_id] = w3task
+            logger.info(f"Watch M3 task criada pra match {match_id} ({loser} vs {winner})")
 
     async def _monitor_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
@@ -478,6 +502,31 @@ class OddsMonitor:
                         except Exception as e_v2:
                             logger.warning(f"M2 alert engine error for match {match_id}: {e_v2}")
 
+                    # Method 3: frequencia H2H pura (uma vez por partida)
+                    # Sem gate temporal: alerta dispara sempre que filtros estatisticos passarem
+                    if self.alert_engine_v3 and not self._alert_v3_sent.get(match_id):
+                        try:
+                            sent_v3 = await self.alert_engine_v3.evaluate_and_alert(
+                                return_match=return_match,
+                                game1_match=game1_match,
+                                loser=loser,
+                                winner=winner,
+                                over25_odds=over25_odds or 0.0,
+                                over35_odds=over35_odds,
+                                over45_odds=over45_odds,
+                                over15_odds=over15_odds,
+                                minutes_to_kickoff=(
+                                    int(minutes_left) if minutes_left is not None else 0
+                                ),
+                                loser_goals_g1=loser_goals_g1,
+                                bet365_url=bet365_url or "",
+                            )
+                            if sent_v3:
+                                self._alert_v3_sent[match_id] = True
+                                logger.info(f"M3 alert sent for return match {match_id}")
+                        except Exception as e_v3:
+                            logger.warning(f"M3 alert engine error for match {match_id}: {e_v3}")
+
                     # DB saves DEPOIS da avaliação (não bloqueia o alerta)
                     for label, odds_val in [("over_1.5", over15_odds), ("over_2.5", over25_odds),
                                              ("over_3.5", over35_odds), ("over_4.5", over45_odds)]:
@@ -511,6 +560,7 @@ class OddsMonitor:
             self._tasks.pop(match_id, None)
             self._task_started.pop(match_id, None)
             self._alert_v2_sent.pop(match_id, None)
+            self._alert_v3_sent.pop(match_id, None)
 
     async def _watch_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
@@ -791,6 +841,87 @@ class OddsMonitor:
         finally:
             self._watch_tasks_v2.pop(match_id, None)
 
+    async def _watch_loop_v3(
+        self, return_match, game1_match, loser: str, winner: str
+    ) -> None:
+        """Pré-aviso M3 (T-90s): so stats H2H puras do DB (mercado ainda fechado).
+
+        Diferente do M1/M2, nao tem predict_watch_candidate — usa direto
+        alert_engine_v3.stats.evaluate() (mesma logica do eval live).
+        """
+        from src.core.stats_engine_v3 import M3_LINE_LABELS
+
+        match_id = return_match.id
+        kickoff = return_match.started_at
+        if kickoff is None:
+            logger.info(f"WatchV3 {match_id}: sem kickoff, abortando ({loser} vs {winner})")
+            return
+
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            seconds_until_send = (kickoff - now).total_seconds() - self._WATCH_LEAD_SECONDS
+            logger.info(
+                f"WatchV3 {match_id} M3 agendado: {loser} vs {winner} | "
+                f"kickoff={kickoff:%H:%M:%S} | sleep={seconds_until_send:.0f}s pra T-90s"
+            )
+            if seconds_until_send > 0:
+                await asyncio.sleep(seconds_until_send)
+
+            now2 = datetime.now(timezone.utc).replace(tzinfo=None)
+            if (kickoff - now2).total_seconds() < 0:
+                logger.info(
+                    f"WatchV3 {match_id}: kickoff ja passou, abortando ({loser} vs {winner})"
+                )
+                return
+
+            evaluation = await self.alert_engine_v3.stats.evaluate(loser, winner)
+            if not evaluation.should_alert:
+                return  # stats.evaluate ja loga o motivo em INFO
+
+            from zoneinfo import ZoneInfo
+            kickoff_brt = (
+                kickoff.replace(tzinfo=timezone.utc)
+                .astimezone(ZoneInfo("America/Sao_Paulo"))
+            )
+            watch_data = {
+                "kickoff_str": kickoff_brt.strftime("%H:%M"),
+                "player_home": return_match.player_home,
+                "player_away": return_match.player_away,
+                "target_player": loser,
+                "lines": [
+                    {
+                        "line": le.line,
+                        "line_label": M3_LINE_LABELS[le.line],
+                        "rate": le.rate,
+                        "hits": le.hits,
+                        "n": le.n,
+                        "recent_hits": le.recent_hits,
+                        "recent_n": le.recent_n,
+                    }
+                    for le in evaluation.lines
+                ],
+            }
+            notifier = self.alert_engine.notifier
+            logger.info(
+                f"WatchV3 {match_id} ENVIANDO: {loser} vs {winner} | "
+                f"linhas={[le.line for le in evaluation.lines]}"
+            )
+            await notifier.send_watch_v3(
+                watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
+            )
+            logger.info(f"WatchV3 {match_id} ENVIADO com sucesso ({loser} vs {winner})")
+
+        except asyncio.CancelledError:
+            logger.info(f"WatchV3 task {match_id} cancelled ({loser} vs {winner})")
+            raise
+        except Exception as e:
+            logger.error(
+                f"WatchV3 loop erro pra match {match_id} ({loser} vs {winner}): {e!r}",
+                exc_info=True,
+            )
+        finally:
+            self._watch_v3_tasks.pop(match_id, None)
+
     async def _fetch_loser_odds(self, return_match, loser: str):
         """Find bet365 FI for the match and return player goals odds for the loser.
 
@@ -898,6 +1029,9 @@ class OddsMonitor:
         wtask_v2 = self._watch_tasks_v2.pop(match_id, None)
         if wtask_v2 and not wtask_v2.done():
             wtask_v2.cancel()
+        wtask_v3 = self._watch_v3_tasks.pop(match_id, None)
+        if wtask_v3 and not wtask_v3.done():
+            wtask_v3.cancel()
 
     def stop_all(self) -> None:
         """Cancel all monitoring tasks."""
@@ -909,10 +1043,14 @@ class OddsMonitor:
         for wtask_v2 in self._watch_tasks_v2.values():
             if not wtask_v2.done():
                 wtask_v2.cancel()
+        for wtask_v3 in self._watch_v3_tasks.values():
+            if not wtask_v3.done():
+                wtask_v3.cancel()
         self._tasks.clear()
         self._task_started.clear()
         self._watch_tasks.clear()
         self._watch_tasks_v2.clear()
+        self._watch_v3_tasks.clear()
         logger.info("All odds monitors stopped")
 
     @property
