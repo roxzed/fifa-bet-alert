@@ -612,108 +612,7 @@ class OddsMonitor:
                 logger.info(f"Watch {match_id}: kickoff ja passou, abortando ({loser} vs {winner})")
                 return
 
-            # Predizer candidato
-            stats = self.alert_engine.stats
-            loser_was_home_g1 = (
-                (game1_match.player_home == loser)
-                if game1_match.player_home else None
-            )
-            candidate = await stats.predict_watch_candidate(
-                return_match=return_match,
-                game1_match=game1_match,
-                losing_player=loser,
-                opponent_player=winner,
-                loser_goals_g1=loser_goals_g1,
-                loser_was_home_g1=loser_was_home_g1,
-            )
-            if candidate is None:
-                logger.info(
-                    f"Watch {match_id} M1: predict_watch_candidate retornou None "
-                    f"({loser} vs {winner}) — nenhuma linha bate WATCH_MIN_TP"
-                )
-                return
-
-            # 2026-04-28 fix + 2026-04-29 v3 H2H granular: skip watch se
-            # (target_player, line, opponent) esta em SHADOW/PERMANENT.
-            # is_suppressed agora exige opponent (state machine por matchup).
-            blocked_repo = getattr(self.alert_engine, "blocked", None)
-            candidate_line = candidate.get("line")
-            if blocked_repo is not None and candidate_line:
-                try:
-                    is_supp = await blocked_repo.is_suppressed(
-                        loser, candidate_line, winner
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Watch {match_id}: is_suppressed falhou ({e}), prosseguindo"
-                    )
-                    is_supp = False
-                if is_supp:
-                    h2h_wl = getattr(self.alert_engine.stats, "H2H_WHITELIST", set())
-                    if (loser, winner, candidate_line) in h2h_wl:
-                        is_supp = False
-                if is_supp:
-                    logger.info(
-                        f"Watch {match_id}: skip — "
-                        f"{loser}/{candidate_line}/vs.{winner} "
-                        f"esta suprimida (auto-block); pre-alerta nao seria honrado"
-                    )
-                    return
-
-            # Calcular tier H2H + status SHADOW pra cada linha prevista
-            alert_repo = getattr(self.alert_engine, "alerts", None)
-            blocked_repo = getattr(self.alert_engine, "blocked", None)
-            cand_lines = candidate.get("lines") or []
-            for ln in cand_lines:
-                ln_key = ln.get("line")
-                if not ln_key or alert_repo is None:
-                    continue
-                try:
-                    tier_res = await compute_h2h_tier(
-                        alert_repo, blocked_repo, loser, ln_key, winner,
-                        match_repo=getattr(self.alert_engine, "matches", None),
-                    )
-                    ln["h2h_tier"] = tier_res.tier
-                    ln["h2h_roi"] = tier_res.roi
-                    ln["h2h_n"] = tier_res.n
-                except Exception as e:
-                    logger.warning(
-                        f"watch tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
-                    )
-                # 2026-06-19: indicar se combo esta em SHADOW agora
-                if blocked_repo is not None:
-                    try:
-                        ln["is_blocked"] = await blocked_repo.is_suppressed(
-                            loser, ln_key, winner
-                        )
-                    except Exception:
-                        ln["is_blocked"] = False
-
-            # Montar payload e enviar
-            from zoneinfo import ZoneInfo
-            kickoff_brt = (
-                kickoff.replace(tzinfo=timezone.utc)
-                .astimezone(ZoneInfo("America/Sao_Paulo"))
-            )
-            watch_data = {
-                "kickoff_str": kickoff_brt.strftime("%H:%M"),
-                "player_home": return_match.player_home,
-                "player_away": return_match.player_away,
-                "line_label": candidate["line_label"],
-                "target_player": candidate["target_player"],
-                "target_odds": candidate["target_odds"],
-                "lines": cand_lines,
-            }
-            notifier = self.alert_engine.notifier
-            logger.info(
-                f"Watch M1 {match_id} ENVIANDO: {loser} vs {winner} | "
-                f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
-            )
-            await notifier.send_watch(
-                watch_data,
-                auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
-            )
-            logger.info(f"Watch M1 {match_id} ENVIADO com sucesso ({loser} vs {winner})")
+            await self._emit_watch_m1(return_match, game1_match, loser, winner, loser_goals_g1)
 
         except asyncio.CancelledError:
             logger.info(f"Watch task M1 {match_id} cancelled ({loser} vs {winner})")
@@ -725,6 +624,129 @@ class OddsMonitor:
             )
         finally:
             self._watch_tasks.pop(match_id, None)
+
+    async def _emit_watch_m1(
+        self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
+    ) -> bool:
+        """Prediz candidato M1 e envia watch silencioso ao grupo VIP.
+
+        Chamado pelo _watch_loop apos o guard de kickoff (kickoff garantido
+        != None e ainda nao passado). Extraido do _watch_loop em 2026-07-14
+        (refatoracao pura, sem mudanca de comportamento).
+
+        Retorna True se o watch foi efetivamente enviado (send_watch chamado
+        com sucesso), False se abortou antes (candidate None, suprimido por
+        SHADOW/PERMANENT).
+        """
+        # gid: identificador so pra logs. return_match.id pode ser None no
+        # caso de match sintetico futuro (ver src/core/synthetic_match.py),
+        # nesse caso cai pro game1_id.
+        gid = getattr(return_match, "game1_id", None) or return_match.id
+        kickoff = return_match.started_at
+
+        # Predizer candidato
+        stats = self.alert_engine.stats
+        loser_was_home_g1 = (
+            (game1_match.player_home == loser)
+            if game1_match.player_home else None
+        )
+        candidate = await stats.predict_watch_candidate(
+            return_match=return_match,
+            game1_match=game1_match,
+            losing_player=loser,
+            opponent_player=winner,
+            loser_goals_g1=loser_goals_g1,
+            loser_was_home_g1=loser_was_home_g1,
+        )
+        if candidate is None:
+            logger.info(
+                f"Watch {gid} M1: predict_watch_candidate retornou None "
+                f"({loser} vs {winner}) — nenhuma linha bate WATCH_MIN_TP"
+            )
+            return False
+
+        # 2026-04-28 fix + 2026-04-29 v3 H2H granular: skip watch se
+        # (target_player, line, opponent) esta em SHADOW/PERMANENT.
+        # is_suppressed agora exige opponent (state machine por matchup).
+        blocked_repo = getattr(self.alert_engine, "blocked", None)
+        candidate_line = candidate.get("line")
+        if blocked_repo is not None and candidate_line:
+            try:
+                is_supp = await blocked_repo.is_suppressed(
+                    loser, candidate_line, winner
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Watch {gid}: is_suppressed falhou ({e}), prosseguindo"
+                )
+                is_supp = False
+            if is_supp:
+                h2h_wl = getattr(self.alert_engine.stats, "H2H_WHITELIST", set())
+                if (loser, winner, candidate_line) in h2h_wl:
+                    is_supp = False
+            if is_supp:
+                logger.info(
+                    f"Watch {gid}: skip — "
+                    f"{loser}/{candidate_line}/vs.{winner} "
+                    f"esta suprimida (auto-block); pre-alerta nao seria honrado"
+                )
+                return False
+
+        # Calcular tier H2H + status SHADOW pra cada linha prevista
+        alert_repo = getattr(self.alert_engine, "alerts", None)
+        blocked_repo = getattr(self.alert_engine, "blocked", None)
+        cand_lines = candidate.get("lines") or []
+        for ln in cand_lines:
+            ln_key = ln.get("line")
+            if not ln_key or alert_repo is None:
+                continue
+            try:
+                tier_res = await compute_h2h_tier(
+                    alert_repo, blocked_repo, loser, ln_key, winner,
+                    match_repo=getattr(self.alert_engine, "matches", None),
+                )
+                ln["h2h_tier"] = tier_res.tier
+                ln["h2h_roi"] = tier_res.roi
+                ln["h2h_n"] = tier_res.n
+            except Exception as e:
+                logger.warning(
+                    f"watch tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
+                )
+            # 2026-06-19: indicar se combo esta em SHADOW agora
+            if blocked_repo is not None:
+                try:
+                    ln["is_blocked"] = await blocked_repo.is_suppressed(
+                        loser, ln_key, winner
+                    )
+                except Exception:
+                    ln["is_blocked"] = False
+
+        # Montar payload e enviar
+        from zoneinfo import ZoneInfo
+        kickoff_brt = (
+            kickoff.replace(tzinfo=timezone.utc)
+            .astimezone(ZoneInfo("America/Sao_Paulo"))
+        )
+        watch_data = {
+            "kickoff_str": kickoff_brt.strftime("%H:%M"),
+            "player_home": return_match.player_home,
+            "player_away": return_match.player_away,
+            "line_label": candidate["line_label"],
+            "target_player": candidate["target_player"],
+            "target_odds": candidate["target_odds"],
+            "lines": cand_lines,
+        }
+        notifier = self.alert_engine.notifier
+        logger.info(
+            f"Watch M1 {gid} ENVIANDO: {loser} vs {winner} | "
+            f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
+        )
+        await notifier.send_watch(
+            watch_data,
+            auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+        )
+        logger.info(f"Watch M1 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+        return True
 
     async def _watch_loop_v2(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
