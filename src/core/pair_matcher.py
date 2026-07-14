@@ -428,6 +428,9 @@ class PairMatcher:
 
         best_match = None
         best_score = -1
+        _players_ok = 0        # candidatos com os 2 jogadores certos
+        _rejected_time = 0     # ...mas fora da janela de horario
+        _rejected_teams = 0    # ...mas com times diferentes
 
         for event in candidates:
             if g1_api_id and event.id == g1_api_id:
@@ -436,15 +439,18 @@ class PairMatcher:
             event_players = {event.home_name.lower().strip(), event.away_name.lower().strip()}
             if event_players != players:
                 continue
+            _players_ok += 1
 
             event_time = _utc(event.scheduled_time)
             if event_time is None or not (min_time <= event_time <= max_time):
+                _rejected_time += 1
                 continue
 
             # OBRIGATORIO: times devem ser os mesmos do G1
             if g1_teams and event.home_team and event.away_team:
                 event_teams = {event.home_team.lower().strip(), event.away_team.lower().strip()}
                 if not _teams_match_fuzzy(g1_teams, event_teams):
+                    _rejected_teams += 1
                     continue  # times diferentes = NAO eh a volta deste G1
                 score = 10
             else:
@@ -460,15 +466,28 @@ class PairMatcher:
                 best_match = event
 
         if best_match is None:
+            # Diagnostico (2026-07-14): por que a volta nao casou neste ciclo?
+            # players_ok>0 com rejeicoes = volta esta na API mas filtrada;
+            # players_ok=0 = volta ainda nao apareceu na API (upcoming/inplay).
+            if _players_ok > 0:
+                logger.info(
+                    f"Pair {game1_match.id} ({loser} vs {winner}): NAO casou — "
+                    f"{_players_ok} candidato(s) com jogadores certos, "
+                    f"rejeitados: {_rejected_time} por horario, {_rejected_teams} por times"
+                )
             return False
 
         event = best_match
         event_time = _utc(event.scheduled_time)
 
         teams_match = "mesmos times" if best_score >= 10 else "times diferentes"
+        _now = datetime.now(timezone.utc)
+        _delta_kick = (event_time - _now).total_seconds() if event_time else None
+        _kick_str = f"{_delta_kick:.0f}s pro kickoff" if _delta_kick is not None else "?"
         logger.info(
             f"Return match found: {event.home_name} vs {event.away_name} "
-            f"at {event_time} ({teams_match}, score={best_score:.1f})"
+            f"at {event_time} ({teams_match}, score={best_score:.1f}) — "
+            f"casou {_kick_str} (candidatos c/ jogadores: {_players_ok})"
         )
 
         return_match = await match_repo.get_by_api_event_id(event.id)

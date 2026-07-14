@@ -131,6 +131,10 @@ class OddsMonitor:
         self._task_started: dict[int, float] = {}  # match_id → monotonic start time
         self._alert_v2_sent: dict[int, bool] = {}  # match_id → True se M2 alerta ja foi enviado
         self._alert_v3_sent: dict[int, bool] = {}  # match_id → True se M3 alerta ja foi enviado
+        # M3 depende de H2H historico (nao muda no in-play) — throttle o eval
+        # pra nao rodar query a cada poll. match_id → time.monotonic do ultimo eval.
+        self._alert_v3_last_eval: dict[int, float] = {}
+        self._M3_EVAL_MIN_INTERVAL = 15.0  # segundos entre evals M3 por match
         self._watch_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M1)
         self._watch_tasks_v2: dict[int, asyncio.Task] = {}  # match_id → watch task (M2)
         self._watch_v3_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M3)
@@ -386,6 +390,9 @@ class OddsMonitor:
                     # Buscar odds bet365 do jogador (com fuzzy matching)
                     loser_odds, bet365_url, matched_ev = await self._fetch_loser_odds(return_match, loser)
                     _t_fetch = time.monotonic()
+                    # Defaults de timing/flags (caso um eval nao rode neste poll)
+                    _t_hist_start = _t_hist = _t_eval = _t_m2 = _t_m3 = _t_fetch
+                    sent = was_suppressed = sent_v2 = sent_v3 = False
 
                     if loser_odds is None and matched_ev is None:
                         await asyncio.sleep(interval)
@@ -469,18 +476,6 @@ class OddsMonitor:
                             suppressed_already_recorded=suppressed_recorded,
                         )
                         _t_eval = time.monotonic()
-                        # Timing log: so quando algo aconteceu (alert ou suppressed)
-                        # ou quando o pipeline demorou >2s — pra nao inundar logs.
-                        _total = _t_eval - _t0
-                        if sent or was_suppressed or _total > 2.0:
-                            logger.bind(category="latency").info(
-                                f"[LAT] match={match_id} loser={loser} "
-                                f"fetch={_t_fetch - _t0:.2f}s "
-                                f"hist={_t_hist - _t_hist_start:.2f}s "
-                                f"eval+alert={_t_eval - _t_hist:.2f}s "
-                                f"total={_total:.2f}s "
-                                f"sent={sent} supp={was_suppressed}"
-                            )
                         if sent:
                             alert_sent = True
                             logger.info(f"Alert sent for return match {match_id}")
@@ -519,10 +514,20 @@ class OddsMonitor:
                                 logger.info(f"M2 alert sent for return match {match_id}")
                         except Exception as e_v2:
                             logger.warning(f"M2 alert engine error for match {match_id}: {e_v2}")
+                    _t_m2 = time.monotonic()
 
                     # Method 3: frequencia H2H pura (uma vez por partida)
-                    # Sem gate temporal: alerta dispara sempre que filtros estatisticos passarem
-                    if self.alert_engine_v3 and not self._alert_v3_sent.get(match_id):
+                    # Throttle: M3 avalia H2H historico (nao muda no in-play), entao
+                    # nao precisa rodar a cada poll — so a cada _M3_EVAL_MIN_INTERVAL.
+                    # Reduz carga no event loop (a query H2H nao trava outros metodos).
+                    _m3_last = self._alert_v3_last_eval.get(match_id, 0.0)
+                    _m3_due = (_t_m2 - _m3_last) >= self._M3_EVAL_MIN_INTERVAL
+                    if (
+                        self.alert_engine_v3
+                        and not self._alert_v3_sent.get(match_id)
+                        and _m3_due
+                    ):
+                        self._alert_v3_last_eval[match_id] = _t_m2
                         try:
                             sent_v3 = await self.alert_engine_v3.evaluate_and_alert(
                                 return_match=return_match,
@@ -544,6 +549,23 @@ class OddsMonitor:
                                 logger.info(f"M3 alert sent for return match {match_id}")
                         except Exception as e_v3:
                             logger.warning(f"M3 alert engine error for match {match_id}: {e_v3}")
+                    _t_m3 = time.monotonic()
+
+                    # Timing consolidado (2026-07-14 — diagnose congestionamento do
+                    # event loop): mede fetch + hist + eval de CADA metodo separado.
+                    # So loga quando algo aconteceu ou o poll demorou >2s.
+                    _total = _t_m3 - _t0
+                    if sent or was_suppressed or sent_v2 or sent_v3 or _total > 2.0:
+                        logger.bind(category="latency").info(
+                            f"[LAT] match={match_id} loser={loser} "
+                            f"fetch={_t_fetch - _t0:.2f}s "
+                            f"hist={_t_hist - _t_hist_start:.2f}s "
+                            f"m1={_t_eval - _t_hist:.2f}s "
+                            f"m2={_t_m2 - _t_eval:.2f}s "
+                            f"m3={_t_m3 - _t_m2:.2f}s "
+                            f"total={_total:.2f}s "
+                            f"sent={sent} supp={was_suppressed} v2={sent_v2} v3={sent_v3}"
+                        )
 
                     # DB saves DEPOIS da avaliação (não bloqueia o alerta)
                     for label, odds_val in [("over_1.5", over15_odds), ("over_2.5", over25_odds),
