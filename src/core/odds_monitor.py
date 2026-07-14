@@ -21,7 +21,9 @@ from difflib import SequenceMatcher
 
 from loguru import logger
 
+from src.config import settings
 from src.core.h2h_tier import compute_h2h_tier
+from src.core.synthetic_match import build_synthetic_return
 
 
 def _normalize_player(name: str) -> str:
@@ -134,6 +136,10 @@ class OddsMonitor:
         self._watch_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M1)
         self._watch_tasks_v2: dict[int, asyncio.Task] = {}  # match_id → watch task (M2)
         self._watch_v3_tasks: dict[int, asyncio.Task] = {}  # match_id → watch task (M3)
+        # Watch preditivo (fallback quando a API nao expoe a volta antes do kickoff)
+        self._predictive_offset_min: float = settings.watch_return_offset_fallback_min
+        self._predictive_tasks: dict[int, asyncio.Task] = {}  # game1_id → task
+        self._predictive_sent: set[tuple[int, str]] = set()   # (game1_id, metodo)
 
     async def start_monitoring(
         self,
@@ -244,7 +250,9 @@ class OddsMonitor:
 
         task.add_done_callback(_on_task_done)
         self._tasks[match_id] = task
-        self._task_meta[match_id] = {"game1_match": game1_match, "loser": loser}
+        self._task_meta[match_id] = {
+            "game1_match": game1_match, "loser": loser, "game1_id": game1_match.id,
+        }
         self._task_started[match_id] = time.monotonic()
         logger.info(f"Started odds monitoring for return match {match_id} ({loser} as loser, g1_goals={loser_goals_g1})")
 
@@ -641,8 +649,14 @@ class OddsMonitor:
         # gid: identificador so pra logs. return_match.id pode ser None no
         # caso de match sintetico futuro (ver src/core/synthetic_match.py),
         # nesse caso cai pro game1_id.
-        gid = getattr(return_match, "game1_id", None) or return_match.id
+        gid = getattr(return_match, "game1_id", None) or game1_match.id
         kickoff = return_match.started_at
+
+        # Trava anti-duplicata: watch real e watch preditivo se excluem
+        # mutuamente por (game1_id, metodo) — ver OddsMonitor._predictive_watch_loop.
+        if (gid, "m1") in self._predictive_sent:
+            logger.info(f"Watch M1 {gid}: ja enviado (real ou preditivo) — skip duplicata")
+            return False
 
         # Predizer candidato
         stats = self.alert_engine.stats
@@ -746,6 +760,7 @@ class OddsMonitor:
             auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
         )
         logger.info(f"Watch M1 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+        self._predictive_sent.add((gid, "m1"))
         return True
 
     async def _watch_loop_v2(
@@ -809,8 +824,14 @@ class OddsMonitor:
         # gid: identificador so pra logs. return_match.id pode ser None no
         # caso de match sintetico futuro (ver src/core/synthetic_match.py),
         # nesse caso cai pro game1_id.
-        gid = getattr(return_match, "game1_id", None) or return_match.id
+        gid = getattr(return_match, "game1_id", None) or game1_match.id
         kickoff = return_match.started_at
+
+        # Trava anti-duplicata: watch real e watch preditivo se excluem
+        # mutuamente por (game1_id, metodo) — ver OddsMonitor._predictive_watch_loop.
+        if (gid, "m2") in self._predictive_sent:
+            logger.info(f"WatchV2 {gid}: ja enviado (real ou preditivo) — skip duplicata")
+            return False
 
         stats_v2 = self.alert_engine_v2.stats
         loser_was_home_g1 = (
@@ -904,6 +925,7 @@ class OddsMonitor:
             to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
         )
         logger.info(f"Watch M2 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+        self._predictive_sent.add((gid, "m2"))
         return True
 
     async def _watch_loop_v3(
@@ -969,8 +991,14 @@ class OddsMonitor:
         # gid: identificador so pra logs. return_match.id pode ser None no
         # caso de match sintetico futuro (ver src/core/synthetic_match.py),
         # nesse caso cai pro game1_id.
-        gid = getattr(return_match, "game1_id", None) or return_match.id
+        gid = getattr(return_match, "game1_id", None) or game1_match.id
         kickoff = return_match.started_at
+
+        # Trava anti-duplicata: watch real e watch preditivo se excluem
+        # mutuamente por (game1_id, metodo) — ver OddsMonitor._predictive_watch_loop.
+        if (gid, "m3") in self._predictive_sent:
+            logger.info(f"WatchV3 {gid}: ja enviado (real ou preditivo) — skip duplicata")
+            return False
 
         evaluation = await self.alert_engine_v3.stats.evaluate(loser, winner)
         if not evaluation.should_alert:
@@ -1008,7 +1036,94 @@ class OddsMonitor:
             watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
         )
         logger.info(f"WatchV3 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+        self._predictive_sent.add((gid, "m3"))
         return True
+
+    def _return_ja_casou(self, game1_id: int) -> bool:
+        """True se a volta desse G1 ja esta sendo monitorada (casou via API)."""
+        for meta in self._task_meta.values():
+            if meta.get("game1_id") == game1_id:
+                return True
+        return False
+
+    def schedule_predictive_watch(
+        self, game1_match, loser: str, winner: str, loser_goals_g1: int
+    ) -> None:
+        """Agenda o watch preditivo (fallback) pra esse G1.
+
+        No-op se a feature estiver desligada, se ja existe uma task preditiva
+        pra esse game1_id, ou se o G1 nao tem started_at (nao da pra prever
+        o horario da volta). Chamado quando o PairMatcher nao consegue achar
+        a volta via API logo apos o G1 terminar.
+        """
+        if not settings.watch_predictive_enabled:
+            return
+        gid = game1_match.id
+        if gid in self._predictive_tasks or game1_match.started_at is None:
+            return
+        task = asyncio.create_task(
+            self._predictive_watch_loop(game1_match, loser, winner, loser_goals_g1),
+            name=f"predictive_watch_{gid}",
+        )
+        self._predictive_tasks[gid] = task
+
+    def cancel_predictive_watch(self, game1_id: int) -> None:
+        """Cancela a task preditiva desse G1 (chamado quando a volta casa via API)."""
+        t = self._predictive_tasks.pop(game1_id, None)
+        if t and not t.done():
+            t.cancel()
+
+    async def _predictive_watch_loop(
+        self, game1_match, loser: str, winner: str, loser_goals_g1: int
+    ) -> None:
+        """Dorme ate T-30s do horario previsto da volta (offset estimado) e,
+        se a API ainda nao expos a volta real (_return_ja_casou False),
+        monta um return_match sintetico e dispara os 3 watches (M1/M2/M3)
+        como fallback. Cada metodo so dispara uma vez (_predictive_sent),
+        e a mesma trava bloqueia o watch real correspondente caso ele chegue
+        depois — ver Step 4 nos _emit_watch_mN.
+        """
+        gid = game1_match.id
+        try:
+            started = game1_match.started_at
+            if started.tzinfo is not None:
+                started = started.replace(tzinfo=None)
+            previsto = started + timedelta(minutes=self._predictive_offset_min)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            wait = (previsto - now).total_seconds() - self._WATCH_LEAD_SECONDS
+            if wait > 0:
+                await asyncio.sleep(wait)
+            # Se a volta casou via API nesse meio tempo, o watch real cuida.
+            if self._return_ja_casou(gid):
+                logger.info(f"WatchPreditivo {gid}: volta casou via API — abortando preditivo")
+                return
+            synth = build_synthetic_return(game1_match, previsto)
+            logger.info(
+                f"WatchPreditivo {gid} DISPARANDO ({loser} vs {winner}) — "
+                f"API nao expos a volta; usando horario previsto {previsto:%H:%M}"
+            )
+            # M1 (VIP), M2 (DM), M3 (DM) — cada um so uma vez
+            for metodo, emit, engine in [
+                ("m1", self._emit_watch_m1, self.alert_engine),
+                ("m2", self._emit_watch_m2, self.alert_engine_v2),
+                ("m3", self._emit_watch_m3, self.alert_engine_v3),
+            ]:
+                if engine is None or (gid, metodo) in self._predictive_sent:
+                    continue
+                try:
+                    if metodo == "m3":
+                        await emit(synth, game1_match, loser, winner)
+                    else:
+                        await emit(synth, game1_match, loser, winner, loser_goals_g1)
+                    self._predictive_sent.add((gid, metodo))
+                except Exception as e:
+                    logger.warning(f"WatchPreditivo {gid} {metodo} erro: {e}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"WatchPreditivo {gid} loop erro: {e!r}")
+        finally:
+            self._predictive_tasks.pop(gid, None)
 
     async def _fetch_loser_odds(self, return_match, loser: str):
         """Find bet365 FI for the match and return player goals odds for the loser.
