@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     m3_min_h2h: int = 10           # amostra minima de H2H
     m3_min_odds: float = 1.58      # piso de odds do M3 (sem teto — qualquer odd >= isso)
 
+    # Watch preditivo (fallback quando a API nao expoe a volta antes do kickoff)
+    watch_predictive_enabled: bool = True
+    watch_return_offset_fallback_min: float = 58.0  # offset default se sem historico
+
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"
 

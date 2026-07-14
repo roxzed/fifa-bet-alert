@@ -504,6 +504,17 @@ class MatchRepository(_BaseRepository):
             await session.flush()
             return match
 
+    async def get_return_time_gaps(self, low: int = 20, high: int = 120) -> list[int]:
+        """time_between_games dos pares de volta, filtrado pela faixa [low, high]."""
+        async with self._session() as session:
+            stmt = select(Match.time_between_games).where(
+                Match.is_return_match == True,  # noqa: E712
+                Match.time_between_games.is_not(None),
+                Match.time_between_games >= low,
+                Match.time_between_games <= high,
+            )
+            return [r for r in (await session.execute(stmt)).scalars().all()]
+
 
 # ---------------------------------------------------------------------------
 # OddsRepository
