@@ -413,14 +413,17 @@ class PairMatcher:
 
         if g1_ended:
             anchor = g1_ended
+            _anchor_kind = "ended"
             min_time = anchor + timedelta(minutes=30)
             max_time = anchor + timedelta(minutes=80)
         elif g1_started:
             anchor = g1_started
+            _anchor_kind = "started"
             min_time = anchor + timedelta(minutes=45)
             max_time = anchor + timedelta(minutes=80)
         else:
             anchor = datetime.now(timezone.utc)
+            _anchor_kind = "now"
             min_time = anchor - timedelta(minutes=5)
             max_time = anchor + timedelta(minutes=80)
 
@@ -431,6 +434,7 @@ class PairMatcher:
         _players_ok = 0        # candidatos com os 2 jogadores certos
         _rejected_time = 0     # ...mas fora da janela de horario
         _rejected_teams = 0    # ...mas com times diferentes
+        _rejected_deltas: list[float] = []  # min entre anchor e candidato rejeitado
 
         for event in candidates:
             if g1_api_id and event.id == g1_api_id:
@@ -444,6 +448,9 @@ class PairMatcher:
             event_time = _utc(event.scheduled_time)
             if event_time is None or not (min_time <= event_time <= max_time):
                 _rejected_time += 1
+                if event_time is not None:
+                    _dm = (event_time - anchor).total_seconds() / 60
+                    _rejected_deltas.append(round(_dm, 1))
                 continue
 
             # OBRIGATORIO: times devem ser os mesmos do G1
@@ -470,10 +477,13 @@ class PairMatcher:
             # players_ok>0 com rejeicoes = volta esta na API mas filtrada;
             # players_ok=0 = volta ainda nao apareceu na API (upcoming/inplay).
             if _players_ok > 0:
+                _janela = f"[{_anchor_kind}+{int((min_time-anchor).total_seconds()/60)}"
+                _janela += f"..+{int((max_time-anchor).total_seconds()/60)}min]"
                 logger.info(
                     f"Pair {game1_match.id} ({loser} vs {winner}): NAO casou — "
                     f"{_players_ok} candidato(s) com jogadores certos, "
-                    f"rejeitados: {_rejected_time} por horario, {_rejected_teams} por times"
+                    f"rejeitados: {_rejected_time} por horario, {_rejected_teams} por times "
+                    f"| janela {_janela} deltas_reais={_rejected_deltas}min"
                 )
             return False
 
