@@ -778,98 +778,7 @@ class OddsMonitor:
                 logger.info(f"WatchV2 {match_id}: kickoff ja passou, abortando ({loser} vs {winner})")
                 return
 
-            stats_v2 = self.alert_engine_v2.stats
-            loser_was_home_g1 = (
-                (game1_match.player_home == loser)
-                if game1_match.player_home else None
-            )
-            candidate = await stats_v2.predict_watch_candidate(
-                return_match=return_match,
-                game1_match=game1_match,
-                losing_player=loser,
-                opponent_player=winner,
-                loser_goals_g1=loser_goals_g1,
-                loser_was_home_g1=loser_was_home_g1,
-            )
-            if candidate is None:
-                logger.info(
-                    f"WatchV2 {match_id} M2: predict_watch_candidate retornou None "
-                    f"({loser} vs {winner}) — nenhuma linha bate WATCH_MIN_TP"
-                )
-                return
-
-            # Checar shadow M2 (blocked_lines_v2) — skip se suprimido
-            blocked_repo_v2 = getattr(self.alert_engine_v2, "blocked", None)
-            cand_line = candidate.get("line")
-            if blocked_repo_v2 is not None and cand_line:
-                try:
-                    is_supp = await blocked_repo_v2.is_suppressed(loser, cand_line, winner)
-                except Exception as e:
-                    logger.warning(f"WatchV2 {match_id}: is_suppressed falhou ({e})")
-                    is_supp = False
-                if is_supp:
-                    logger.info(
-                        f"WatchV2 {match_id}: skip — {loser}/{cand_line}/vs.{winner} "
-                        f"em SHADOW M2; pre-alerta nao seria honrado"
-                    )
-                    return
-
-            # Calcular tier H2H V2 + status SHADOW pra cada linha prevista
-            from src.core.h2h_tier import compute_h2h_tier_v2
-            alert_v2_repo = getattr(self.alert_engine_v2, "alerts", None)
-            cand_lines = candidate.get("lines") or []
-            for ln in cand_lines:
-                ln_key = ln.get("line")
-                if not ln_key or alert_v2_repo is None:
-                    continue
-                try:
-                    tier_res = await compute_h2h_tier_v2(
-                        alert_v2_repo, blocked_repo_v2, loser, ln_key, winner,
-                        match_repo=getattr(self.alert_engine_v2, "matches", None),
-                    )
-                    ln["h2h_tier"] = tier_res.tier
-                    ln["h2h_roi"] = tier_res.roi
-                    ln["h2h_n"] = tier_res.n
-                except Exception as e:
-                    logger.warning(
-                        f"WatchV2 tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
-                    )
-                # 2026-06-19: indicar se combo esta em SHADOW M2 agora
-                if blocked_repo_v2 is not None:
-                    try:
-                        ln["is_blocked"] = await blocked_repo_v2.is_suppressed(
-                            loser, ln_key, winner
-                        )
-                    except Exception:
-                        ln["is_blocked"] = False
-
-            from zoneinfo import ZoneInfo
-            kickoff_brt = (
-                kickoff.replace(tzinfo=timezone.utc)
-                .astimezone(ZoneInfo("America/Sao_Paulo"))
-            )
-            watch_data = {
-                "method": "M2",
-                "camada": candidate.get("camada"),
-                "kickoff_str": kickoff_brt.strftime("%H:%M"),
-                "player_home": return_match.player_home,
-                "player_away": return_match.player_away,
-                "line_label": candidate["line_label"],
-                "target_player": candidate["target_player"],
-                "target_odds": candidate["target_odds"],
-                "lines": cand_lines,  # ja com h2h_tier preenchido acima
-            }
-            notifier = self.alert_engine.notifier
-            logger.info(
-                f"Watch M2 {match_id} ENVIANDO: {loser} vs {winner} | "
-                f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
-            )
-            await notifier.send_watch(
-                watch_data,
-                auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
-                to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
-            )
-            logger.info(f"Watch M2 {match_id} ENVIADO com sucesso ({loser} vs {winner})")
+            await self._emit_watch_m2(return_match, game1_match, loser, winner, loser_goals_g1)
 
         except asyncio.CancelledError:
             logger.info(f"WatchV2 task {match_id} cancelled ({loser} vs {winner})")
@@ -881,6 +790,121 @@ class OddsMonitor:
             )
         finally:
             self._watch_tasks_v2.pop(match_id, None)
+
+    async def _emit_watch_m2(
+        self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
+    ) -> bool:
+        """Prediz candidato M2 (StatsEngineV2) e envia watch silencioso via DM do owner.
+
+        Chamado pelo _watch_loop_v2 apos o guard de kickoff (kickoff garantido
+        != None e ainda nao passado). Extraido do _watch_loop_v2 em 2026-07-14
+        (refatoracao pura, sem mudanca de comportamento). Igual ao
+        _emit_watch_m1, mas usa alert_engine_v2.stats e envia com
+        to_admin=True (DM do owner, nao o grupo VIP).
+
+        Retorna True se o watch foi efetivamente enviado (send_watch chamado
+        com sucesso), False se abortou antes (candidate None, suprimido por
+        SHADOW M2).
+        """
+        # gid: identificador so pra logs. return_match.id pode ser None no
+        # caso de match sintetico futuro (ver src/core/synthetic_match.py),
+        # nesse caso cai pro game1_id.
+        gid = getattr(return_match, "game1_id", None) or return_match.id
+        kickoff = return_match.started_at
+
+        stats_v2 = self.alert_engine_v2.stats
+        loser_was_home_g1 = (
+            (game1_match.player_home == loser)
+            if game1_match.player_home else None
+        )
+        candidate = await stats_v2.predict_watch_candidate(
+            return_match=return_match,
+            game1_match=game1_match,
+            losing_player=loser,
+            opponent_player=winner,
+            loser_goals_g1=loser_goals_g1,
+            loser_was_home_g1=loser_was_home_g1,
+        )
+        if candidate is None:
+            logger.info(
+                f"WatchV2 {gid} M2: predict_watch_candidate retornou None "
+                f"({loser} vs {winner}) — nenhuma linha bate WATCH_MIN_TP"
+            )
+            return False
+
+        # Checar shadow M2 (blocked_lines_v2) — skip se suprimido
+        blocked_repo_v2 = getattr(self.alert_engine_v2, "blocked", None)
+        cand_line = candidate.get("line")
+        if blocked_repo_v2 is not None and cand_line:
+            try:
+                is_supp = await blocked_repo_v2.is_suppressed(loser, cand_line, winner)
+            except Exception as e:
+                logger.warning(f"WatchV2 {gid}: is_suppressed falhou ({e})")
+                is_supp = False
+            if is_supp:
+                logger.info(
+                    f"WatchV2 {gid}: skip — {loser}/{cand_line}/vs.{winner} "
+                    f"em SHADOW M2; pre-alerta nao seria honrado"
+                )
+                return False
+
+        # Calcular tier H2H V2 + status SHADOW pra cada linha prevista
+        from src.core.h2h_tier import compute_h2h_tier_v2
+        alert_v2_repo = getattr(self.alert_engine_v2, "alerts", None)
+        cand_lines = candidate.get("lines") or []
+        for ln in cand_lines:
+            ln_key = ln.get("line")
+            if not ln_key or alert_v2_repo is None:
+                continue
+            try:
+                tier_res = await compute_h2h_tier_v2(
+                    alert_v2_repo, blocked_repo_v2, loser, ln_key, winner,
+                    match_repo=getattr(self.alert_engine_v2, "matches", None),
+                )
+                ln["h2h_tier"] = tier_res.tier
+                ln["h2h_roi"] = tier_res.roi
+                ln["h2h_n"] = tier_res.n
+            except Exception as e:
+                logger.warning(
+                    f"WatchV2 tier compute falhou ({loser}/{ln_key}/vs.{winner}): {e}"
+                )
+            # 2026-06-19: indicar se combo esta em SHADOW M2 agora
+            if blocked_repo_v2 is not None:
+                try:
+                    ln["is_blocked"] = await blocked_repo_v2.is_suppressed(
+                        loser, ln_key, winner
+                    )
+                except Exception:
+                    ln["is_blocked"] = False
+
+        from zoneinfo import ZoneInfo
+        kickoff_brt = (
+            kickoff.replace(tzinfo=timezone.utc)
+            .astimezone(ZoneInfo("America/Sao_Paulo"))
+        )
+        watch_data = {
+            "method": "M2",
+            "camada": candidate.get("camada"),
+            "kickoff_str": kickoff_brt.strftime("%H:%M"),
+            "player_home": return_match.player_home,
+            "player_away": return_match.player_away,
+            "line_label": candidate["line_label"],
+            "target_player": candidate["target_player"],
+            "target_odds": candidate["target_odds"],
+            "lines": cand_lines,  # ja com h2h_tier preenchido acima
+        }
+        notifier = self.alert_engine.notifier
+        logger.info(
+            f"Watch M2 {gid} ENVIANDO: {loser} vs {winner} | "
+            f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
+        )
+        await notifier.send_watch(
+            watch_data,
+            auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
+        )
+        logger.info(f"Watch M2 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+        return True
 
     async def _watch_loop_v3(
         self, return_match, game1_match, loser: str, winner: str
