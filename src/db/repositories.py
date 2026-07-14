@@ -1782,6 +1782,13 @@ class AlertV3Repository(_BaseRepository):
             )
             await session.execute(stmt)
 
+    async def get_validated_since(self, since: datetime) -> Sequence[AlertV3]:
+        """Return alertas V3 validados com validated_at >= since (relatorio diario)."""
+        async with self._session() as session:
+            stmt = select(AlertV3).where(AlertV3.validated_at >= since)
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
 
 # ---------------------------------------------------------------------------
 # BlockedLineRepository — auto-block per (player, line) M1

@@ -100,3 +100,10 @@ async def test_edit_alert_v3_result_adiciona_green_red():
     assert ok is True
     text = notifier.bot.edit_message_text.await_args.kwargs["text"]
     assert "GREEN" in text
+
+
+async def test_send_message_v3_raw_envia_pro_chat_m3():
+    notifier = _make_notifier()
+    msg_id = await notifier.send_message_v3_raw("relatorio teste")
+    assert msg_id == 99
+    assert notifier.bot.send_message.await_args.kwargs["chat_id"] == "6034412176"

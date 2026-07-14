@@ -174,3 +174,20 @@ async def test_get_unvalidated_return_matches_v3(tmp_path):
 
     assert [m.id for m in matches] == [m1.id]
     await db.close()
+
+
+async def test_get_validated_since_filtra_por_data(tmp_path):
+    db = await _make_db(tmp_path)
+    repo = AlertV3Repository(db.session_factory)
+    a = await repo.create(
+        match_id=1, losing_player="Sena", opponent_player="Bosko",
+        game1_score="1-3", line="over25", odds=1.85,
+        rate=0.70, hits=14, n_h2h=20, recent_hits=5,
+    )
+    await repo.validate(a.id, actual_goals=3, hit=True, profit_flat=0.85)
+
+    ontem = datetime.utcnow() - timedelta(days=1)
+    amanha = datetime.utcnow() + timedelta(days=1)
+    assert len(await repo.get_validated_since(ontem)) == 1
+    assert len(await repo.get_validated_since(amanha)) == 0
+    await db.close()

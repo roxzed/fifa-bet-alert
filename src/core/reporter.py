@@ -19,13 +19,17 @@ from src.core.cancelled_alerts import CANCELLED_ALERT_IDS
 class Reporter:
     """Generates and sends scheduled performance reports."""
 
-    def __init__(self, alert_repo, player_repo, method_stats_repo, notifier, session_factory=None, alert_v2_repo=None) -> None:
+    def __init__(
+        self, alert_repo, player_repo, method_stats_repo, notifier,
+        session_factory=None, alert_v2_repo=None, alert_v3_repo=None,
+    ) -> None:
         self.alerts = alert_repo
         self.players = player_repo
         self.method_stats = method_stats_repo
         self.notifier = notifier
         self._sf = session_factory
         self.alerts_v2 = alert_v2_repo
+        self.alerts_v3 = alert_v3_repo
 
     async def send_daily_report(self) -> None:
         """Build and send the daily results in /results format."""
@@ -263,6 +267,35 @@ class Reporter:
             )
         except Exception as e:
             logger.warning(f"Failed to send M2 daily report: {e}")
+
+    async def send_daily_report_v3(self) -> None:
+        """Resumo diario do M3 (greens/reds/profit) no privado do owner.
+
+        NO-OP se alert_v3_repo nao configurado (M3 desligado).
+        """
+        if self.alerts_v3 is None:
+            logger.info("send_daily_report_v3 SKIP: alert_v3_repo nao configurado")
+            return
+
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+        alerts = await self.alerts_v3.get_validated_since(since)
+        if not alerts:
+            logger.info("send_daily_report_v3 SKIP: sem alertas validados nas ultimas 24h")
+            return
+
+        greens = [a for a in alerts if a.hit]
+        reds = [a for a in alerts if a.hit is False]
+        profit = sum(a.profit_flat or 0.0 for a in alerts)
+        emoji = "🟢" if profit >= 0 else "🔴"
+        text = (
+            f"📊 <b>[M3] Diário</b>\n"
+            f"✅ {len(greens)} GREEN | ❌ {len(reds)} RED\n"
+            f"{emoji} P/L flat: {profit:+.2f}u ({len(alerts)} apostas)"
+        )
+        await self.notifier.send_message_v3_raw(text)
+        logger.info(
+            f"M3 daily report sent: {len(greens)}G {len(reds)}R, P/L {profit:+.2f}u"
+        )
 
     def _build_results_msg_v2(self, alerts, date_label, tz_local) -> dict:
         """Monta mensagem /results pro M2 — formato igual ao M1, com camada (C1b/C2)."""

@@ -741,6 +741,31 @@ class TelegramNotifier:
             logger.warning(f"Failed to edit M3 message {message_id}: {e}")
             return False
 
+    async def send_message_v3_raw(self, text: str) -> int | None:
+        """Send a raw message to the M3 privado (relatorios)."""
+        if not self._m3_chat_id:
+            return None
+        if not self._breaker_m3.allow_request():
+            logger.warning(
+                f"M3 circuit breaker OPEN — skipping send_message_v3_raw "
+                f"(retry in {self._breaker_m3.seconds_until_retry:.0f}s)"
+            )
+            return None
+        text = _sanitize_text(text)
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._m3_chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_m3.record_success()
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_m3.record_failure()
+            logger.error(f"Failed to send M3 raw message: {e}")
+            return None
+
     @staticmethod
     def _line_label(best_line: str | None, player: str) -> str:
         labels = {"over15": "Over 1.5", "over25": "Over 2.5",
