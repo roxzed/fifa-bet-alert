@@ -47,10 +47,10 @@ class AlertEngineV3:
             odd = odds_map.get(le.line)
             if odd is None or odd <= 0:
                 continue
-            if not (settings.min_odds <= odd <= settings.max_odds):
+            if odd < settings.m3_min_odds:
                 logger.info(
-                    f"M3 {loser}: {le.line}@{odd:.2f} fora do gate "
-                    f"[{settings.min_odds}-{settings.max_odds}]"
+                    f"M3 {loser}: {le.line}@{odd:.2f} abaixo do piso "
+                    f"{settings.m3_min_odds} — pulando (M3 nao tem teto de odds)"
                 )
                 continue
             if await self.alerts.exists_for_line(return_match.id, le.line):

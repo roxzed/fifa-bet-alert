@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     m3_recent_window: int = 7      # janela de recencia
     m3_recent_min_hits: int = 5    # hits minimos na janela de recencia
     m3_min_h2h: int = 10           # amostra minima de H2H
+    m3_min_odds: float = 1.58      # piso de odds do M3 (sem teto — qualquer odd >= isso)
 
     # Database
     database_url: str = "postgresql+asyncpg://localhost/fifa_bet"

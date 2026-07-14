@@ -69,12 +69,12 @@ async def test_alerta_quando_linha_qualifica_e_odd_no_gate():
     notifier.send_alert_v3.assert_awaited_once()
 
 
-async def test_nao_alerta_odd_fora_do_gate():
+async def test_nao_alerta_odd_abaixo_do_piso():
     ev = EvaluationV3(should_alert=True, lines=[_line()], n_h2h=20)
     engine, repo, notifier = _engine(ev)
     g2, g1 = _matches()
 
-    # odd 1.30 < min_odds 1.60 → linha cai; nenhuma sobra → sem alerta
+    # odd 1.30 < piso M3 1.58 → linha cai; nenhuma sobra → sem alerta
     sent = await engine.evaluate_and_alert(
         g2,
         g1,
@@ -86,6 +86,44 @@ async def test_nao_alerta_odd_fora_do_gate():
 
     assert sent is False
     notifier.send_alert_v3.assert_not_awaited()
+
+
+async def test_alerta_odd_no_piso_158_e_sem_teto():
+    # M3 aceita odd >= 1.58 e NAO tem teto: odd alta (ex. 6.50) deve passar.
+    ev = EvaluationV3(should_alert=True, lines=[_line()], n_h2h=20)
+    engine, repo, notifier = _engine(ev)
+    g2, g1 = _matches()
+
+    sent = await engine.evaluate_and_alert(
+        g2,
+        g1,
+        loser="Sena",
+        winner="Bosko",
+        over25_odds=6.50,  # bem acima do antigo teto de 4.00
+        over35_odds=None,
+    )
+
+    assert sent is True
+    assert repo.create.await_args.kwargs["odds"] == 6.50
+    notifier.send_alert_v3.assert_awaited_once()
+
+
+async def test_odd_exatamente_no_piso_158_passa():
+    ev = EvaluationV3(should_alert=True, lines=[_line()], n_h2h=20)
+    engine, repo, notifier = _engine(ev)
+    g2, g1 = _matches()
+
+    sent = await engine.evaluate_and_alert(
+        g2,
+        g1,
+        loser="Sena",
+        winner="Bosko",
+        over25_odds=1.58,  # piso inclusive
+        over35_odds=None,
+    )
+
+    assert sent is True
+    notifier.send_alert_v3.assert_awaited_once()
 
 
 async def test_nao_duplica_alerta_para_mesma_linha():
