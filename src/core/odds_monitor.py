@@ -114,7 +114,7 @@ class OddsMonitor:
 
     _MAX_MONITOR_SECONDS: int = 45 * 60  # 45 min máximo por partida
     _MAX_CONCURRENT_TASKS: int = 30      # máximo de tasks simultâneas
-    _WATCH_LEAD_SECONDS: int = 30        # enviar watch T-30s antes do kickoff (2026-07-13)
+    _WATCH_LEAD_SECONDS: int = 90        # enviar watch T-90s antes do kickoff (2026-07-20: 30->90 a pedido do owner)
     _WATCH_AUTO_DELETE_SECONDS: int = 900  # apagar watch 15 min apos envio
     # 1200s cobre lead (90s) + duracao real do jogo (~13-14 min) + margem (~4-5min)
     # Antes era 600s — apagava antes do jogo terminar em alguns casos.
