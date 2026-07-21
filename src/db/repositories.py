@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from src.db.models import (
     Alert,
+    AlertFree,
     AlertV2,
     AlertV3,
     BlockedLine,
@@ -373,6 +374,22 @@ class MatchRepository(_BaseRepository):
                 .where(
                     Match.is_return_match == True,  # noqa: E712
                     AlertV3.validated_at.is_(None),
+                )
+                .distinct()
+                .order_by(Match.started_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_unvalidated_return_matches_free(self) -> list[Match]:
+        """Return return matches that have at least one unvalidated FREE alert."""
+        async with self._session() as session:
+            stmt = (
+                select(Match)
+                .join(AlertFree, AlertFree.match_id == Match.id)
+                .where(
+                    Match.is_return_match == True,  # noqa: E712
+                    AlertFree.validated_at.is_(None),
                 )
                 .distinct()
                 .order_by(Match.started_at.asc())
@@ -1797,6 +1814,92 @@ class AlertV3Repository(_BaseRepository):
         """Return alertas V3 validados com validated_at >= since (relatorio diario)."""
         async with self._session() as session:
             stmt = select(AlertV3).where(AlertV3.validated_at >= since)
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+
+# ---------------------------------------------------------------------------
+# AlertFreeRepository — CRUD para modelo FREE
+# ---------------------------------------------------------------------------
+class AlertFreeRepository(_BaseRepository):
+    """CRUD and querying for the alerts_free table (Model FREE)."""
+
+    async def create(self, **kwargs) -> AlertFree:
+        """Create a new alert FREE record."""
+        async with self._session() as session:
+            alert = AlertFree(**kwargs)
+            session.add(alert)
+            await session.flush()
+            return alert
+
+    async def exists_for_match(self, match_id: int) -> bool:
+        """Check if alert FREE exists for a match_id."""
+        async with self._session() as session:
+            stmt = (
+                select(AlertFree.id)
+                .where(AlertFree.match_id == match_id)
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+
+    async def update_odds(
+        self, alert_id: int, entry_odd: float | None, max_odd: float | None
+    ) -> None:
+        """Update entry_odd and max_odd for an alert."""
+        async with self._session() as session:
+            stmt = (
+                update(AlertFree)
+                .where(AlertFree.id == alert_id)
+                .values(entry_odd=entry_odd, max_odd=max_odd)
+            )
+            await session.execute(stmt)
+
+    async def update_telegram_message_id(self, alert_id: int, message_id: int) -> None:
+        """Save the Telegram message_id."""
+        async with self._session() as session:
+            stmt = (
+                update(AlertFree)
+                .where(AlertFree.id == alert_id)
+                .values(telegram_message_id=message_id)
+            )
+            await session.execute(stmt)
+
+    async def validate(
+        self,
+        alert_id: int,
+        actual_goals: int,
+        hit: bool,
+        status: str,
+    ) -> Optional[AlertFree]:
+        """Record post-game result for an alert FREE."""
+        async with self._session() as session:
+            stmt = select(AlertFree).where(AlertFree.id == alert_id)
+            result = await session.execute(stmt)
+            alert = result.scalar_one_or_none()
+            if alert:
+                alert.actual_goals = actual_goals
+                alert.hit = hit
+                alert.status = status
+                alert.validated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                await session.flush()
+            return alert
+
+    async def get_all_by_match_id(self, match_id: int) -> Sequence[AlertFree]:
+        """Return all alerts FREE for a given match_id."""
+        async with self._session() as session:
+            stmt = (
+                select(AlertFree)
+                .where(AlertFree.match_id == match_id)
+                .order_by(AlertFree.sent_at.asc())
+            )
+            result = await session.execute(stmt)
+            return result.scalars().all()
+
+    async def get_validated_since(self, since: datetime) -> Sequence[AlertFree]:
+        """Return alertas FREE validados com validated_at >= since."""
+        async with self._session() as session:
+            stmt = select(AlertFree).where(AlertFree.validated_at >= since)
             result = await session.execute(stmt)
             return result.scalars().all()
 
