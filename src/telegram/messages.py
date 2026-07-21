@@ -436,6 +436,39 @@ def _m3_line_stats(ln: dict) -> str:
     return base
 
 
+def format_free_prealert(d: dict) -> str:
+    """Pre-alerta publico FREE — SEM revelar metodo. Sempre 'odd minima 1.70'."""
+    p = _esc(d.get("player"))
+    line_label = _esc(d.get("line_label"))
+    kickoff_str = _esc(d.get("kickoff_str", "?"))
+    return (
+        f"🔥 <b>ENTRADA FIFA eSports</b>\n"
+        f"🎮 {p}  —  <b>{line_label} gols</b>\n"
+        f"⏰ Jogo às {kickoff_str}\n"
+        f"💰 <b>Odd mínima: 1.70</b>\n"
+        f"<i>Fique atento e entre quando a odd chegar em 1.70+</i>"
+    )
+
+
+def format_free_result(d: dict, status: str) -> str:
+    """Edita o pre-alerta com o resultado. status: green|red|void."""
+    p = _esc(d.get("player"))
+    lbl = _esc(d.get("line_label"))
+    g = d.get("actual_goals")
+    odd = d.get("entry_odd")
+    if status == "void":
+        return (
+            f"⚪ <b>ANULADO</b> — {p} {lbl}\n"
+            f"A odd não atingiu 1.70 (sem entrada)."
+        )
+    head = "✅ <b>GREEN</b>" if status == "green" else "❌ <b>RED</b>"
+    odd_str = f"{odd:.2f}" if isinstance(odd, (int, float)) else "?"
+    return (
+        f"{head} — {p} {lbl}\n"
+        f"🎯 {p} fez {g} gols  |  entrada @ odd {odd_str}"
+    )
+
+
 def format_watch_v3(d: dict) -> str:
     """Pré-aviso M3 (T-90s, sem odds — mercado fechado). Privado do owner."""
     ph = _esc(d.get("player_home"))

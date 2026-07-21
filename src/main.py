@@ -169,12 +169,27 @@ async def main() -> None:
     else:
         logger.info("Method 3 disabled (TELEGRAM_M3_CHAT_ID not set)")
 
+    # Modelo FREE (M3 publico no grupo gratis)
+    from src.core.alert_engine_free import AlertEngineFree
+    from src.db.repositories import AlertFreeRepository
+
+    alert_free_repo = None
+    free_engine = None
+    if settings.free_model_enabled and settings.telegram_free_group_id:
+        stats_free = StatsEngineV3(match_repo=MatchRepository(sf))
+        alert_free_repo = AlertFreeRepository(sf)
+        free_engine = AlertEngineFree(stats_free, alert_free_repo, notifier)
+        logger.info(f"Modelo FREE enabled (grupo: {settings.telegram_free_group_id})")
+    else:
+        logger.info("Modelo FREE disabled (FREE_MODEL_ENABLED / TELEGRAM_FREE_GROUP_ID)")
+
     odds_monitor = OddsMonitor(
         api, OddsRepository(sf), alert_engine,
         match_repo=MatchRepository(sf),
         poll_interval=settings.odds_poll_interval_seconds,
         alert_engine_v2=alert_engine_v2,
         alert_engine_v3=alert_engine_v3,
+        free_engine=free_engine,
     )
 
     # --- Watch preditivo: estima offset historico da volta (G1 -> G2) ---
@@ -226,6 +241,11 @@ async def main() -> None:
     if alert_engine_v3:
         validator_v3 = ValidatorV3(MatchRepository(sf), alert_v3_repo, notifier)
 
+    validator_free = None
+    if free_engine:
+        from src.core.validator_free import ValidatorFree
+        validator_free = ValidatorFree(MatchRepository(sf), alert_free_repo, notifier)
+
     # --- MELHORIA 5: Health Monitor ---
     health_monitor = HealthMonitor(
         stats_engine=stats_engine,
@@ -243,6 +263,7 @@ async def main() -> None:
         AlertRepository(sf), PlayerRepository(sf), MethodStatsRepository(sf), notifier,
         alert_v2_repo=alert_v2_repo,
         alert_v3_repo=alert_v3_repo,
+        alert_free_repo=alert_free_repo,
     )
 
     # --- BotCommands ---
@@ -311,6 +332,12 @@ async def main() -> None:
     if alert_engine_v3:
         scheduler.add_daily_task(
             reporter.send_daily_report_v3, hour=23, minute=50, task_id="daily_report_v3"
+        )
+
+    # Daily FREE results at 23:50 — so roda se modelo FREE estiver ligado
+    if free_engine:
+        scheduler.add_daily_task(
+            reporter.send_daily_report_free, hour=23, minute=50, task_id="daily_report_free"
         )
 
     # Weekly report on Sunday at 23:50
@@ -689,6 +716,10 @@ async def main() -> None:
         tasks_to_run.append(
             _supervised_task("ValidatorV3", validator_v3.start, poll_interval=60)
         )
+    if validator_free:
+        tasks_to_run.append(
+            _supervised_task("ValidatorFree", validator_free.start, poll_interval=60)
+        )
 
     try:
         await asyncio.gather(*tasks_to_run)
@@ -705,6 +736,8 @@ async def main() -> None:
             validator_v2.stop()
         if validator_v3:
             validator_v3.stop()
+        if validator_free:
+            validator_free.stop()
         scheduler.shutdown()
         await api.close()
 

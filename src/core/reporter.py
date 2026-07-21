@@ -22,6 +22,7 @@ class Reporter:
     def __init__(
         self, alert_repo, player_repo, method_stats_repo, notifier,
         session_factory=None, alert_v2_repo=None, alert_v3_repo=None,
+        alert_free_repo=None,
     ) -> None:
         self.alerts = alert_repo
         self.players = player_repo
@@ -30,6 +31,7 @@ class Reporter:
         self._sf = session_factory
         self.alerts_v2 = alert_v2_repo
         self.alerts_v3 = alert_v3_repo
+        self.alert_free_repo = alert_free_repo
 
     async def send_daily_report(self) -> None:
         """Build and send the daily results in /results format."""
@@ -295,6 +297,51 @@ class Reporter:
         await self.notifier.send_message_v3_raw(text)
         logger.info(
             f"M3 daily report sent: {len(greens)}G {len(reds)}R, P/L {profit:+.2f}u"
+        )
+
+    async def send_daily_report_free(self) -> None:
+        """Resumo diario do Modelo FREE no grupo gratis (tips + saldo total).
+
+        NO-OP se alert_free_repo nao configurado ou sem alertas
+        greens/reds validados nas ultimas 24h (void nao conta pro saldo).
+        Copy publica: nunca revela o metodo interno.
+        """
+        if not self.alert_free_repo:
+            logger.info("send_daily_report_free SKIP: alert_free_repo nao configurado")
+            return
+
+        from src.core.free_status import LINE_LABELS
+
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+        alerts = await self.alert_free_repo.get_validated_since(since)
+
+        counted = [a for a in alerts if a.status in ("green", "red")]
+        if not counted:
+            logger.info("send_daily_report_free SKIP: sem tips validadas nas ultimas 24h")
+            return
+
+        greens = [a for a in counted if a.status == "green"]
+        reds = [a for a in counted if a.status == "red"]
+        voids = [a for a in alerts if a.status == "void"]
+        pnl = sum((a.entry_odd - 1.0) for a in greens) - len(reds)
+        emoji = "🟢" if pnl >= 0 else "🔴"
+
+        linhas = "\n".join(
+            f"{'✅' if a.status == 'green' else '❌'} {a.losing_player} "
+            f"{LINE_LABELS[a.line]} @ {a.entry_odd:.2f}"
+            for a in counted
+        )
+
+        text = (
+            f"📊 <b>RESULTADO DO DIA — FIFA eSports</b>\n\n"
+            f"{linhas}\n\n"
+            f"✅ {len(greens)} GREEN | ❌ {len(reds)} RED"
+            + (f" | ⚪ {len(voids)} anuladas" if voids else "")
+            + f"\n{emoji} <b>Saldo: {pnl:+.2f}u</b>  ({len(counted)} entradas)"
+        )
+        await self.notifier.send_free_raw(text)
+        logger.info(
+            f"FREE daily report sent: {len(greens)}G {len(reds)}R, saldo {pnl:+.2f}u"
         )
 
     def _build_results_msg_v2(self, alerts, date_label, tz_local) -> dict:

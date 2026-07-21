@@ -441,6 +441,52 @@ class TelegramNotifier:
             logger.warning(f"Failed to edit FREE message {message_id}: {e}")
             return False
 
+    async def send_watch_free(self, data: dict, auto_delete_seconds: int = 0) -> int | None:
+        """Pre-alerta do Modelo FREE no grupo gratis. Editado depois com resultado.
+
+        Sem auto-delete por padrao (auto_delete_seconds=0) — a mensagem e
+        editada com o resultado (GREEN/RED/ANULADO), nao apagada.
+        """
+        if not self._free_group_id or self._paused:
+            return None
+        if not self._breaker_free.allow_request():
+            logger.warning("FREE breaker OPEN — skip send_watch_free")
+            return None
+        from src.telegram.messages import format_free_prealert
+        text = _sanitize_text(format_free_prealert(data))
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._free_group_id, text=text,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
+            self._breaker_free.record_success()
+            logger.bind(category="free_model").info(
+                f"FREE pre-alerta: {data.get('player')} {data.get('line_label')}"
+            )
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_free.record_failure()
+            logger.error(f"Failed to send FREE pre-alerta: {e}")
+            return None
+
+    async def edit_free_result(self, message_id: int, data: dict, status: str) -> bool:
+        """Edita o pre-alerta FREE com GREEN/RED/ANULADO."""
+        if not self._free_group_id:
+            return False
+        from src.telegram.messages import format_free_result
+        text = _sanitize_text(format_free_result(data, status))
+        try:
+            await self.bot.edit_message_text(
+                chat_id=self._free_group_id, message_id=message_id, text=text,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
+            self._breaker_free.record_success()
+            return True
+        except TelegramError as e:
+            self._breaker_free.record_failure()
+            logger.warning(f"Failed to edit FREE result {message_id}: {e}")
+            return False
+
     # --- Method 2 (M2) group methods ---
 
     async def send_alert_v2(self, alert_data: dict) -> int | None:
@@ -772,6 +818,31 @@ class TelegramNotifier:
         except TelegramError as e:
             self._breaker_m3.record_failure()
             logger.error(f"Failed to send M3 raw message: {e}")
+            return None
+
+    async def send_free_raw(self, text: str) -> int | None:
+        """Send a raw message to the grupo FREE (relatorios)."""
+        if not self._free_group_id:
+            return None
+        if not self._breaker_free.allow_request():
+            logger.warning(
+                f"FREE circuit breaker OPEN — skipping send_free_raw "
+                f"(retry in {self._breaker_free.seconds_until_retry:.0f}s)"
+            )
+            return None
+        text = _sanitize_text(text)
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._free_group_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_free.record_success()
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_free.record_failure()
+            logger.error(f"Failed to send FREE raw message: {e}")
             return None
 
     @staticmethod

@@ -118,9 +118,10 @@ class OddsMonitor:
     _WATCH_AUTO_DELETE_SECONDS: int = 900  # apagar watch 15 min apos envio
     # 1200s cobre lead (90s) + duracao real do jogo (~13-14 min) + margem (~4-5min)
     # Antes era 600s — apagava antes do jogo terminar em alguns casos.
+    _WATCH_FREE_LEAD_SECONDS: int = 30   # pre-alerta FREE T-30s antes do kickoff
 
     def __init__(self, api_client, odds_repo, alert_engine, match_repo=None, poll_interval: int = 15,
-                 alert_engine_v2=None, alert_engine_v3=None) -> None:
+                 alert_engine_v2=None, alert_engine_v3=None, free_engine=None) -> None:
         self.api = api_client
         self.odds_repo = odds_repo
         self.alert_engine = alert_engine
@@ -140,6 +141,10 @@ class OddsMonitor:
         self._predictive_offset_min: float = settings.watch_return_offset_fallback_min
         self._predictive_tasks: dict[int, asyncio.Task] = {}  # game1_id → task
         self._predictive_sent: set[tuple[int, str]] = set()   # (game1_id, metodo)
+        # Modelo FREE (pre-alerta T-30s + rastreamento da odd)
+        self.free_engine = free_engine
+        self._free_tracking: dict[int, dict] = {}   # match_id -> {line, entry_odd, max_odd}
+        self._watch_free_tasks: dict[int, asyncio.Task] = {}
 
     async def start_monitoring(
         self,
@@ -326,6 +331,27 @@ class OddsMonitor:
             self._watch_v3_tasks[match_id] = w3task
             logger.info(f"Watch M3 task criada pra match {match_id} ({loser} vs {winner})")
 
+        # Agendar watch FREE (pre-alerta T-30s) — fire and forget
+        if self.free_engine and match_id not in self._watch_free_tasks:
+            wfree_task = asyncio.create_task(
+                self._watch_loop_free(return_match, game1_match, loser, winner),
+                name=f"watch_free_{match_id}",
+            )
+
+            def _on_watch_free_done(t: asyncio.Task, mid=match_id, ls=loser, wn=winner) -> None:
+                if t.cancelled():
+                    logger.info(f"Watch FREE {mid} cancelled ({ls} vs {wn})")
+                    return
+                exc = t.exception()
+                if exc:
+                    logger.error(
+                        f"Watch FREE {mid} ({ls} vs {wn}) MORREU com excecao: {exc!r}"
+                    )
+
+            wfree_task.add_done_callback(_on_watch_free_done)
+            self._watch_free_tasks[match_id] = wfree_task
+            logger.info(f"Watch FREE task criada pra match {match_id} ({loser} vs {winner})")
+
     async def _monitor_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int = 0
     ) -> None:
@@ -431,6 +457,20 @@ class OddsMonitor:
                         if o
                     )
                     logger.info(f"Bet365 odds for {loser} (match {match_id}): {lines_str}")
+
+                    # Modelo FREE: rastreia entry_odd/max_odd da linha do pre-alerta
+                    if self.free_engine:
+                        _just_set = self._track_free_odd(match_id, over15_odds, over25_odds, over35_odds, over45_odds)
+                        if _just_set:
+                            # Persistir IMEDIATAMENTE (nao esperar o finally): evita
+                            # corrida com o ValidatorFree lendo entry_odd=None quando
+                            # o jogo termina antes do finally rodar (falso ANULADO).
+                            tr = self._free_tracking.get(match_id)
+                            try:
+                                for a in await self.free_engine.alerts.get_all_by_match_id(match_id):
+                                    await self.free_engine.alerts.update_odds(a.id, tr["entry_odd"], tr["max_odd"])
+                            except Exception as e:
+                                logger.warning(f"FREE persist entry_odd falhou match={match_id}: {e}")
 
                     # Alerta de gap: linhas esperadas ausentes na resposta da API
                     missing = [
@@ -587,6 +627,77 @@ class OddsMonitor:
             self._task_started.pop(match_id, None)
             self._alert_v2_sent.pop(match_id, None)
             self._alert_v3_sent.pop(match_id, None)
+            # Modelo FREE: persistir entry_odd/max_odd ao encerrar o monitor do match
+            if self.free_engine:
+                tr = self._free_tracking.pop(match_id, None)
+                if tr:
+                    try:
+                        alerts = await self.free_engine.alerts.get_all_by_match_id(match_id)
+                        for a in alerts:
+                            await self.free_engine.alerts.update_odds(
+                                a.id, tr["entry_odd"], tr["max_odd"]
+                            )
+                    except Exception as e:
+                        logger.warning(f"FREE update_odds falhou match={match_id}: {e}")
+
+    def _track_free_odd(self, match_id, over15, over25, over35, over45) -> bool:
+        """Atualiza entry_odd (1a vez >= free_min_odd) e max_odd da linha FREE.
+
+        Retorna True quando esta chamada ACABOU de gravar o entry_odd (1a vez
+        que a odd cruzou free_min_odd) — sinal pro _monitor_loop persistir
+        imediatamente no DB, em vez de esperar o finally (evita a corrida
+        com o ValidatorFree lendo entry_odd=None e marcando falso ANULADO).
+        """
+        tr = self._free_tracking.get(match_id)
+        if tr is None:
+            return False
+        odd = {"over15": over15, "over25": over25, "over35": over35,
+               "over45": over45}.get(tr["line"])
+        if odd is None or odd <= 0:
+            return False
+        if odd > (tr["max_odd"] or 0):
+            tr["max_odd"] = odd
+        if tr["entry_odd"] is None and odd >= settings.free_min_odd:
+            tr["entry_odd"] = odd
+            return True
+        return False
+
+    async def _watch_loop_free(self, return_match, game1_match, loser: str, winner: str) -> None:
+        """Pre-alerta FREE (T-30s): pede ao free_engine pra decidir e enviar.
+
+        Igual em espirito ao _watch_loop_v3 (mesmo esqueleto: dorme ate
+        T-lead, guard de kickoff, try/except/finally com pop da task), mas
+        quem decide e envia e o free_engine.prealert (Task 3) — se retornar
+        uma line, comeca o rastreamento da odd em _free_tracking.
+        """
+        match_id = return_match.id
+        kickoff = return_match.started_at
+        if kickoff is None:
+            return
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            wait = (kickoff - now).total_seconds() - self._WATCH_FREE_LEAD_SECONDS
+            if wait > 0:
+                await asyncio.sleep(wait)
+            now2 = datetime.now(timezone.utc).replace(tzinfo=None)
+            if (kickoff - now2).total_seconds() < 0:
+                logger.info(f"WatchFREE {match_id}: kickoff ja passou, abortando")
+                return
+            from zoneinfo import ZoneInfo
+            kickoff_brt = kickoff.replace(tzinfo=timezone.utc).astimezone(
+                ZoneInfo("America/Sao_Paulo")
+            )
+            line = await self.free_engine.prealert(
+                return_match, game1_match, loser, winner, kickoff_brt.strftime("%H:%M")
+            )
+            if line:
+                self._free_tracking[match_id] = {"line": line, "entry_odd": None, "max_odd": 0.0}
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"WatchFREE loop erro match {match_id}: {e!r}")
+        finally:
+            self._watch_free_tasks.pop(match_id, None)
 
     async def _watch_loop(
         self, return_match, game1_match, loser: str, winner: str, loser_goals_g1: int
@@ -1239,6 +1350,9 @@ class OddsMonitor:
         wtask_v3 = self._watch_v3_tasks.pop(match_id, None)
         if wtask_v3 and not wtask_v3.done():
             wtask_v3.cancel()
+        wtask_free = self._watch_free_tasks.pop(match_id, None)
+        if wtask_free and not wtask_free.done():
+            wtask_free.cancel()
 
     def stop_all(self) -> None:
         """Cancel all monitoring tasks."""
@@ -1253,11 +1367,15 @@ class OddsMonitor:
         for wtask_v3 in self._watch_v3_tasks.values():
             if not wtask_v3.done():
                 wtask_v3.cancel()
+        for wtask_free in self._watch_free_tasks.values():
+            if not wtask_free.done():
+                wtask_free.cancel()
         self._tasks.clear()
         self._task_started.clear()
         self._watch_tasks.clear()
         self._watch_tasks_v2.clear()
         self._watch_v3_tasks.clear()
+        self._watch_free_tasks.clear()
         logger.info("All odds monitors stopped")
 
     @property
