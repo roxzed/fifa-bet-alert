@@ -820,6 +820,31 @@ class TelegramNotifier:
             logger.error(f"Failed to send M3 raw message: {e}")
             return None
 
+    async def send_free_raw(self, text: str) -> int | None:
+        """Send a raw message to the grupo FREE (relatorios)."""
+        if not self._free_group_id:
+            return None
+        if not self._breaker_free.allow_request():
+            logger.warning(
+                f"FREE circuit breaker OPEN — skipping send_free_raw "
+                f"(retry in {self._breaker_free.seconds_until_retry:.0f}s)"
+            )
+            return None
+        text = _sanitize_text(text)
+        try:
+            msg = await self.bot.send_message(
+                chat_id=self._free_group_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            self._breaker_free.record_success()
+            return msg.message_id
+        except TelegramError as e:
+            self._breaker_free.record_failure()
+            logger.error(f"Failed to send FREE raw message: {e}")
+            return None
+
     @staticmethod
     def _line_label(best_line: str | None, player: str) -> str:
         labels = {"over15": "Over 1.5", "over25": "Over 2.5",
