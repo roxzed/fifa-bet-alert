@@ -460,7 +460,17 @@ class OddsMonitor:
 
                     # Modelo FREE: rastreia entry_odd/max_odd da linha do pre-alerta
                     if self.free_engine:
-                        self._track_free_odd(match_id, over15_odds, over25_odds, over35_odds, over45_odds)
+                        _just_set = self._track_free_odd(match_id, over15_odds, over25_odds, over35_odds, over45_odds)
+                        if _just_set:
+                            # Persistir IMEDIATAMENTE (nao esperar o finally): evita
+                            # corrida com o ValidatorFree lendo entry_odd=None quando
+                            # o jogo termina antes do finally rodar (falso ANULADO).
+                            tr = self._free_tracking.get(match_id)
+                            try:
+                                for a in await self.free_engine.alerts.get_all_by_match_id(match_id):
+                                    await self.free_engine.alerts.update_odds(a.id, tr["entry_odd"], tr["max_odd"])
+                            except Exception as e:
+                                logger.warning(f"FREE persist entry_odd falhou match={match_id}: {e}")
 
                     # Alerta de gap: linhas esperadas ausentes na resposta da API
                     missing = [
@@ -630,19 +640,27 @@ class OddsMonitor:
                     except Exception as e:
                         logger.warning(f"FREE update_odds falhou match={match_id}: {e}")
 
-    def _track_free_odd(self, match_id, over15, over25, over35, over45) -> None:
-        """Atualiza entry_odd (1a vez >= free_min_odd) e max_odd da linha FREE."""
+    def _track_free_odd(self, match_id, over15, over25, over35, over45) -> bool:
+        """Atualiza entry_odd (1a vez >= free_min_odd) e max_odd da linha FREE.
+
+        Retorna True quando esta chamada ACABOU de gravar o entry_odd (1a vez
+        que a odd cruzou free_min_odd) — sinal pro _monitor_loop persistir
+        imediatamente no DB, em vez de esperar o finally (evita a corrida
+        com o ValidatorFree lendo entry_odd=None e marcando falso ANULADO).
+        """
         tr = self._free_tracking.get(match_id)
         if tr is None:
-            return
+            return False
         odd = {"over15": over15, "over25": over25, "over35": over35,
                "over45": over45}.get(tr["line"])
         if odd is None or odd <= 0:
-            return
+            return False
         if odd > (tr["max_odd"] or 0):
             tr["max_odd"] = odd
         if tr["entry_odd"] is None and odd >= settings.free_min_odd:
             tr["entry_odd"] = odd
+            return True
+        return False
 
     async def _watch_loop_free(self, return_match, game1_match, loser: str, winner: str) -> None:
         """Pre-alerta FREE (T-30s): pede ao free_engine pra decidir e enviar.

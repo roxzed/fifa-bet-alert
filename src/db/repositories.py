@@ -382,13 +382,22 @@ class MatchRepository(_BaseRepository):
             return list(result.scalars().all())
 
     async def get_unvalidated_return_matches_free(self) -> list[Match]:
-        """Return return matches that have at least one unvalidated FREE alert."""
+        """Return return matches that have at least one unvalidated FREE alert.
+
+        Gate defensivo (status=ended): so retorna jogos ja encerrados, dando
+        tempo pro _monitor_loop persistir entry_odd/max_odd antes do
+        ValidatorFree agir. Sem isso, se o poll do ValidatorFree (60s) rodar
+        entre o game1 marcar ended e o finally do _monitor_loop persistir o
+        entry_odd, ele le entry_odd=None -> decide_status retorna
+        ("void", None) -> falso ANULADO.
+        """
         async with self._session() as session:
             stmt = (
                 select(Match)
                 .join(AlertFree, AlertFree.match_id == Match.id)
                 .where(
                     Match.is_return_match == True,  # noqa: E712
+                    Match.status == "ended",
                     AlertFree.validated_at.is_(None),
                 )
                 .distinct()
