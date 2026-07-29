@@ -481,6 +481,17 @@ class TelegramNotifier:
                 parse_mode=ParseMode.HTML, disable_web_page_preview=True,
             )
             self._breaker_free.record_success()
+            # Tips ANULADAS somem do grupo apos 5 min (nao poluir o FREE com no-bets)
+            if status == "void":
+                async def _delete_void() -> None:
+                    await asyncio.sleep(300)
+                    try:
+                        await self.bot.delete_message(
+                            chat_id=self._free_group_id, message_id=message_id
+                        )
+                    except TelegramError as e:
+                        logger.debug(f"FREE void auto-delete falhou ({message_id}): {e}")
+                asyncio.create_task(_delete_void(), name=f"free_void_delete_{message_id}")
             return True
         except TelegramError as e:
             self._breaker_free.record_failure()

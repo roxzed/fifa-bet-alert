@@ -38,6 +38,35 @@ def test_prealert_tem_odd_minima_170_e_nao_revela_metodo():
     assert not any(f in t for f in FORBIDDEN)
 
 
+async def test_edit_free_result_void_agenda_auto_delete(monkeypatch):
+    """Tip ANULADA (void) deve agendar a delecao da mensagem apos 5 min."""
+    n = _notifier()
+    n.bot.delete_message = AsyncMock()
+    sleeps = []
+
+    async def _fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
+    ok = await n.edit_free_result(77, _data(), "void")
+    assert ok is True
+    # deixa a task de delecao rodar
+    import asyncio as _a
+    await _a.gather(*[t for t in _a.all_tasks() if t.get_name() == "free_void_delete_77"])
+    assert 300 in sleeps
+    n.bot.delete_message.assert_awaited_once_with(chat_id="-100free", message_id=77)
+
+
+async def test_edit_free_result_green_nao_deleta(monkeypatch):
+    """GREEN/RED NAO devem agendar delecao (ficam no grupo)."""
+    n = _notifier()
+    n.bot.delete_message = AsyncMock()
+    await n.edit_free_result(77, _data(), "green")
+    import asyncio as _a
+    assert not any(t.get_name() == "free_void_delete_77" for t in _a.all_tasks())
+    n.bot.delete_message.assert_not_awaited()
+
+
 def test_result_green_mostra_entrada():
     t = format_free_result(_data(), "green")
     assert "GREEN" in t and "1.75" in t
