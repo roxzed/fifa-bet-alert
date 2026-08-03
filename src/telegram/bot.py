@@ -513,11 +513,12 @@ class TelegramNotifier:
         if not chat_id or not message_id:
             return False
         from src.telegram.messages import format_stat_result
+        text = _sanitize_text(format_stat_result(data, hit))
         try:
             await self.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=format_stat_result(data, hit),
+                text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )

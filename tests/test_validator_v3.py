@@ -29,6 +29,7 @@ def _validator(alerts):
     alert_repo.validate = AsyncMock()
     notifier = MagicMock()
     notifier.edit_alert_v3_result = AsyncMock(return_value=True)
+    notifier.edit_stat_result = AsyncMock(return_value=True)
     return ValidatorV3(match_repo, alert_repo, notifier), alert_repo, notifier
 
 
@@ -69,6 +70,59 @@ async def test_valida_red_com_profit_negativo(monkeypatch):
     kwargs = repo.validate.await_args.kwargs
     assert kwargs["hit"] is False
     assert kwargs["profit_flat"] == -1.0
+
+
+async def test_valida_sem_odd_green_chama_edit_stat_result(monkeypatch):
+    # Modo sem odd (flag False): alert persistido com odds=None. GREEN pelo
+    # placar deve chamar notifier.edit_stat_result (nao edit_alert_v3_result),
+    # com profit_flat=0.0 (nao -1.0 — sem odd nao ha resultado em unidades).
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", False)
+    alert = _alert(line="over25", odds=None)
+    validator, repo, notifier = _validator([alert])
+
+    await validator.validate_match(_ended_match(loser_home_goals=3))
+
+    repo.validate.assert_awaited_once()
+    kwargs = repo.validate.await_args.kwargs
+    assert kwargs["hit"] is True
+    assert kwargs["profit_flat"] == 0.0
+
+    notifier.edit_stat_result.assert_awaited_once()
+    notifier.edit_alert_v3_result.assert_not_awaited()
+    args = notifier.edit_stat_result.await_args.args
+    message_id, channel, data, hit = args
+    assert message_id == 55
+    assert channel == "m3"
+    assert hit is True
+    assert data["method_tag"] == "M3"
+    assert data["line_label"] == "Over 2.5"
+    assert data["target_player"] == "Sena"
+
+
+async def test_valida_sem_odd_red_profit_zero(monkeypatch):
+    # Mesmo cenario, mas placar nao bate a linha -> RED. profit_flat continua
+    # 0.0 (nunca -1.0 quando nao ha odd).
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", False)
+    alert = _alert(line="over25", odds=None)
+    validator, repo, notifier = _validator([alert])
+
+    await validator.validate_match(_ended_match(loser_home_goals=2))
+
+    repo.validate.assert_awaited_once()
+    kwargs = repo.validate.await_args.kwargs
+    assert kwargs["hit"] is False
+    assert kwargs["profit_flat"] == 0.0
+
+    notifier.edit_stat_result.assert_awaited_once()
+    notifier.edit_alert_v3_result.assert_not_awaited()
+    args = notifier.edit_stat_result.await_args.args
+    _, channel, data, hit = args
+    assert channel == "m3"
+    assert hit is False
+    assert data["method_tag"] == "M3"
+    assert data["line_label"] == "Over 2.5"
 
 
 async def test_ignora_alertas_ja_validados():

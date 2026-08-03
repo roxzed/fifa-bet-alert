@@ -61,7 +61,7 @@ class ValidatorV3:
         # WRITE: só grava as linhas ainda não validadas (não regrava as graduadas)
         for alert in pending:
             hit = loser_goals > _THRESHOLDS[alert.line]
-            profit = (alert.odds - 1.0) if (hit and alert.odds) else -1.0
+            profit = (alert.odds - 1.0) if (hit and alert.odds) else (-1.0 if alert.odds else 0.0)
             await self.alerts.validate(
                 alert_id=alert.id, actual_goals=loser_goals, hit=hit, profit_flat=profit
             )
