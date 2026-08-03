@@ -875,24 +875,33 @@ class OddsMonitor:
         # Modo sem odd: persistir o Alert (M1) ja no pre-alerta, sem odds, para
         # o Validator poder editar a mesma mensagem com GREEN/RED pelo placar.
         if settings.bet365_live_odds_enabled is False and msg_id:
-            try:
-                repo = self.alert_engine.alerts
-                if not await repo.exists_for_match(return_match.id):
-                    g1_score = (
-                        f"{game1_match.score_home}-{game1_match.score_away}"
-                        if game1_match.player_home == loser
-                        else f"{game1_match.score_away}-{game1_match.score_home}"
+            if return_match.id is not None:
+                try:
+                    repo = self.alert_engine.alerts
+                    if not await repo.exists_for_match(return_match.id):
+                        g1_score = (
+                            f"{game1_match.score_home}-{game1_match.score_away}"
+                            if game1_match.player_home == loser
+                            else f"{game1_match.score_away}-{game1_match.score_home}"
+                        )
+                        alert = await repo.create(
+                            match_id=return_match.id,
+                            losing_player=loser,
+                            game1_score=g1_score,
+                            best_line=candidate["line"],
+                            loser_goals_g1=loser_goals_g1,
+                        )
+                        await repo.update_telegram_message_id(alert.id, msg_id)
+                except Exception as e:
+                    logger.error(
+                        f"Watch {gid}: falha ao persistir Alert sem odd "
+                        f"(sem persistencia nao ha GREEN/RED possivel): {e}"
                     )
-                    alert = await repo.create(
-                        match_id=return_match.id,
-                        losing_player=loser,
-                        game1_score=g1_score,
-                        best_line=candidate["line"],
-                        loser_goals_g1=loser_goals_g1,
-                    )
-                    await repo.update_telegram_message_id(alert.id, msg_id)
-            except Exception as e:
-                logger.warning(f"Watch {gid}: falha ao persistir Alert sem odd: {e}")
+            else:
+                logger.debug(
+                    f"Watch {gid}: return_match.id None (match sintetico) — "
+                    "skip persistencia sem odd, nao ha linha real pra validar"
+                )
 
         self._predictive_sent.add((gid, "m1"))
         return True
@@ -1218,8 +1227,20 @@ class OddsMonitor:
         pra esse game1_id, ou se o G1 nao tem started_at (nao da pra prever
         o horario da volta). Chamado quando o PairMatcher nao consegue achar
         a volta via API logo apos o G1 terminar.
+
+        Tambem e no-op no modo sem odd (settings.bet365_live_odds_enabled
+        False): o watch preditivo usa um SyntheticReturnMatch (id None), que
+        nunca tem linha real em `matches` pra validar GREEN/RED, e o
+        pre-alerta preditivo marcaria _predictive_sent, bloqueando o watch
+        REAL (com match_id valido) de rodar depois — a tip nunca persistiria.
         """
         if not settings.watch_predictive_enabled:
+            return
+        if settings.bet365_live_odds_enabled is False:
+            logger.info(
+                f"WatchPreditivo G1={game1_match.id}: modo sem odd — watch preditivo "
+                "desativado (sinteticos nao validam); so watches reais geram tips validaveis"
+            )
             return
         gid = game1_match.id
         if gid in self._predictive_tasks or game1_match.started_at is None:

@@ -1,5 +1,6 @@
 """Testes do watch preditivo (fallback quando a volta nao casou via API)."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -81,3 +82,38 @@ def test_schedule_noop_quando_desabilitado(monkeypatch):
     m = _monitor()
     m.schedule_predictive_watch(_g1(), "Sena", "Bosko", 2)
     assert 111 not in m._predictive_tasks
+
+
+def test_schedule_noop_no_modo_sem_odd(monkeypatch):
+    """Modo sem odd (bet365_live_odds_enabled=False): watch preditivo NAO
+    e agendado. Um pre-alerta preditivo com match sintetico (id None) nunca
+    valida GREEN/RED e ainda marcaria _predictive_sent, bloqueando o watch
+    REAL de rodar depois."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", False)
+    m = _monitor()
+    m.schedule_predictive_watch(_g1(), "Sena", "Bosko", 2)
+    assert 111 not in m._predictive_tasks
+
+
+def test_schedule_agenda_quando_odds_habilitado(monkeypatch):
+    """Comportamento legado preservado: com bet365_live_odds_enabled=True
+    (e watch_predictive_enabled=True, default), o watch preditivo continua
+    sendo agendado normalmente."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
+
+    created = {}
+
+    def fake_create_task(coro, name=None):
+        coro.close()  # nao roda o loop de fato, so evita warning "never awaited"
+        t = MagicMock()
+        t.done.return_value = False
+        created["task"] = t
+        return t
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+    m = _monitor()
+    m.schedule_predictive_watch(_g1(), "Sena", "Bosko", 2)
+    assert 111 in m._predictive_tasks
+    assert created["task"] is m._predictive_tasks[111]
