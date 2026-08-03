@@ -107,6 +107,80 @@ async def test_emit_watch_m1_nao_persiste_quando_id_none(monkeypatch):
     repo.update_telegram_message_id.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_emit_watch_m1_auto_delete_zero_sem_odd(monkeypatch):
+    """Modo sem odd: o watch M1 e o registro da tip editado com GREEN/RED
+    depois — nao pode auto-deletar em 900s (senao apaga antes da edicao)."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", False)
+
+    candidate = {
+        "line": "over25", "line_label": "Over 2.5", "target_player": "A",
+        "target_odds": 1.80,
+        "lines": [{"line": "over25", "line_label": "Over 2.5", "target_odds": 1.80,
+                   "predicted_tp": 0.7, "qualified": True}],
+    }
+    stats = MagicMock()
+    stats.predict_watch_candidate = AsyncMock(return_value=candidate)
+
+    repo = MagicMock()
+    repo.exists_for_match = AsyncMock(return_value=False)
+    repo.create = AsyncMock(return_value=MagicMock(id=42))
+    repo.update_telegram_message_id = AsyncMock()
+
+    notifier = MagicMock()
+    notifier.send_watch = AsyncMock(return_value=777)
+
+    engine = MagicMock(stats=stats, alerts=repo, notifier=notifier)
+    m = _make_odds_monitor_stub(engine, notifier)
+
+    rm = MagicMock(id=5)
+    rm.game1_id = 5
+    g1 = MagicMock(id=5, player_home="A", player_away="B", score_home=0, score_away=1)
+
+    await m._emit_watch_m1(rm, g1, "A", "B", 0)
+
+    notifier.send_watch.assert_awaited_once()
+    assert notifier.send_watch.await_args.kwargs["auto_delete_seconds"] == 0
+
+
+@pytest.mark.asyncio
+async def test_emit_watch_m1_auto_delete_900_com_odd(monkeypatch):
+    """Modo legado (flag True): reversibilidade — auto-delete continua 900s."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
+
+    candidate = {
+        "line": "over25", "line_label": "Over 2.5", "target_player": "A",
+        "target_odds": 1.80,
+        "lines": [{"line": "over25", "line_label": "Over 2.5", "target_odds": 1.80,
+                   "predicted_tp": 0.7, "qualified": True}],
+    }
+    stats = MagicMock()
+    stats.predict_watch_candidate = AsyncMock(return_value=candidate)
+
+    repo = MagicMock()
+    repo.exists_for_match = AsyncMock(return_value=False)
+    repo.create = AsyncMock(return_value=MagicMock(id=42))
+    repo.update_telegram_message_id = AsyncMock()
+
+    notifier = MagicMock()
+    notifier.send_watch = AsyncMock(return_value=777)
+
+    engine = MagicMock(stats=stats, alerts=repo, notifier=notifier)
+    m = _make_odds_monitor_stub(engine, notifier)
+
+    rm = MagicMock(id=5)
+    rm.game1_id = 5
+    g1 = MagicMock(id=5, player_home="A", player_away="B", score_home=0, score_away=1)
+
+    await m._emit_watch_m1(rm, g1, "A", "B", 0)
+
+    notifier.send_watch.assert_awaited_once()
+    assert notifier.send_watch.await_args.kwargs["auto_delete_seconds"] == 900
+    repo.create.assert_not_awaited()  # legado: nao persiste sem odd
+
+
 def _make_odds_monitor_stub(engine, notifier):
     from src.core.odds_monitor import OddsMonitor
     m = OddsMonitor.__new__(OddsMonitor)

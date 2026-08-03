@@ -323,12 +323,18 @@ class Reporter:
         greens = [a for a in counted if a.status == "green"]
         reds = [a for a in counted if a.status == "red"]
         voids = [a for a in alerts if a.status == "void"]
-        pnl = sum((a.entry_odd - 1.0) for a in greens) - len(reds)
-        emoji = "🟢" if pnl >= 0 else "🔴"
+
+        # Modo sem odd: entry_odd fica None (nao ha odd — validacao e so pelo
+        # placar). Nesse caso nao ha como calcular P/L em unidades nem exibir
+        # "@ odd" por tip — mostra so a contagem GREEN/RED. Com odd presente
+        # (modo legado), o relatorio fica identico ao de antes.
+        greens_with_odd = [a for a in greens if a.entry_odd is not None]
+        has_odd = any(a.entry_odd is not None for a in counted)
 
         linhas = "\n".join(
             f"{'✅' if a.status == 'green' else '❌'} {a.losing_player} "
-            f"{LINE_LABELS[a.line]} @ {a.entry_odd:.2f}"
+            f"{LINE_LABELS[a.line]}"
+            + (f" @ {a.entry_odd:.2f}" if a.entry_odd is not None else "")
             for a in counted
         )
 
@@ -337,11 +343,19 @@ class Reporter:
             f"{linhas}\n\n"
             f"✅ {len(greens)} GREEN | ❌ {len(reds)} RED"
             + (f" | ⚪ {len(voids)} anuladas" if voids else "")
-            + f"\n{emoji} <b>Saldo: {pnl:+.2f}u</b>  ({len(counted)} entradas)"
         )
+
+        if has_odd:
+            pnl = sum((a.entry_odd - 1.0) for a in greens_with_odd) - len(reds)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            text += f"\n{emoji} <b>Saldo: {pnl:+.2f}u</b>  ({len(counted)} entradas)"
+            log_saldo = f", saldo {pnl:+.2f}u"
+        else:
+            text += f"\n({len(counted)} entradas)"
+            log_saldo = ""
         await self.notifier.send_free_raw(text)
         logger.info(
-            f"FREE daily report sent: {len(greens)}G {len(reds)}R, saldo {pnl:+.2f}u"
+            f"FREE daily report sent: {len(greens)}G {len(reds)}R{log_saldo}"
         )
 
     def _build_results_msg_v2(self, alerts, date_label, tz_local) -> dict:

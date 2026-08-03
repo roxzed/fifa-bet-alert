@@ -47,6 +47,9 @@ async def test_emit_watch_m3_persiste_alertv3_sem_odd(monkeypatch):
     assert kwargs["line"] == "over25"
     assert kwargs.get("odds") is None
     repo.update_telegram_message_id.assert_awaited_once_with(99, 555)
+    # sem odd: nao pode auto-deletar antes do ValidatorV3 editar com resultado
+    notifier.send_watch_v3.assert_awaited_once()
+    assert notifier.send_watch_v3.await_args.kwargs["auto_delete_seconds"] == 0
 
 
 def _stub_watch_m3():
@@ -92,6 +95,31 @@ async def test_emit_watch_m3_com_flag_true_nao_persiste_alertv3(monkeypatch):
 
     await m._emit_watch_m3(rm, g1, "A", "B")
 
+    repo.create.assert_not_awaited()
+    # reversibilidade: com odd (legado), auto-delete continua no valor original
+    # que _emit_watch_m3 sempre passou (_WATCH_AUTO_DELETE_SECONDS = 900s).
+    m.alert_engine.notifier.send_watch_v3.assert_awaited_once()
+    assert (
+        m.alert_engine.notifier.send_watch_v3.await_args.kwargs["auto_delete_seconds"]
+        == m._WATCH_AUTO_DELETE_SECONDS
+    )
+
+
+async def test_emit_watch_m3_nao_persiste_quando_id_none(monkeypatch):
+    """Guard de simetria com M1/M2: return_match.id None (match sintetico)
+    nao pode tentar exists_for_match/create (FK invalida) — so skip com log,
+    sem crashar. Hoje inalcancavel na pratica (preditivo off no modo sem
+    odd), mas o guard protege por defesa."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", False)
+
+    m, repo, rm, g1 = _stub_watch_m3()
+    rm.id = None
+
+    result = await m._emit_watch_m3(rm, g1, "A", "B")
+
+    assert result is True  # watch (mensagem) ainda foi enviado
+    repo.exists_for_match.assert_not_awaited()
     repo.create.assert_not_awaited()
 
 

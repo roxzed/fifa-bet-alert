@@ -866,9 +866,15 @@ class OddsMonitor:
             f"Watch M1 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
+        # Modo sem odd: este watch É o registro da tip que sera editado com
+        # GREEN/RED pelo Validator — nao pode auto-deletar antes da edicao.
+        # Flag True (legado com odd): mantem os 900s originais.
+        auto_delete = (
+            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
+        )
         msg_id = await notifier.send_watch(
             watch_data,
-            auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            auto_delete_seconds=auto_delete,
         )
         logger.info(f"Watch M1 {gid} ENVIADO com sucesso ({loser} vs {winner})")
 
@@ -1062,9 +1068,15 @@ class OddsMonitor:
             f"Watch M2 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
+        # Modo sem odd: este watch É o registro da tip que sera editado com
+        # GREEN/RED pelo ValidatorV2 — nao pode auto-deletar antes da edicao.
+        # Flag True (legado com odd): mantem os 900s originais.
+        auto_delete = (
+            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
+        )
         msg_id = await notifier.send_watch(
             watch_data,
-            auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            auto_delete_seconds=auto_delete,
             to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
         )
         logger.info(f"Watch M2 {gid} ENVIADO com sucesso ({loser} vs {winner})")
@@ -1209,39 +1221,51 @@ class OddsMonitor:
             f"WatchV3 {gid} ENVIANDO: {loser} vs {winner} | "
             f"linhas={[le.line for le in evaluation.lines]}"
         )
+        # Modo sem odd: este watch É o registro da tip que sera editado com
+        # GREEN/RED pelo ValidatorV3 — nao pode auto-deletar antes da edicao.
+        # Flag True (legado com odd): mantem os 300s originais.
+        auto_delete = (
+            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
+        )
         msg_id = await notifier.send_watch_v3(
-            watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
+            watch_data, auto_delete_seconds=auto_delete
         )
         logger.info(f"WatchV3 {gid} ENVIADO com sucesso ({loser} vs {winner})")
         self._predictive_sent.add((gid, "m3"))
 
         if settings.bet365_live_odds_enabled is False and evaluation.lines:
-            repo = self.alert_engine_v3.alerts
-            if not await repo.exists_for_match(return_match.id):
-                g1_score = (
-                    f"{game1_match.score_home}-{game1_match.score_away}"
-                    if game1_match.player_home == loser
-                    else f"{game1_match.score_away}-{game1_match.score_home}"
-                )
-                first = True
-                for le in evaluation.lines:
-                    if not getattr(le, "qualified", True):
-                        continue
-                    alert = await repo.create(
-                        match_id=return_match.id,
-                        losing_player=loser,
-                        opponent_player=winner,
-                        game1_score=g1_score,
-                        line=le.line,
-                        odds=None,
-                        rate=le.rate,
-                        hits=le.hits,
-                        n_h2h=le.n,
-                        recent_hits=le.recent_hits,
+            if return_match.id is not None:
+                repo = self.alert_engine_v3.alerts
+                if not await repo.exists_for_match(return_match.id):
+                    g1_score = (
+                        f"{game1_match.score_home}-{game1_match.score_away}"
+                        if game1_match.player_home == loser
+                        else f"{game1_match.score_away}-{game1_match.score_home}"
                     )
-                    if first and msg_id:
-                        await repo.update_telegram_message_id(alert.id, msg_id)
-                        first = False
+                    first = True
+                    for le in evaluation.lines:
+                        if not getattr(le, "qualified", True):
+                            continue
+                        alert = await repo.create(
+                            match_id=return_match.id,
+                            losing_player=loser,
+                            opponent_player=winner,
+                            game1_score=g1_score,
+                            line=le.line,
+                            odds=None,
+                            rate=le.rate,
+                            hits=le.hits,
+                            n_h2h=le.n,
+                            recent_hits=le.recent_hits,
+                        )
+                        if first and msg_id:
+                            await repo.update_telegram_message_id(alert.id, msg_id)
+                            first = False
+            else:
+                logger.debug(
+                    f"WatchV3 {gid}: return_match.id None (match sintetico) — "
+                    "skip persistencia sem odd, nao ha linha real pra validar"
+                )
 
         return True
 

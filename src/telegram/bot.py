@@ -713,15 +713,19 @@ class TelegramNotifier:
             f"{watch_data.get('line_label')} @ {watch_data.get('target_odds')}"
         )
 
-        async def _delete_later() -> None:
-            await asyncio.sleep(auto_delete_seconds)
-            for chat, mid in sent:
-                try:
-                    await self.bot.delete_message(chat_id=chat, message_id=mid)
-                except TelegramError as e:
-                    logger.debug(f"Failed to auto-delete watch {mid} (may be already gone): {e}")
+        # auto_delete_seconds <= 0 desativa o auto-delete (modo sem odd: esta
+        # mensagem e o registro da tip, editada depois com GREEN/RED — nao
+        # pode ser apagada antes disso).
+        if auto_delete_seconds and auto_delete_seconds > 0:
+            async def _delete_later() -> None:
+                await asyncio.sleep(auto_delete_seconds)
+                for chat, mid in sent:
+                    try:
+                        await self.bot.delete_message(chat_id=chat, message_id=mid)
+                    except TelegramError as e:
+                        logger.debug(f"Auto-delete watch {mid} falhou (ja removido?): {e}")
 
-        asyncio.create_task(_delete_later(), name=f"watch_delete_{main_msg_id}")
+            asyncio.create_task(_delete_later(), name=f"watch_delete_{main_msg_id}")
         return main_msg_id
 
     async def send_message_v2(self, text: str) -> int | None:
@@ -775,14 +779,20 @@ class TelegramNotifier:
             f"M3 watch sent: {watch_data.get('target_player')}"
         )
 
-        async def _delete_later() -> None:
-            await asyncio.sleep(auto_delete_seconds)
-            try:
-                await self.bot.delete_message(chat_id=self._m3_chat_id, message_id=msg.message_id)
-            except TelegramError as e:
-                logger.debug(f"M3 watch auto-delete falhou ({msg.message_id}): {e}")
+        # auto_delete_seconds <= 0 desativa o auto-delete (modo sem odd: esta
+        # mensagem e o registro da tip, editada depois com GREEN/RED — nao
+        # pode ser apagada antes disso).
+        if auto_delete_seconds and auto_delete_seconds > 0:
+            async def _delete_later() -> None:
+                await asyncio.sleep(auto_delete_seconds)
+                try:
+                    await self.bot.delete_message(
+                        chat_id=self._m3_chat_id, message_id=msg.message_id
+                    )
+                except TelegramError as e:
+                    logger.debug(f"M3 watch auto-delete falhou ({msg.message_id}): {e}")
 
-        asyncio.create_task(_delete_later(), name=f"m3_watch_delete_{msg.message_id}")
+            asyncio.create_task(_delete_later(), name=f"m3_watch_delete_{msg.message_id}")
         return msg.message_id
 
     async def send_alert_v3(self, alert_data: dict) -> int | None:
