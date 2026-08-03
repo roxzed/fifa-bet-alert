@@ -437,10 +437,20 @@ def _m3_line_stats(ln: dict) -> str:
 
 
 def format_free_prealert(d: dict) -> str:
-    """Pre-alerta publico FREE — SEM revelar metodo. Sempre 'odd minima 1.70'."""
+    """Pre-alerta publico FREE — SEM revelar metodo."""
+    from src.config import settings
+
     p = _esc(d.get("player"))
     line_label = _esc(d.get("line_label"))
     kickoff_str = _esc(d.get("kickoff_str", "?"))
+    if not settings.bet365_live_odds_enabled:
+        # Modo sem odd: so a linha, sem mencionar odd.
+        return (
+            f"🔥 <b>ENTRADA FIFA eSports</b>\n"
+            f"🎮 {p}  —  <b>{line_label} gols</b>\n"
+            f"⏰ Jogo às {kickoff_str}\n"
+            f"<i>Fique atento e faça sua entrada no jogo.</i>"
+        )
     return (
         f"🔥 <b>ENTRADA FIFA eSports</b>\n"
         f"🎮 {p}  —  <b>{line_label} gols</b>\n"
@@ -452,6 +462,8 @@ def format_free_prealert(d: dict) -> str:
 
 def format_free_result(d: dict, status: str) -> str:
     """Edita o pre-alerta com o resultado. status: green|red|void."""
+    from src.config import settings
+
     p = _esc(d.get("player"))
     lbl = _esc(d.get("line_label"))
     g = d.get("actual_goals")
@@ -462,6 +474,11 @@ def format_free_result(d: dict, status: str) -> str:
             f"A odd não atingiu 1.70 (sem entrada)."
         )
     head = "✅ <b>GREEN</b>" if status == "green" else "❌ <b>RED</b>"
+    if not settings.bet365_live_odds_enabled:
+        return (
+            f"{head} — {p} {lbl}\n"
+            f"🎯 {p} fez {g} gols"
+        )
     odd_str = f"{odd:.2f}" if isinstance(odd, (int, float)) else "?"
     return (
         f"{head} — {p} {lbl}\n"

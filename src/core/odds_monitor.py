@@ -690,7 +690,7 @@ class OddsMonitor:
             line = await self.free_engine.prealert(
                 return_match, game1_match, loser, winner, kickoff_brt.strftime("%H:%M")
             )
-            if line:
+            if line and settings.bet365_live_odds_enabled:
                 self._free_tracking[match_id] = {"line": line, "entry_odd": None, "max_odd": 0.0}
         except asyncio.CancelledError:
             raise

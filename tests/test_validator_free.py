@@ -43,7 +43,9 @@ async def test_green_com_entrada_valida():
     n.edit_free_result.assert_awaited_once()
 
 
-async def test_void_quando_entry_odd_none():
+async def test_void_quando_entry_odd_none(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     v, ar, n = _v([_alert("over15", None)])
     await v.validate_match(_match(3))
     assert ar.validate.await_args.kwargs["status"] == "void"
