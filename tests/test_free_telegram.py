@@ -32,7 +32,9 @@ def _data():
     }
 
 
-def test_prealert_tem_odd_minima_170_e_nao_revela_metodo():
+def test_prealert_tem_odd_minima_170_e_nao_revela_metodo(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     t = format_free_prealert(_data()).lower()
     assert "1.70" in t
     assert not any(f in t for f in FORBIDDEN)
@@ -40,6 +42,8 @@ def test_prealert_tem_odd_minima_170_e_nao_revela_metodo():
 
 async def test_edit_free_result_void_agenda_auto_delete(monkeypatch):
     """Tip ANULADA (void) deve agendar a delecao da mensagem apos 5 min."""
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     n = _notifier()
     n.bot.delete_message = AsyncMock()
     sleeps = []
@@ -67,17 +71,23 @@ async def test_edit_free_result_green_nao_deleta(monkeypatch):
     n.bot.delete_message.assert_not_awaited()
 
 
-def test_result_green_mostra_entrada():
+def test_result_green_mostra_entrada(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     t = format_free_result(_data(), "green")
     assert "GREEN" in t and "1.75" in t
 
 
-def test_result_red_nao_revela_metodo():
+def test_result_red_nao_revela_metodo(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     t = format_free_result(_data(), "red").lower()
     assert not any(f in t for f in FORBIDDEN)
 
 
-def test_result_void_nao_revela_metodo():
+def test_result_void_nao_revela_metodo(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     t = format_free_result(_data(), "void").lower()
     assert not any(f in t for f in FORBIDDEN)
 

@@ -690,7 +690,7 @@ class OddsMonitor:
             line = await self.free_engine.prealert(
                 return_match, game1_match, loser, winner, kickoff_brt.strftime("%H:%M")
             )
-            if line:
+            if line and settings.bet365_live_odds_enabled:
                 self._free_tracking[match_id] = {"line": line, "entry_odd": None, "max_odd": 0.0}
         except asyncio.CancelledError:
             raise
@@ -866,11 +866,49 @@ class OddsMonitor:
             f"Watch M1 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
-        await notifier.send_watch(
+        # Modo sem odd: este watch É o registro da tip que sera editado com
+        # GREEN/RED pelo Validator — nao pode auto-deletar antes da edicao.
+        # Flag True (legado com odd): mantem os 900s originais.
+        auto_delete = (
+            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
+        )
+        msg_id = await notifier.send_watch(
             watch_data,
-            auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            auto_delete_seconds=auto_delete,
         )
         logger.info(f"Watch M1 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+
+        # Modo sem odd: persistir o Alert (M1) ja no pre-alerta, sem odds, para
+        # o Validator poder editar a mesma mensagem com GREEN/RED pelo placar.
+        if settings.bet365_live_odds_enabled is False and msg_id:
+            if return_match.id is not None:
+                try:
+                    repo = self.alert_engine.alerts
+                    if not await repo.exists_for_match(return_match.id):
+                        g1_score = (
+                            f"{game1_match.score_home}-{game1_match.score_away}"
+                            if game1_match.player_home == loser
+                            else f"{game1_match.score_away}-{game1_match.score_home}"
+                        )
+                        alert = await repo.create(
+                            match_id=return_match.id,
+                            losing_player=loser,
+                            game1_score=g1_score,
+                            best_line=candidate["line"],
+                            loser_goals_g1=loser_goals_g1,
+                        )
+                        await repo.update_telegram_message_id(alert.id, msg_id)
+                except Exception as e:
+                    logger.error(
+                        f"Watch {gid}: falha ao persistir Alert sem odd "
+                        f"(sem persistencia nao ha GREEN/RED possivel): {e}"
+                    )
+            else:
+                logger.debug(
+                    f"Watch {gid}: return_match.id None (match sintetico) — "
+                    "skip persistencia sem odd, nao ha linha real pra validar"
+                )
+
         self._predictive_sent.add((gid, "m1"))
         return True
 
@@ -1030,12 +1068,52 @@ class OddsMonitor:
             f"Watch M2 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
-        await notifier.send_watch(
+        # Modo sem odd: este watch É o registro da tip que sera editado com
+        # GREEN/RED pelo ValidatorV2 — nao pode auto-deletar antes da edicao.
+        # Flag True (legado com odd): mantem os 900s originais.
+        auto_delete = (
+            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
+        )
+        msg_id = await notifier.send_watch(
             watch_data,
-            auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+            auto_delete_seconds=auto_delete,
             to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
         )
         logger.info(f"Watch M2 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+
+        # Modo sem odd: persistir o AlertV2 (M2) ja no pre-alerta, sem odds,
+        # para o ValidatorV2 poder editar a mesma mensagem com GREEN/RED pelo
+        # placar. camada e NOT NULL no modelo — sempre preencher (default C2).
+        if settings.bet365_live_odds_enabled is False and msg_id:
+            if return_match.id is not None:
+                try:
+                    repo = self.alert_engine_v2.alerts
+                    if not await repo.exists_for_match(return_match.id):
+                        g1_score = (
+                            f"{game1_match.score_home}-{game1_match.score_away}"
+                            if game1_match.player_home == loser
+                            else f"{game1_match.score_away}-{game1_match.score_home}"
+                        )
+                        alert = await repo.create(
+                            match_id=return_match.id,
+                            losing_player=loser,
+                            opponent_player=winner,
+                            game1_score=g1_score,
+                            camada=candidate.get("camada") or "C2",
+                            best_line=candidate["line"],
+                        )
+                        await repo.update_telegram_message_id(alert.id, msg_id)
+                except Exception as e:
+                    logger.error(
+                        f"WatchV2 {gid}: falha ao persistir AlertV2 sem odd "
+                        f"(sem persistencia nao ha GREEN/RED possivel): {e}"
+                    )
+            else:
+                logger.debug(
+                    f"WatchV2 {gid}: return_match.id None (match sintetico) — "
+                    "skip persistencia sem odd, nao ha linha real pra validar"
+                )
+
         self._predictive_sent.add((gid, "m2"))
         return True
 
@@ -1143,11 +1221,52 @@ class OddsMonitor:
             f"WatchV3 {gid} ENVIANDO: {loser} vs {winner} | "
             f"linhas={[le.line for le in evaluation.lines]}"
         )
-        await notifier.send_watch_v3(
-            watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
+        # Modo sem odd: este watch É o registro da tip que sera editado com
+        # GREEN/RED pelo ValidatorV3 — nao pode auto-deletar antes da edicao.
+        # Flag True (legado com odd): mantem os 300s originais.
+        auto_delete = (
+            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
+        )
+        msg_id = await notifier.send_watch_v3(
+            watch_data, auto_delete_seconds=auto_delete
         )
         logger.info(f"WatchV3 {gid} ENVIADO com sucesso ({loser} vs {winner})")
         self._predictive_sent.add((gid, "m3"))
+
+        if settings.bet365_live_odds_enabled is False and evaluation.lines:
+            if return_match.id is not None:
+                repo = self.alert_engine_v3.alerts
+                if not await repo.exists_for_match(return_match.id):
+                    g1_score = (
+                        f"{game1_match.score_home}-{game1_match.score_away}"
+                        if game1_match.player_home == loser
+                        else f"{game1_match.score_away}-{game1_match.score_home}"
+                    )
+                    first = True
+                    for le in evaluation.lines:
+                        if not getattr(le, "qualified", True):
+                            continue
+                        alert = await repo.create(
+                            match_id=return_match.id,
+                            losing_player=loser,
+                            opponent_player=winner,
+                            game1_score=g1_score,
+                            line=le.line,
+                            odds=None,
+                            rate=le.rate,
+                            hits=le.hits,
+                            n_h2h=le.n,
+                            recent_hits=le.recent_hits,
+                        )
+                        if first and msg_id:
+                            await repo.update_telegram_message_id(alert.id, msg_id)
+                            first = False
+            else:
+                logger.debug(
+                    f"WatchV3 {gid}: return_match.id None (match sintetico) — "
+                    "skip persistencia sem odd, nao ha linha real pra validar"
+                )
+
         return True
 
     def _return_ja_casou(self, game1_id: int) -> bool:
@@ -1166,8 +1285,20 @@ class OddsMonitor:
         pra esse game1_id, ou se o G1 nao tem started_at (nao da pra prever
         o horario da volta). Chamado quando o PairMatcher nao consegue achar
         a volta via API logo apos o G1 terminar.
+
+        Tambem e no-op no modo sem odd (settings.bet365_live_odds_enabled
+        False): o watch preditivo usa um SyntheticReturnMatch (id None), que
+        nunca tem linha real em `matches` pra validar GREEN/RED, e o
+        pre-alerta preditivo marcaria _predictive_sent, bloqueando o watch
+        REAL (com match_id valido) de rodar depois — a tip nunca persistiria.
         """
         if not settings.watch_predictive_enabled:
+            return
+        if settings.bet365_live_odds_enabled is False:
+            logger.info(
+                f"WatchPreditivo G1={game1_match.id}: modo sem odd — watch preditivo "
+                "desativado (sinteticos nao validam); so watches reais geram tips validaveis"
+            )
             return
         gid = game1_match.id
         if gid in self._predictive_tasks or game1_match.started_at is None:
@@ -1246,6 +1377,11 @@ class OddsMonitor:
         Uses fuzzy matching to tolerate name differences between BetsAPI and Bet365.
         Returns (loser_odds, bet365_url, matched_event) or (None, None, None).
         """
+        from src.config import settings
+        if not settings.bet365_live_odds_enabled:
+            # Modo sem odd: nao tocar o bet365 premium (API cara).
+            return None, None, None
+
         try:
             inplay = await self.api.bet365_get_inplay_esoccer()
 

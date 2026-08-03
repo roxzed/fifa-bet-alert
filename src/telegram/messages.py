@@ -150,6 +150,8 @@ def format_watch_message(d: dict) -> str:
 
     # Modo VIP clean: N linhas elegiveis (ja filtradas de SHADOW/F em send_watch)
     if d.get("vip_clean_mode"):
+        from src.config import settings
+        no_odd = not settings.bet365_live_odds_enabled
         method = d.get("method", "M1")
         method_tag = f" [{method}]" if method != "M1" else ""
         eligible = d.get("lines_eligible") or []
@@ -158,10 +160,17 @@ def format_watch_message(d: dict) -> str:
                 "line_label": d.get("line_label"),
                 "target_odds": d.get("target_odds", 0),
             }]
-        lines_txt = "\n".join(
-            f"   ✅ {_esc(l.get('line_label','?'))} @ {(l.get('target_odds',0) or 0):.2f}+"
-            for l in eligible
-        )
+        if no_odd:
+            lines_txt = "\n".join(
+                f"   ✅ {_esc(ln.get('line_label','?'))}" for ln in eligible
+            )
+            footer = "Aguarde o início do jogo e faça sua entrada.\n"
+        else:
+            lines_txt = "\n".join(
+                f"   ✅ {_esc(ln.get('line_label','?'))} @ {(ln.get('target_odds',0) or 0):.2f}+"
+                for ln in eligible
+            )
+            footer = "Aguarde o ALERTA CONFIRMADO do grupo.\n"
         header_label = "Linha provável" if len(eligible) == 1 else "Linhas prováveis"
         return (
             f"🔔 <b>PRÉ-ALERTA{method_tag} — {_esc(d.get('kickoff_str', '?'))}</b>\n"
@@ -174,7 +183,7 @@ def format_watch_message(d: dict) -> str:
             f"\n"
             f"━━━━━━━━━━━━━━━\n"
             f"⚠️ <b>AINDA NÃO É APOSTA</b>\n"
-            f"Aguarde o ALERTA CONFIRMADO do grupo.\n"
+            f"{footer}"
             f"\n"
             f"📱 Já pode abrir o jogo na bet365."
         )
@@ -437,10 +446,20 @@ def _m3_line_stats(ln: dict) -> str:
 
 
 def format_free_prealert(d: dict) -> str:
-    """Pre-alerta publico FREE — SEM revelar metodo. Sempre 'odd minima 1.70'."""
+    """Pre-alerta publico FREE — SEM revelar metodo."""
+    from src.config import settings
+
     p = _esc(d.get("player"))
     line_label = _esc(d.get("line_label"))
     kickoff_str = _esc(d.get("kickoff_str", "?"))
+    if not settings.bet365_live_odds_enabled:
+        # Modo sem odd: so a linha, sem mencionar odd.
+        return (
+            f"🔥 <b>ENTRADA FIFA eSports</b>\n"
+            f"🎮 {p}  —  <b>{line_label} gols</b>\n"
+            f"⏰ Jogo às {kickoff_str}\n"
+            f"<i>Fique atento e faça sua entrada no jogo.</i>"
+        )
     return (
         f"🔥 <b>ENTRADA FIFA eSports</b>\n"
         f"🎮 {p}  —  <b>{line_label} gols</b>\n"
@@ -452,6 +471,8 @@ def format_free_prealert(d: dict) -> str:
 
 def format_free_result(d: dict, status: str) -> str:
     """Edita o pre-alerta com o resultado. status: green|red|void."""
+    from src.config import settings
+
     p = _esc(d.get("player"))
     lbl = _esc(d.get("line_label"))
     g = d.get("actual_goals")
@@ -462,10 +483,33 @@ def format_free_result(d: dict, status: str) -> str:
             f"A odd não atingiu 1.70 (sem entrada)."
         )
     head = "✅ <b>GREEN</b>" if status == "green" else "❌ <b>RED</b>"
+    if not settings.bet365_live_odds_enabled:
+        return (
+            f"{head} — {p} {lbl}\n"
+            f"🎯 {p} fez {g} gols"
+        )
     odd_str = f"{odd:.2f}" if isinstance(odd, (int, float)) else "?"
     return (
         f"{head} — {p} {lbl}\n"
         f"🎯 {p} fez {g} gols  |  entrada @ odd {odd_str}"
+    )
+
+
+def format_stat_result(d: dict, hit: bool) -> str:
+    """Resultado GREEN/RED sem odd (modo sem odd, M1/M2/M3).
+
+    Edita o pre-alerta com o desfecho pelo placar. d: target_player,
+    line_label, actual_goals, method_tag (opcional).
+    """
+    p = _esc(d.get("target_player"))
+    lbl = _esc(d.get("line_label"))
+    g = d.get("actual_goals")
+    tag = d.get("method_tag")
+    tag_str = f"[{_esc(tag)}] " if tag else ""
+    head = "✅ <b>GREEN</b>" if hit else "❌ <b>RED</b>"
+    return (
+        f"{tag_str}{head} — {p} {lbl}\n"
+        f"🎯 {p} fez {g} gols"
     )
 
 

@@ -40,7 +40,10 @@ class ValidatorFree:
         if loser_goals is None:
             return
         for a in pending:
-            status, hit = decide_status(a.entry_odd, loser_goals, a.line, settings.free_min_odd)
+            status, hit = decide_status(
+                a.entry_odd, loser_goals, a.line, settings.free_min_odd,
+                require_odd=settings.bet365_live_odds_enabled,
+            )
             await self.alerts.validate(a.id, actual_goals=loser_goals, hit=hit, status=status)
             logger.bind(category="free_model").info(
                 f"FREE validado: {loser} {a.line} -> {status.upper()} "
