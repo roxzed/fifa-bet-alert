@@ -1766,6 +1766,14 @@ class AlertV3Repository(_BaseRepository):
             await session.flush()
             return alert
 
+    async def exists_for_match(self, match_id: int) -> bool:
+        """Check if any alert V3 exists for a match_id (modo sem odd, 1x/match)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AlertV3.id).where(AlertV3.match_id == match_id).limit(1)
+            )
+            return result.first() is not None
+
     async def exists_for_line(self, match_id: int, line: str) -> bool:
         """Check if alert V3 exists for (match_id, line) — para evitar dups."""
         async with self._session() as session:

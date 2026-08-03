@@ -1143,11 +1143,40 @@ class OddsMonitor:
             f"WatchV3 {gid} ENVIANDO: {loser} vs {winner} | "
             f"linhas={[le.line for le in evaluation.lines]}"
         )
-        await notifier.send_watch_v3(
+        msg_id = await notifier.send_watch_v3(
             watch_data, auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS
         )
         logger.info(f"WatchV3 {gid} ENVIADO com sucesso ({loser} vs {winner})")
         self._predictive_sent.add((gid, "m3"))
+
+        if settings.bet365_live_odds_enabled is False and evaluation.lines:
+            repo = self.alert_engine_v3.alerts
+            if not await repo.exists_for_match(return_match.id):
+                g1_score = (
+                    f"{game1_match.score_home}-{game1_match.score_away}"
+                    if game1_match.player_home == loser
+                    else f"{game1_match.score_away}-{game1_match.score_home}"
+                )
+                first = True
+                for le in evaluation.lines:
+                    if not getattr(le, "qualified", True):
+                        continue
+                    alert = await repo.create(
+                        match_id=return_match.id,
+                        losing_player=loser,
+                        opponent_player=winner,
+                        game1_score=g1_score,
+                        line=le.line,
+                        odds=None,
+                        rate=le.rate,
+                        hits=le.hits,
+                        n_h2h=le.n,
+                        recent_hits=le.recent_hits,
+                    )
+                    if first and msg_id:
+                        await repo.update_telegram_message_id(alert.id, msg_id)
+                        first = False
+
         return True
 
     def _return_ja_casou(self, game1_id: int) -> bool:

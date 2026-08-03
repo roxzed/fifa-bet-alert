@@ -486,6 +486,24 @@ def format_free_result(d: dict, status: str) -> str:
     )
 
 
+def format_stat_result(d: dict, hit: bool) -> str:
+    """Resultado GREEN/RED sem odd (modo sem odd, M1/M2/M3).
+
+    Edita o pre-alerta com o desfecho pelo placar. d: target_player,
+    line_label, actual_goals, method_tag (opcional).
+    """
+    p = _esc(d.get("target_player"))
+    lbl = _esc(d.get("line_label"))
+    g = d.get("actual_goals")
+    tag = d.get("method_tag")
+    tag_str = f"[{_esc(tag)}] " if tag else ""
+    head = "✅ <b>GREEN</b>" if hit else "❌ <b>RED</b>"
+    return (
+        f"{tag_str}{head} — {p} {lbl}\n"
+        f"🎯 {p} fez {g} gols"
+    )
+
+
 def format_watch_v3(d: dict) -> str:
     """Pré-aviso M3 (T-90s, sem odds — mercado fechado). Privado do owner."""
     ph = _esc(d.get("player_home"))

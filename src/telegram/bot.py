@@ -498,6 +498,34 @@ class TelegramNotifier:
             logger.warning(f"Failed to edit FREE result {message_id}: {e}")
             return False
 
+    async def edit_stat_result(
+        self, message_id: int, channel: str, data: dict, hit: bool
+    ) -> bool:
+        """Edita a msg do pre-alerta (modo sem odd) com o resultado GREEN/RED.
+
+        channel: 'vip' | 'admin' | 'm3'. Sem odd — usa format_stat_result.
+        """
+        chat_id = {
+            "vip": self.chat_id,
+            "admin": self._admin_chat_id,
+            "m3": self._m3_chat_id,
+        }.get(channel)
+        if not chat_id or not message_id:
+            return False
+        from src.telegram.messages import format_stat_result
+        try:
+            await self.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=format_stat_result(data, hit),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            return True
+        except TelegramError as e:
+            logger.warning(f"edit_stat_result falhou (msg {message_id}): {e}")
+            return False
+
     # --- Method 2 (M2) group methods ---
 
     async def send_alert_v2(self, alert_data: dict) -> int | None:

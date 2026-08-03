@@ -12,6 +12,8 @@ import asyncio
 
 from loguru import logger
 
+from src.config import settings
+from src.core.free_status import LINE_LABELS
 from src.core.stats_engine_v3 import M3_LINE_LABELS
 
 _THRESHOLDS = {"over15": 1.5, "over25": 2.5, "over35": 3.5, "over45": 4.5}
@@ -73,6 +75,20 @@ class ValidatorV3:
         message_id = None
         for alert in all_alerts:
             message_id = message_id or alert.telegram_message_id
+
+        if message_id and settings.bet365_live_odds_enabled is False:
+            # Modo sem odd: uma única mensagem de resultado, sem odd, usando a
+            # linha de maior rate como referência para o GREEN/RED do watch.
+            best = max(all_alerts, key=lambda a: (a.rate or 0))
+            hit = loser_goals > _THRESHOLDS[best.line]
+            data = {
+                "target_player": loser,
+                "line_label": LINE_LABELS.get(best.line, best.line),
+                "actual_goals": loser_goals,
+                "method_tag": "M3",
+            }
+            await self.notifier.edit_stat_result(message_id, "m3", data, hit)
+            return
 
         if message_id:
             results = [

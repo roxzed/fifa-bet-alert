@@ -42,7 +42,9 @@ def _ended_match(loser_home_goals=3, opp_goals=1):
     return m
 
 
-async def test_valida_hit_e_edita_mensagem():
+async def test_valida_hit_e_edita_mensagem(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     alert = _alert()  # over25, Sena
     validator, repo, notifier = _validator([alert])
 
@@ -56,7 +58,9 @@ async def test_valida_hit_e_edita_mensagem():
     notifier.edit_alert_v3_result.assert_awaited_once()
 
 
-async def test_valida_red_com_profit_negativo():
+async def test_valida_red_com_profit_negativo(monkeypatch):
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     alert = _alert(line="over35", odds=2.10)
     validator, repo, notifier = _validator([alert])
 
@@ -78,10 +82,12 @@ async def test_ignora_alertas_ja_validados():
     notifier.edit_alert_v3_result.assert_not_awaited()
 
 
-async def test_edit_inclui_linhas_ja_graduadas():
+async def test_edit_inclui_linhas_ja_graduadas(monkeypatch):
     # Regressao: apos retry parcial, uma linha ja validada (over15 hit=True) NAO
     # pode sumir do display. O edit deve mostrar AS DUAS linhas; validate() so
     # eh chamado pra linha pendente (over25).
+    from src.config import settings
+    monkeypatch.setattr(settings, "bet365_live_odds_enabled", True)
     ja_validada = _alert(line="over15", odds=1.30, msg_id=55)
     ja_validada.id = 10
     ja_validada.hit = True  # graduada em ciclo anterior
