@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     free_model_enabled: bool = False   # vazio/false = modelo FREE desligado
     free_min_odd: float = 1.70         # odd minima pra entrada valida (senao ANULADO)
 
+    # Modo sem odd — corta o bet365 premium (odds ao vivo). false = bot roda
+    # so com a API barata (eventos/placar) + tips estatisticas sem odd.
+    bet365_live_odds_enabled: bool = False
+
     # Watch preditivo (fallback quando a API nao expoe a volta antes do kickoff)
     watch_predictive_enabled: bool = True
     watch_return_offset_fallback_min: float = 58.0  # offset default se sem historico

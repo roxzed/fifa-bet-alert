@@ -1246,6 +1246,11 @@ class OddsMonitor:
         Uses fuzzy matching to tolerate name differences between BetsAPI and Bet365.
         Returns (loser_odds, bet365_url, matched_event) or (None, None, None).
         """
+        from src.config import settings
+        if not settings.bet365_live_odds_enabled:
+            # Modo sem odd: nao tocar o bet365 premium (API cara).
+            return None, None, None
+
         try:
             inplay = await self.api.bet365_get_inplay_esoccer()
 
