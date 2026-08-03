@@ -866,11 +866,34 @@ class OddsMonitor:
             f"Watch M1 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
-        await notifier.send_watch(
+        msg_id = await notifier.send_watch(
             watch_data,
             auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
         )
         logger.info(f"Watch M1 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+
+        # Modo sem odd: persistir o Alert (M1) ja no pre-alerta, sem odds, para
+        # o Validator poder editar a mesma mensagem com GREEN/RED pelo placar.
+        if settings.bet365_live_odds_enabled is False and msg_id:
+            try:
+                repo = self.alert_engine.alerts
+                if not await repo.exists_for_match(return_match.id):
+                    g1_score = (
+                        f"{game1_match.score_home}-{game1_match.score_away}"
+                        if game1_match.player_home == loser
+                        else f"{game1_match.score_away}-{game1_match.score_home}"
+                    )
+                    alert = await repo.create(
+                        match_id=return_match.id,
+                        losing_player=loser,
+                        game1_score=g1_score,
+                        best_line=candidate["line"],
+                        loser_goals_g1=loser_goals_g1,
+                    )
+                    await repo.update_telegram_message_id(alert.id, msg_id)
+            except Exception as e:
+                logger.warning(f"Watch {gid}: falha ao persistir Alert sem odd: {e}")
+
         self._predictive_sent.add((gid, "m1"))
         return True
 

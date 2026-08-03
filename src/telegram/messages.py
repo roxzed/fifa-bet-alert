@@ -150,6 +150,8 @@ def format_watch_message(d: dict) -> str:
 
     # Modo VIP clean: N linhas elegiveis (ja filtradas de SHADOW/F em send_watch)
     if d.get("vip_clean_mode"):
+        from src.config import settings
+        no_odd = not settings.bet365_live_odds_enabled
         method = d.get("method", "M1")
         method_tag = f" [{method}]" if method != "M1" else ""
         eligible = d.get("lines_eligible") or []
@@ -158,10 +160,17 @@ def format_watch_message(d: dict) -> str:
                 "line_label": d.get("line_label"),
                 "target_odds": d.get("target_odds", 0),
             }]
-        lines_txt = "\n".join(
-            f"   ✅ {_esc(l.get('line_label','?'))} @ {(l.get('target_odds',0) or 0):.2f}+"
-            for l in eligible
-        )
+        if no_odd:
+            lines_txt = "\n".join(
+                f"   ✅ {_esc(ln.get('line_label','?'))}" for ln in eligible
+            )
+            footer = "Aguarde o início do jogo e faça sua entrada.\n"
+        else:
+            lines_txt = "\n".join(
+                f"   ✅ {_esc(ln.get('line_label','?'))} @ {(ln.get('target_odds',0) or 0):.2f}+"
+                for ln in eligible
+            )
+            footer = "Aguarde o ALERTA CONFIRMADO do grupo.\n"
         header_label = "Linha provável" if len(eligible) == 1 else "Linhas prováveis"
         return (
             f"🔔 <b>PRÉ-ALERTA{method_tag} — {_esc(d.get('kickoff_str', '?'))}</b>\n"
@@ -174,7 +183,7 @@ def format_watch_message(d: dict) -> str:
             f"\n"
             f"━━━━━━━━━━━━━━━\n"
             f"⚠️ <b>AINDA NÃO É APOSTA</b>\n"
-            f"Aguarde o ALERTA CONFIRMADO do grupo.\n"
+            f"{footer}"
             f"\n"
             f"📱 Já pode abrir o jogo na bet365."
         )

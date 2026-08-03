@@ -622,6 +622,14 @@ class AlertRepository(_BaseRepository):
             await session.flush()
             return alert
 
+    async def exists_for_match(self, match_id: int) -> bool:
+        """Check if any alert (M1) exists for a match_id (modo sem odd, 1x/match)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(Alert.id).where(Alert.match_id == match_id).limit(1)
+            )
+            return result.first() is not None
+
     async def validate(
         self,
         alert_id: int,
