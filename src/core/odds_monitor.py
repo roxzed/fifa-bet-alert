@@ -1062,12 +1062,46 @@ class OddsMonitor:
             f"Watch M2 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
-        await notifier.send_watch(
+        msg_id = await notifier.send_watch(
             watch_data,
             auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
             to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
         )
         logger.info(f"Watch M2 {gid} ENVIADO com sucesso ({loser} vs {winner})")
+
+        # Modo sem odd: persistir o AlertV2 (M2) ja no pre-alerta, sem odds,
+        # para o ValidatorV2 poder editar a mesma mensagem com GREEN/RED pelo
+        # placar. camada e NOT NULL no modelo — sempre preencher (default C2).
+        if settings.bet365_live_odds_enabled is False and msg_id:
+            if return_match.id is not None:
+                try:
+                    repo = self.alert_engine_v2.alerts
+                    if not await repo.exists_for_match(return_match.id):
+                        g1_score = (
+                            f"{game1_match.score_home}-{game1_match.score_away}"
+                            if game1_match.player_home == loser
+                            else f"{game1_match.score_away}-{game1_match.score_home}"
+                        )
+                        alert = await repo.create(
+                            match_id=return_match.id,
+                            losing_player=loser,
+                            opponent_player=winner,
+                            game1_score=g1_score,
+                            camada=candidate.get("camada") or "C2",
+                            best_line=candidate["line"],
+                        )
+                        await repo.update_telegram_message_id(alert.id, msg_id)
+                except Exception as e:
+                    logger.error(
+                        f"WatchV2 {gid}: falha ao persistir AlertV2 sem odd "
+                        f"(sem persistencia nao ha GREEN/RED possivel): {e}"
+                    )
+            else:
+                logger.debug(
+                    f"WatchV2 {gid}: return_match.id None (match sintetico) — "
+                    "skip persistencia sem odd, nao ha linha real pra validar"
+                )
+
         self._predictive_sent.add((gid, "m2"))
         return True
 

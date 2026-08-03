@@ -184,7 +184,10 @@ class ValidatorV2:
 
         # Edit Telegram message
         score_line = f"{home_score}-{away_score} ({loser} fez {loser_goals} gols)"
-        await self._send_result_notification(alert, return_match, hit, score_line, line_label, odds, profit_flat)
+        await self._send_result_notification(
+            alert, return_match, hit, score_line, line_label, odds, profit_flat,
+            loser_goals,
+        )
 
         # CSV
         try:
@@ -198,7 +201,8 @@ class ValidatorV2:
         )
 
     async def _send_result_notification(self, alert, return_match, hit, score_line,
-                                        line_label, odds, profit_flat) -> None:
+                                        line_label, odds, profit_flat,
+                                        loser_goals=None) -> None:
         # 2026-04-26 fix: alertas v2 suprimidos (auto-block SHADOW/PERMANENT) NAO
         # podem ter resultado enviado pro grupo M2 — mensagem original nunca foi
         # enviada. Mesmo bug do M1 corrigido em validator.py.
@@ -207,6 +211,22 @@ class ValidatorV2:
                 f"M2 validator skip notification: alert#{alert.id} "
                 f"{alert.losing_player} {alert.best_line} esta suppressed "
                 f"(auto-block) — sem mensagem no grupo"
+            )
+            return
+
+        from src.config import settings
+        if settings.bet365_live_odds_enabled is False:
+            if not alert.telegram_message_id:
+                return
+            from src.core.free_status import LINE_LABELS
+            data = {
+                "target_player": alert.losing_player,
+                "line_label": LINE_LABELS.get(alert.best_line or "over25", "Over 2.5"),
+                "actual_goals": loser_goals,
+                "method_tag": "M2",
+            }
+            await self.notifier.edit_stat_result(
+                alert.telegram_message_id, "admin", data, bool(hit)
             )
             return
 

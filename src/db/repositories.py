@@ -1521,6 +1521,14 @@ class AlertV2Repository(_BaseRepository):
             result = await session.execute(stmt)
             return result.scalar_one_or_none() is not None
 
+    async def exists_for_match(self, match_id: int) -> bool:
+        """Check if any alert (M2) exists for a match_id (modo sem odd, 1x/match)."""
+        async with self._session() as session:
+            result = await session.execute(
+                select(AlertV2.id).where(AlertV2.match_id == match_id).limit(1)
+            )
+            return result.first() is not None
+
     async def mark_suppressed(self, alert_id: int) -> None:
         """Marca alerta v2 como suppressed=TRUE (auto-block SHADOW)."""
         async with self._session() as session:
