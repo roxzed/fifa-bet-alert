@@ -226,7 +226,7 @@ class ValidatorV2:
                 "method_tag": "M2",
             }
             await self.notifier.edit_stat_result(
-                alert.telegram_message_id, "admin", data, bool(hit)
+                alert.telegram_message_id, "v2", data, bool(hit)
             )
             return
 

@@ -1068,17 +1068,23 @@ class OddsMonitor:
             f"Watch M2 {gid} ENVIANDO: {loser} vs {winner} | "
             f"target={candidate.get('target_player')} | linhas={[l.get('line') for l in cand_lines]}"
         )
-        # Modo sem odd: este watch É o registro da tip que sera editado com
-        # GREEN/RED pelo ValidatorV2 — nao pode auto-deletar antes da edicao.
-        # Flag True (legado com odd): mantem os 900s originais.
-        auto_delete = (
-            self._WATCH_AUTO_DELETE_SECONDS if settings.bet365_live_odds_enabled else 0
-        )
-        msg_id = await notifier.send_watch(
-            watch_data,
-            auto_delete_seconds=auto_delete,
-            to_admin=True,  # M2 vai pro DM do owner, nao pro VIP
-        )
+        if settings.bet365_live_odds_enabled:
+            # Modo com odd (legado): o watch M2 e um pre-aviso pro DM do owner;
+            # o alerta live (com odd) e que vai pro grupo do Method 2.
+            msg_id = await notifier.send_watch(
+                watch_data,
+                auto_delete_seconds=self._WATCH_AUTO_DELETE_SECONDS,
+                to_admin=True,
+            )
+        else:
+            # Modo sem odd: nao ha alerta live — este watch E o sinal. Vai pro
+            # grupo do Method 2 (fifafriends), sem auto-delete (a mensagem e o
+            # registro editado depois com GREEN/RED pelo ValidatorV2).
+            msg_id = await notifier.send_watch(
+                watch_data,
+                auto_delete_seconds=0,
+                to_v2_group=True,
+            )
         logger.info(f"Watch M2 {gid} ENVIADO com sucesso ({loser} vs {winner})")
 
         # Modo sem odd: persistir o AlertV2 (M2) ja no pre-alerta, sem odds,

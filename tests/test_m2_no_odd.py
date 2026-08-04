@@ -56,6 +56,10 @@ async def test_emit_watch_m2_persiste_alertv2_sem_odd(monkeypatch):
     # sem odd: nao pode auto-deletar antes do ValidatorV2 editar com resultado
     notifier.send_watch.assert_awaited_once()
     assert notifier.send_watch.await_args.kwargs["auto_delete_seconds"] == 0
+    # sem odd: o watch M2 E o sinal -> vai pro grupo do Method 2 (fifafriends),
+    # nao pro DM do owner.
+    assert notifier.send_watch.await_args.kwargs.get("to_v2_group") is True
+    assert notifier.send_watch.await_args.kwargs.get("to_admin") is not True
 
 
 async def test_emit_watch_m2_auto_delete_900_com_odd(monkeypatch):
@@ -101,4 +105,32 @@ async def test_emit_watch_m2_auto_delete_900_com_odd(monkeypatch):
 
     notifier.send_watch.assert_awaited_once()
     assert notifier.send_watch.await_args.kwargs["auto_delete_seconds"] == 900
+    # legado (modo com odd): watch M2 continua indo pro DM do owner (pre-aviso)
+    assert notifier.send_watch.await_args.kwargs.get("to_admin") is True
+    assert notifier.send_watch.await_args.kwargs.get("to_v2_group") is not True
     repo.create.assert_not_awaited()  # legado: nao persiste sem odd
+
+
+async def test_send_watch_to_v2_group_vai_pro_grupo_do_method2():
+    """send_watch(to_v2_group=True) envia pro TELEGRAM_GROUP_V2_ID, nao pro DM."""
+    from src.telegram.bot import TelegramNotifier
+
+    n = TelegramNotifier(
+        token="1:x", chat_id="-100vip", admin_chat_id="6034412176",
+        v2_group_id="-1003740732998",
+    )
+    n.bot = MagicMock()
+    m = MagicMock()
+    m.message_id = 555
+    n.bot.send_message = AsyncMock(return_value=m)
+
+    watch_data = {
+        "target_player": "A", "player_home": "A", "player_away": "B",
+        "kickoff_str": "12:00",
+        "lines": [{"line": "over25", "line_label": "Over 2.5", "target_odds": 1.80,
+                   "predicted_tp": 0.7, "qualified": True}],
+    }
+    mid = await n.send_watch(watch_data, auto_delete_seconds=0, to_v2_group=True)
+
+    assert mid == 555
+    assert n.bot.send_message.await_args.kwargs["chat_id"] == "-1003740732998"

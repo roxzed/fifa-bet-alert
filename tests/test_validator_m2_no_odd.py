@@ -1,6 +1,6 @@
 """M2 (ValidatorV2) no modo sem odd: cobre o branch sem-odd de
 _send_result_notification — edicao via notifier.edit_stat_result (canal
-"admin") em vez do editor legado edit_alert_v2_result.
+"v2" = grupo do Method 2) em vez do editor legado edit_alert_v2_result.
 
 Gap apontado na review das Tasks 4/5: o branch sem-odd de
 ValidatorV2._send_result_notification so tinha sido verificado por leitura.
@@ -53,7 +53,7 @@ def _make_validator():
     return validator, notifier
 
 
-async def test_sem_odd_green_chama_edit_stat_result_canal_admin(monkeypatch):
+async def test_sem_odd_green_chama_edit_stat_result_canal_v2(monkeypatch):
     from src.config import settings
     monkeypatch.setattr(settings, "bet365_live_odds_enabled", False)
 
@@ -70,7 +70,7 @@ async def test_sem_odd_green_chama_edit_stat_result_canal_admin(monkeypatch):
     args = notifier.edit_stat_result.await_args.args
     message_id, channel, data, hit = args
     assert message_id == 999
-    assert channel == "admin"
+    assert channel == "v2"
     assert hit is True
     assert data["method_tag"] == "M2"
     assert data["line_label"] == "Over 2.5"
@@ -96,7 +96,7 @@ async def test_sem_odd_red_chama_edit_stat_result_hit_false(monkeypatch):
     notifier.edit_stat_result.assert_awaited_once()
     args = notifier.edit_stat_result.await_args.args
     message_id, channel, data, hit = args
-    assert channel == "admin"
+    assert channel == "v2"
     assert hit is False
     assert data["method_tag"] == "M2"
     assert data["line_label"] == "Over 2.5"

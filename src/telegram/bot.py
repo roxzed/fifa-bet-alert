@@ -503,12 +503,13 @@ class TelegramNotifier:
     ) -> bool:
         """Edita a msg do pre-alerta (modo sem odd) com o resultado GREEN/RED.
 
-        channel: 'vip' | 'admin' | 'm3'. Sem odd — usa format_stat_result.
+        channel: 'vip' | 'admin' | 'm3' | 'v2'. Sem odd — usa format_stat_result.
         """
         chat_id = {
             "vip": self.chat_id,
             "admin": self._admin_chat_id,
             "m3": self._m3_chat_id,
+            "v2": self._v2_group_id,
         }.get(channel)
         if not chat_id or not message_id:
             return False
@@ -643,7 +644,8 @@ class TelegramNotifier:
             return False
 
     async def send_watch(
-        self, watch_data: dict, auto_delete_seconds: int = 600, to_admin: bool = False
+        self, watch_data: dict, auto_delete_seconds: int = 600, to_admin: bool = False,
+        to_v2_group: bool = False,
     ) -> int | None:
         """Send a silent pre-alert (watch) and schedule auto-deletion.
 
@@ -661,8 +663,18 @@ class TelegramNotifier:
         if self._paused:
             logger.debug("Alerts paused, skipping send_watch")
             return None
-        target_chat = self._admin_chat_id if to_admin else self.chat_id
-        dest_label = "DM admin" if to_admin else "VIP"
+        # 2026-08: to_v2_group=True envia pro grupo do Method 2 (fifafriends,
+        # TELEGRAM_GROUP_V2_ID) — usado pelo watch M2 no modo sem odd, em que o
+        # watch E o sinal (nao ha mais alerta live). to_admin=True mantem o DM.
+        if to_v2_group:
+            target_chat = self._v2_group_id
+            dest_label = "Grupo M2"
+        elif to_admin:
+            target_chat = self._admin_chat_id
+            dest_label = "DM admin"
+        else:
+            target_chat = self.chat_id
+            dest_label = "VIP"
         if not target_chat:
             logger.debug(f"send_watch NO-OP: chat destino ({dest_label}) vazio")
             return None
